@@ -1,8 +1,11 @@
 import streamlit as st
 from datetime import date
 
+from worker.tjk_fetch import get_program, TJKFetchError
+
+
 # ============================================================
-# PAGE CONFIG
+# SAYFA AYARLARI
 # ============================================================
 
 st.set_page_config(
@@ -12,11 +15,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
 # ============================================================
 # SESSION STATE
 # ============================================================
 
-# Program State
 if "program_data" not in st.session_state:
     st.session_state.program_data = None
 
@@ -24,30 +27,26 @@ if "selected_date" not in st.session_state:
     st.session_state.selected_date = date.today()
 
 if "selected_city" not in st.session_state:
-    st.session_state.selected_city = None
+    st.session_state.selected_city = "İstanbul"
 
-# Race State
 if "selected_race" not in st.session_state:
     st.session_state.selected_race = None
 
 if "race_data" not in st.session_state:
     st.session_state.race_data = None
 
-# Horse State
 if "horse_data" not in st.session_state:
     st.session_state.horse_data = {}
 
-# Request State
 if "in_flight" not in st.session_state:
     st.session_state.in_flight = {}
 
-# Analysis State
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
 
 # ============================================================
-# HEADER
+# BAŞLIK
 # ============================================================
 
 st.title("🏇 Race-Intelligence")
@@ -64,174 +63,352 @@ with st.sidebar:
 
     selected_date = st.date_input(
         "Tarih",
-        value=st.session_state.selected_date
+        value=st.session_state.selected_date,
+        format="DD/MM/YYYY"
     )
 
     cities = [
-        "İstanbul",
-        "Ankara",
-        "İzmir",
-        "Bursa",
         "Adana",
-        "Kocaeli",
+        "Ankara",
+        "Bursa",
+        "Diyarbakır",
         "Elazığ",
-        "Şanlıurfa",
-        "Diyarbakır"
+        "İstanbul",
+        "İzmir",
+        "Kocaeli",
+        "Şanlıurfa"
     ]
 
     selected_city = st.selectbox(
         "Hipodrom",
-        cities
+        cities,
+        index=cities.index(
+            st.session_state.selected_city
+        )
     )
 
     st.divider()
 
-    get_program = st.button(
+    get_program_button = st.button(
         "🔄 PROGRAMI GETİR",
-        use_container_width=True
+        use_container_width=True,
+        type="primary"
     )
 
 
 # ============================================================
-# UPDATE PROGRAM STATE
+# PROGRAMI TJK'DAN ÇEK
 # ============================================================
 
-if get_program:
+if get_program_button:
 
-    st.session_state.selected_date = selected_date
-    st.session_state.selected_city = selected_city
-
-    # TJK fetch katmanı henüz bağlanmadı.
-    # Bir sonraki aşamada burası Worker/FETCH katmanına bağlanacak.
-
+    # Önce eski state'i temizle
     st.session_state.program_data = None
     st.session_state.selected_race = None
     st.session_state.race_data = None
     st.session_state.horse_data = {}
     st.session_state.analysis_result = None
 
-    st.info(
-        f"Program isteği hazırlandı: "
-        f"{selected_date.strftime('%d.%m.%Y')} - {selected_city}"
-    )
+    st.session_state.selected_date = selected_date
+    st.session_state.selected_city = selected_city
+
+    with st.spinner(
+        f"{selected_city} yarış programı TJK'dan alınıyor..."
+    ):
+
+        try:
+
+            program = get_program(
+                selected_date,
+                selected_city
+            )
+
+            if not program.get("ok"):
+                st.error(
+                    "TJK program verisi alınamadı."
+                )
+
+            else:
+
+                st.session_state.program_data = program
+
+                st.success(
+                    f"{selected_city} programı alındı."
+                )
+
+        except TJKFetchError as exc:
+
+            st.error(
+                f"TJK veri çekme hatası: {exc}"
+            )
+
+        except Exception as exc:
+
+            st.error(
+                f"Beklenmeyen hata: {exc}"
+            )
 
 
 # ============================================================
-# CURRENT PROGRAM
-# ============================================================
-
-st.subheader("📋 Yarış Programı")
-
-if st.session_state.program_data is None:
-
-    st.info(
-        "Henüz program verisi alınmadı. "
-        "Soldan tarih ve hipodrom seçip PROGRAMI GETİR butonuna basın."
-    )
-
-else:
-
-    st.success("Program verisi hazır.")
-
-
-# ============================================================
-# RACE STATE
+# PROGRAM
 # ============================================================
 
 st.divider()
 
-st.subheader("🏁 Koşu")
+st.subheader("📋 Yarış Programı")
 
-if st.session_state.race_data is None:
 
-    st.info("Henüz bir koşu seçilmedi.")
+program = st.session_state.program_data
+
+
+if program is None:
+
+    st.info(
+        "Tarih ve hipodrom seçerek "
+        "PROGRAMI GETİR butonuna basın."
+    )
 
 else:
 
-    st.success(
-        f"Seçili koşu: {st.session_state.selected_race}"
+    race_count = program.get(
+        "race_count",
+        0
     )
+
+    st.success(
+        f"{program.get('city')} — "
+        f"{program.get('date')} — "
+        f"{race_count} koşu bulundu."
+    )
+
+    races = program.get(
+        "races",
+        []
+    )
+
+    if not races:
+
+        st.warning(
+            "Program sayfası açıldı fakat "
+            "koşu verisi ayrıştırılamadı."
+        )
+
+    else:
+
+        # ----------------------------------------------------
+        # KOŞU SEÇİMİ
+        # ----------------------------------------------------
+
+        race_options = []
+
+        for race in races:
+
+            number = race.get(
+                "race_number"
+            )
+
+            race_time = race.get(
+                "race_time"
+            )
+
+            if race_time:
+
+                label = (
+                    f"{number}. Koşu "
+                    f"— {race_time}"
+                )
+
+            else:
+
+                label = (
+                    f"{number}. Koşu"
+                )
+
+            race_options.append(
+                label
+            )
+
+        selected_race_label = st.selectbox(
+            "Koşu seç",
+            race_options
+        )
+
+        selected_index = race_options.index(
+            selected_race_label
+        )
+
+        selected_race = races[
+            selected_index
+        ]
+
+        st.session_state.selected_race = (
+            selected_race.get(
+                "race_number"
+            )
+        )
+
+        st.session_state.race_data = (
+            selected_race
+        )
+
+        horses = selected_race.get(
+            "horses",
+            []
+        )
+
+        st.session_state.horse_data = horses
 
 
 # ============================================================
-# HORSE STATE
+# SEÇİLİ KOŞU
+# ============================================================
+
+if st.session_state.race_data:
+
+    race = st.session_state.race_data
+
+    st.divider()
+
+    st.subheader(
+        f"🏁 {race.get('race_number')}. Koşu"
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Koşu",
+            str(
+                race.get(
+                    "race_number",
+                    "-"
+                )
+            )
+        )
+
+    with col2:
+        st.metric(
+            "Saat",
+            race.get(
+                "race_time"
+            ) or "-"
+        )
+
+    with col3:
+        st.metric(
+            "At Sayısı",
+            len(
+                race.get(
+                    "horses",
+                    []
+                )
+            )
+        )
+
+
+# ============================================================
+# ATLAR
 # ============================================================
 
 st.divider()
 
 st.subheader("🐎 Atlar")
 
-if not st.session_state.horse_data:
+horses = st.session_state.horse_data
 
-    st.info("Henüz at verisi alınmadı.")
+
+if not horses:
+
+    st.info(
+        "Seçilen koşuya ait at verisi henüz alınmadı."
+    )
 
 else:
 
     st.write(
-        st.session_state.horse_data
+        f"**{len(horses)} at bulundu.**"
+    )
+
+    st.dataframe(
+        horses,
+        use_container_width=True,
+        hide_index=True
     )
 
 
 # ============================================================
-# ANALYSIS
+# ANALİZ MOTORU
 # ============================================================
 
 st.divider()
 
 st.subheader("🧠 Analiz Motoru")
 
-col1, col2, col3, col4 = st.columns(4)
+weights = {
+    "Pist / Mesafe": 22,
+    "Ortak Rakip": 18,
+    "Sınıf / HP": 14,
+    "Form": 19,
+    "Kilo": 12,
+    "Derece": 8,
+    "Galop / Tempo": 5,
+    "Hız": 3,
+}
 
-with col1:
-    st.metric("Pist / Mesafe", "%22")
+cols = st.columns(4)
 
-with col2:
-    st.metric("Ortak Rakip", "%18")
+items = list(weights.items())
 
-with col3:
-    st.metric("Sınıf / HP", "%14")
+for index, (name, weight) in enumerate(
+    items[:4]
+):
 
-with col4:
-    st.metric("Form", "%19")
+    with cols[index]:
+
+        st.metric(
+            name,
+            f"%{weight}"
+        )
 
 
-col5, col6, col7, col8 = st.columns(4)
+cols = st.columns(4)
 
-with col5:
-    st.metric("Kilo", "%12")
+for index, (name, weight) in enumerate(
+    items[4:]
+):
 
-with col6:
-    st.metric("Derece", "%8")
+    with cols[index]:
 
-with col7:
-    st.metric("Galop / Tempo", "%5")
+        st.metric(
+            name,
+            f"%{weight}"
+        )
 
-with col8:
-    st.metric("Hız", "%3")
+
+st.caption(
+    "Ağırlık toplamı: %101 — "
+    "nihai skor hesaplamasında 100 puana normalize edilecektir."
+)
 
 
 # ============================================================
-# SYSTEM STATUS
+# SİSTEM DURUMU
 # ============================================================
 
 st.divider()
 
 st.subheader("⚙️ Sistem Durumu")
 
-status1, status2, status3, status4 = st.columns(4)
+col1, col2, col3, col4 = st.columns(4)
 
-with status1:
-    st.write("🟢 Streamlit")
-    st.caption("Çalışıyor")
+with col1:
+    st.success("Streamlit\n\nÇalışıyor")
 
-with status2:
-    st.write("🟡 TJK Fetch")
-    st.caption("Bağlanacak")
+with col2:
+    st.success("TJK Fetch\n\nBağlı")
 
-with status3:
-    st.write("🟡 Cache")
-    st.caption("Bağlanacak")
+with col3:
+    st.warning("Cache\n\nSıradaki aşama")
 
-with status4:
-    st.write("🟡 Analiz")
-    st.caption("Bağlanacak")
+with col4:
+    st.warning("Analiz\n\nSıradaki aşama")
