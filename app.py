@@ -151,7 +151,7 @@ if get_program_button:
 
         st.session_state.program_data = program
 
-        # Yeni program geldiğinde eski seçimleri temizle
+        # Yeni program geldiğinde seçimleri temizle
         st.session_state.selected_race = None
         st.session_state.race_data = None
         st.session_state.horse_data = []
@@ -205,6 +205,7 @@ if program_data is not None:
         []
     )
 
+
     # =====================================================
     # YARIŞ PROGRAMI
     # =====================================================
@@ -231,242 +232,256 @@ if program_data is not None:
 
     if debug_data:
 
-        st.subheader("🔧 TJK Parser Debug")
+        with st.expander(
+            "🔧 TJK Parser Debug",
+            expanded=False
+        ):
 
-        st.caption(
-            "TJK'dan alınan HTML ve parser sonuçları"
-        )
+            # -------------------------------------------------
+            # ANA METRİKLER
+            # -------------------------------------------------
 
-        # -------------------------------------------------
-        # ANA METRİKLER
-        # -------------------------------------------------
+            col1, col2, col3 = st.columns(3)
 
-        col1, col2, col3 = st.columns(3)
+            with col1:
 
-        with col1:
-
-            st.metric(
-                "HTML uzunluğu",
-                debug_data.get(
-                    "html_length",
-                    0
+                st.metric(
+                    "HTML",
+                    debug_data.get(
+                        "html_length",
+                        0
+                    )
                 )
-            )
 
-        with col2:
+            with col2:
 
-            st.metric(
-                "Görünen metin",
-                debug_data.get(
-                    "visible_text_length",
-                    0
+                st.metric(
+                    "Görünen metin",
+                    debug_data.get(
+                        "visible_text_length",
+                        0
+                    )
                 )
-            )
 
-        with col3:
+            with col3:
 
-            st.metric(
-                "HTML table",
-                debug_data.get(
-                    "table_count",
-                    0
+                st.metric(
+                    "HTML table",
+                    debug_data.get(
+                        "table_count",
+                        0
+                    )
                 )
-            )
 
 
-        # -------------------------------------------------
-        # İÇERİK KONTROLLERİ
-        # -------------------------------------------------
+            # -------------------------------------------------
+            # KONTROLLER
+            # -------------------------------------------------
 
-        col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4 = st.columns(4)
 
-        with col1:
+            with col1:
 
-            value = debug_data.get(
-                "has_kosu_text",
-                False
-            )
-
-            st.write("Koşu:", "✅" if value else "❌")
-
-        with col2:
-
-            value = debug_data.get(
-                "has_at_ismi_text",
-                False
-            )
-
-            st.write(
-                "At İsmi:",
-                "✅" if value else "❌"
-            )
-
-        with col3:
-
-            value = debug_data.get(
-                "has_jokey_text",
-                False
-            )
-
-            st.write(
-                "Jokey:",
-                "✅" if value else "❌"
-            )
-
-        with col4:
-
-            st.write(
-                "Koşu regex:",
-                debug_data.get(
-                    "race_pattern_count",
-                    0
+                st.write(
+                    "Koşu:",
+                    "✅"
+                    if debug_data.get(
+                        "has_kosu_text",
+                        False
+                    )
+                    else "❌"
                 )
-            )
 
+            with col2:
 
-        # -------------------------------------------------
-        # HTML BAŞLIKLARI
-        # -------------------------------------------------
-
-        st.divider()
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-
-            st.metric(
-                "H1",
-                debug_data.get(
-                    "h1_count",
-                    0
+                st.write(
+                    "At İsmi:",
+                    "✅"
+                    if debug_data.get(
+                        "has_at_ismi_text",
+                        False
+                    )
+                    else "❌"
                 )
-            )
 
-        with col2:
+            with col3:
 
-            st.metric(
-                "H2",
-                debug_data.get(
-                    "h2_count",
-                    0
+                st.write(
+                    "Jokey:",
+                    "✅"
+                    if debug_data.get(
+                        "has_jokey_text",
+                        False
+                    )
+                    else "❌"
                 )
-            )
 
-        with col3:
+            with col4:
 
-            st.metric(
-                "H3",
-                debug_data.get(
-                    "h3_count",
-                    0
+                st.write(
+                    "Koşu regex:",
+                    debug_data.get(
+                        "race_pattern_count",
+                        0
+                    )
                 )
-            )
 
-        with col4:
 
-            st.metric(
-                "H4",
-                debug_data.get(
-                    "h4_count",
-                    0
+            # -------------------------------------------------
+            # PARSER SONUCU
+            # -------------------------------------------------
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+
+                st.write(
+                    "H1:",
+                    debug_data.get(
+                        "h1_count",
+                        0
+                    )
                 )
-            )
 
+            with col2:
 
-        # -------------------------------------------------
-        # PARSER SONUCU
-        # -------------------------------------------------
-
-        st.divider()
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.metric(
-                "Bulunan at tablosu",
-                debug_data.get(
-                    "horse_table_count",
-                    0
+                st.write(
+                    "H2:",
+                    debug_data.get(
+                        "h2_count",
+                        0
+                    )
                 )
-            )
 
-        with col2:
+            with col3:
 
-            st.metric(
-                "Ayrıştırılan koşu",
-                debug_data.get(
-                    "parsed_race_count",
-                    0
+                st.write(
+                    "H3:",
+                    debug_data.get(
+                        "h3_count",
+                        0
+                    )
                 )
-            )
 
+            with col4:
 
-        # -------------------------------------------------
-        # PARSER HATASI
-        # -------------------------------------------------
-
-        parse_error = program_data.get(
-            "parse_error"
-        )
-
-        if parse_error:
-
-            st.error(
-                "Parser hatası: "
-                + str(parse_error)
-            )
-
-
-        # -------------------------------------------------
-        # HAM HTML
-        #
-        # NOT:
-        # Burada EXPANDER kullanmıyoruz.
-        # Çünkü TJK Parser Debug zaten ayrı bir
-        # bölüm ve iç içe expander Streamlit'te hataya
-        # neden oluyor.
-        # -------------------------------------------------
-
-        html_start = debug_data.get(
-            "html_start",
-            ""
-        )
-
-        if html_start:
-
-            show_html = st.checkbox(
-                "TJK HTML başlangıcını göster",
-                value=False
-            )
-
-            if show_html:
-
-                st.code(
-                    html_start,
-                    language="html"
+                st.write(
+                    "H4:",
+                    debug_data.get(
+                        "h4_count",
+                        0
+                    )
                 )
+
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                st.metric(
+                    "Bulunan at tablosu",
+                    debug_data.get(
+                        "horse_table_count",
+                        0
+                    )
+                )
+
+            with col2:
+
+                st.metric(
+                    "Ayrıştırılan koşu",
+                    debug_data.get(
+                        "parsed_race_count",
+                        0
+                    )
+                )
+
+
+            # -------------------------------------------------
+            # PARSER HATASI
+            # -------------------------------------------------
+
+            parse_error = program_data.get(
+                "parse_error"
+            )
+
+            if parse_error:
+
+                st.error(
+                    "Parser hatası: "
+                    + str(parse_error)
+                )
+
+
+            # -------------------------------------------------
+            # HAM HTML
+            # -------------------------------------------------
+
+            html_start = debug_data.get(
+                "html_start",
+                ""
+            )
+
+            if html_start:
+
+                show_html = st.checkbox(
+                    "TJK HTML başlangıcını göster",
+                    value=False
+                )
+
+                if show_html:
+
+                    st.code(
+                        html_start,
+                        language="html"
+                    )
 
 
     # =====================================================
-    # KOŞULAR
+    # KOŞU SEÇİMİ
     # =====================================================
 
     if races:
 
         st.divider()
 
-        st.subheader(
-            "🏁 Koşu Seç"
+        st.subheader("🏁 Koşu Seç")
+
+
+        # -------------------------------------------------
+        # SEÇİLİ KOŞU NUMARASI
+        # -------------------------------------------------
+
+        current_race_number = None
+
+        if st.session_state.selected_race:
+
+            current_race_number = (
+                st.session_state.selected_race.get(
+                    "race_number"
+                )
+            )
+
+
+        # -------------------------------------------------
+        # YATAY KOŞU BUTONLARI
+        # -------------------------------------------------
+
+        # Her koşu için bir sütun oluştur.
+        # Böylece koşular HTML'deki gibi yatay görünür.
+
+        race_columns = st.columns(
+            len(races)
         )
 
-        race_options = []
 
-        for race in races:
+        for index, race in enumerate(
+            races
+        ):
 
             race_number = race.get(
                 "race_number",
-                ""
+                index + 1
             )
 
             race_time = race.get(
@@ -474,88 +489,143 @@ if program_data is not None:
                 ""
             )
 
+
+            # -------------------------------------------------
+            # BUTON METNİ
+            # -------------------------------------------------
+
             if race_time:
 
-                label = (
-                    f"{race_number}. Koşu "
-                    f"— {race_time}"
+                button_label = (
+                    f"{race_number}. Koşu\n"
+                    f"{race_time}"
                 )
 
             else:
 
-                label = (
+                button_label = (
                     f"{race_number}. Koşu"
                 )
 
-            race_options.append(
-                label
+
+            # -------------------------------------------------
+            # AKTİF BUTON
+            # -------------------------------------------------
+
+            is_selected = (
+                current_race_number
+                == race_number
             )
 
 
+            with race_columns[index]:
+
+                if is_selected:
+
+                    clicked = st.button(
+                        button_label,
+                        key=f"race_selected_{race_number}",
+                        use_container_width=True,
+                        type="primary"
+                    )
+
+                else:
+
+                    clicked = st.button(
+                        button_label,
+                        key=f"race_{race_number}",
+                        use_container_width=True
+                    )
+
+
+                if clicked:
+
+                    st.session_state.selected_race = (
+                        race
+                    )
+
+                    st.session_state.race_data = (
+                        race
+                    )
+
+                    st.session_state.horse_data = (
+                        race.get(
+                            "horses",
+                            []
+                        )
+                    )
+
+                    st.session_state.analysis_result = None
+
+                    st.rerun()
+
+
         # -------------------------------------------------
-        # ÖNCEKİ SEÇİM
+        # İLK KOŞUYU OTOMATİK SEÇ
         # -------------------------------------------------
 
-        default_index = 0
+        if st.session_state.selected_race is None:
 
-        previous_race = (
-            st.session_state.selected_race
-        )
+            first_race = races[0]
 
-        if previous_race:
+            st.session_state.selected_race = (
+                first_race
+            )
 
-            previous_number = (
-                previous_race.get(
-                    "race_number"
+            st.session_state.race_data = (
+                first_race
+            )
+
+            st.session_state.horse_data = (
+                first_race.get(
+                    "horses",
+                    []
                 )
             )
 
-            for index, race in enumerate(
-                races
-            ):
-
-                if race.get(
-                    "race_number"
-                ) == previous_number:
-
-                    default_index = index
-                    break
-
 
         # -------------------------------------------------
-        # KOŞU SEÇ
+        # SEÇİLİ KOŞUYU BUL
         # -------------------------------------------------
 
-        selected_label = st.selectbox(
-            "Koşu",
-            race_options,
-            index=default_index
+        selected_race = (
+            st.session_state.selected_race
         )
 
-        selected_index = race_options.index(
-            selected_label
+        selected_race_number = (
+            selected_race.get(
+                "race_number"
+            )
         )
 
-        selected_race = races[
-            selected_index
-        ]
 
-        st.session_state.selected_race = (
-            selected_race
-        )
+        # Program güncellendiyse doğru race objesini
+        # program listesinden tekrar al.
 
-        st.session_state.race_data = (
-            selected_race
-        )
+        for race in races:
 
-        horses = selected_race.get(
-            "horses",
-            []
-        )
+            if race.get(
+                "race_number"
+            ) == selected_race_number:
 
-        st.session_state.horse_data = (
-            horses
-        )
+                selected_race = race
+
+                st.session_state.selected_race = (
+                    race
+                )
+
+                st.session_state.race_data = (
+                    race
+                )
+
+                st.session_state.horse_data = (
+                    race.get(
+                        "horses",
+                        []
+                    )
+                )
+
+                break
 
 
         # =================================================
@@ -564,7 +634,10 @@ if program_data is not None:
 
         st.divider()
 
-        st.header("🏇 Seçilen Koşu")
+        st.header(
+            f"🏇 {selected_race_number}. Koşu"
+        )
+
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -636,6 +709,12 @@ if program_data is not None:
 
         st.header("🐎 Atlar")
 
+        horses = selected_race.get(
+            "horses",
+            []
+        )
+
+
         if horses:
 
             st.success(
@@ -657,6 +736,7 @@ if program_data is not None:
                     row
                 )
 
+
             if horse_rows:
 
                 st.dataframe(
@@ -664,6 +744,7 @@ if program_data is not None:
                     use_container_width=True,
                     hide_index=True
                 )
+
 
         else:
 
@@ -684,12 +765,6 @@ if program_data is not None:
             "koşu verisi ayrıştırılamadı."
         )
 
-        st.info(
-            "TJK Parser Debug bölümündeki "
-            "değerler parser sorununu "
-            "belirlemek için kullanılmaktadır."
-        )
-
 
 # =========================================================
 # ANALİZ MOTORU
@@ -708,6 +783,7 @@ weight_items = list(
     WEIGHTS.items()
 )
 
+
 for row_start in range(
     0,
     len(weight_items),
@@ -719,6 +795,7 @@ for row_start in range(
     row_items = weight_items[
         row_start:row_start + 4
     ]
+
 
     for index, (
         name,
@@ -821,8 +898,6 @@ with st.expander(
 - Hız — **%3**
 
 ### Skor Normalizasyonu
-
-Ağırlık toplamı %101 olduğu için:
 
 **Nihai Skor = HAM SKOR / 101 × 100**
 """
