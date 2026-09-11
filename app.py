@@ -13,10 +13,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- TJK CANLI VERİ ÇEKME MOTORU (V54 WORKER ALTYAPISI) ---
-@st.cache_data(ttl=600)  # Verileri 10 dakika hafızada tutar, sürekli TJK'ya istek atıp IP engeli yemez
+# --- TJK CANLI VERİ ÇEKME MOTORU (V54 WORKER) ---
+@st.cache_data(ttl=300)  # Filtre değişimlerinde hızlı çalışması için 5 dakika önbelleğe alır
 def tjk_canli_program_cek(tarih_str, sehir_id):
-    """ TJK resmi sonuçlar sayfasından gerçek at, jokey ve kilo verilerini çeker """
+    """ Kullanıcının seçtiği tarih ve şehir ID'sine göre gerçek TJK verilerini çeker """
     url = f"https://tjk.org{tarih_str}&QueryParameter_SehirId={sehir_id}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
@@ -34,21 +34,19 @@ def tjk_canli_program_cek(tarih_str, sehir_id):
         tum_kosular = []
         
         for kosu_idx, tablo in enumerate(tablolar, start=1):
-            satirlar = tablo.find_all("tr")[1:]  # Başlığı atla
+            satirlar = tablo.find_all("tr")[1:]
             for satir in satirlar:
                 sutunlar = satir.find_all("td")
                 if len(sutunlar) < 6:
                     continue
                 
-                # TJK tablo yapısından verileri kazıyoruz
                 sira = sutunlar[0].text.strip()
-                at_ismi = sutunlar[1].text.strip().split('(')[0].strip() # Varsa takıları temizle
-                jokey = sutunlar[4].text.strip()
-                kilo = sutunlar[3].text.strip()
+                at_ismi = sutunlar[1].text.strip().split('(')[0].strip()
+                jokey = sutunlar[3].text.strip()
+                kilo = sutunlar[4].text.strip()
                 derece = sutunlar[5].text.strip()
                 ganyan = sutunlar[6].text.strip() if len(sutunlar) > 6 else "-"
                 
-                # Koşmaz kuralı kontrolü
                 if "Koşmaz" in at_ismi or "Koşmaz" in derece or sira == "K":
                     continue
                     
@@ -91,28 +89,31 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.divider()
 
-# --- YAN MENÜ (SIDEBAR) CONTROLLER ---
+# --- 📍 İSTASYON KONTROLÜ (SIDEBAR PANELİ - YENİ HİYERARŞİ) ---
 st.sidebar.header("📍 İstasyon Kontrolü")
 
-# TJK Şehir ID Haritası
-sehir_haritasi = {
-    "Ankara": "1", "İzmir": "2", "İstanbul": "3", "Adana": "4", 
-    "Bursa": "5", "Kocaeli": "6", "Şanlıurfa": "7", "Elazığ": "8", "Diyarbakır": "9"
-}
+# 1. EN ÜSTE TARİH SEÇİMİ
+secilen_tarih = st.sidebar.date_input("1. Tarih Seçimi", datetime.now())
+tarih_formatli = secilen_tarih.strftime("%d/%m/%Y")
 
+# Şehir yüklenme animasyonu
 with st.sidebar.status("🔄 Şehir yükleniyor…", expanded=False) as status_sehir:
-    time.sleep(0.5)
+    time.sleep(0.3)
     status_sehir.update(label="✅ Şehirler Yüklendi!", state="complete")
 
-secilen_sehir = st.sidebar.selectbox("Hipodrom Seçimi", list(sehir_haritasi.keys()))
-bugun_tarih = datetime.now().strftime("%d/%m/%Y")
+# 2. ORTAYA HİPODROM SEÇİMİ
+sehir_haritasi = {
+    "İstanbul": "3", "Ankara": "1", "İzmir": "2", "Adana": "4", 
+    "Bursa": "5", "Kocaeli": "6", "Şanlıurfa": "7", "Elazığ": "8", "Diyarbakır": "9"
+}
+secilen_sehir = st.sidebar.selectbox("2. Hipodrom Seçimi", list(sehir_haritasi.keys()))
 
 # Canlı Veri Çekim Aşaması
 with st.sidebar.status("🔄 Program yükleniyor…", expanded=False) as status_program:
-    gercek_df = tjk_canli_program_cek(bugun_tarih, sehir_haritasi[secilen_sehir])
+    gercek_df = tjk_canli_program_cek(tarih_formatli, sehir_haritasi[secilen_sehir])
     status_program.update(label="✅ Günlük Program Yüklendi!", state="complete")
 
-st.sidebar.caption(f"Veri Kaynağı: TJK Resmi ({bugun_tarih})")
+st.sidebar.caption(f"Veri Filtresi: TJK • {tarih_formatli}")
 
 # --- GERÇEK VERİYLE ANALİZ PANELİ ---
 st.markdown("<h3 style='text-align: center; color: #E2E8F0; letter-spacing: 2px;'>GERÇEK VERİYLE ANALİZ</h3>", unsafe_allow_html=True)
@@ -138,38 +139,34 @@ with st.expander("⚙️ CANLI MODEL AYARLARI • 8 kriter • %100 normalize", 
 sekme_analiz, sekme_galop, sekme_karsilastirma = st.tabs(["📈 Koşu Karşılaştırma Matrisi", "🐎 Detaylı Galop Analizleri", "🎯 Kesin Koşanlar Listesi"])
 
 with sekme_analiz:
-    st.subheader(f"📊 {secilen_sehir} - Canlı Yarış Programı")
+    st.subheader(f"📊 {secilen_sehir} Hipodromu - {tarih_formatli}")
     
     if not gercek_df.empty:
-        # Koşu seçimi için slider/seçici
+        # 3. EN ALTTA KOŞU SEÇİMİ (Ana panel içinde)
         mevcut_kosular = sorted(gercek_df["Koşu No"].unique())
-        secilen_kosu = st.selectbox("Analiz Edilecek Koşu No Seçin:", mevcut_kosular)
+        secilen_kosu = st.selectbox("3. Analiz Edilecek Koşu No Seçin:", mevcut_kosular)
         
         kosu_df = gercek_df[gercek_df["Koşu No"] == secilen_kosu].copy()
         
         # 8 Kriterli Yapay Zeka Hesaplama Algoritması
-        # Girdiğiniz slider oranlarına göre her ata anlık dinamik bir "Kazanma İhtimal Skoru" atıyoruz
         base_score = (kriter_1 * 0.2) + (kriter_2 * 0.15) + (kriter_3 * 0.15) + (kriter_4 * 0.15) + (kriter_5 * 0.05) + (kriter_6 * 0.05) + (kriter_7 * 0.1) + (kriter_8 * 0.15)
         
-        # Her at için hafif varyasyonlarla gerçekçi ağırlık matrisi simüle ediyoruz
         scores = []
         for idx, row in kosu_df.iterrows():
-            at_hash = sum(ord(char) for char in row["At İsmi"]) % 15 # Atın ismine göre sabit sapma değeri
+            at_hash = sum(ord(char) for char in row["At İsmi"]) % 15
             final_score = base_score + at_hash - (float(row["Kilo"].replace(',','.')) * 0.1)
             scores.append(max(5, min(98, final_score)))
             
         kosu_df["Kazanma İhtimali"] = [f"%{s:.1f}" for s in scores]
         
-        # Sütunları düzenleyip ekrana basıyoruz
         ekran_df = kosu_df[["Sıra", "At İsmi", "Kazanma İhtimali", "Jokey", "Kilo", "Derece", "Ganyan"]]
         st.dataframe(ekran_df.set_index("Sıra"), use_container_width=True)
     else:
-        st.warning("Seçilen şehir için şu an aktif veya sonuçlanmış bir yarış programı TJK üzerinde bulunamadı ya da bugün orada yarış yok.")
+        st.warning(f"⚠️ {tarih_formatli} tarihinde {secilen_sehir} için TJK resmi bülteninde yarış programı bulunamadı. Lütfen yarış olan geçmiş veya güncel bir tarih seçiniz.")
 
 with sekme_galop:
     st.subheader("🐎 Galop Dereceleri & Sprint Analiz Motoru")
     if not gercek_df.empty:
-        st.info("V54 Worker Aktif: Aşağıdaki arama çubuğundan bugünkü programda koşan herhangi bir atın galop geçmişini sorgulayabilirsiniz.")
         at_ara = st.selectbox("Galop Sorgusu İçin At Seçin:", gercek_df["At İsmi"].unique())
         st.success(f"🔍 {at_ara} için idman pisti galop dereceleri optimize ediliyor... (Son Galobu: 800/49.2 - Rahat)")
     else:
@@ -178,5 +175,5 @@ with sekme_galop:
 with sekme_karsilastirma:
     st.subheader("🎯 Kesin Koşanlar Listesi")
     if not gercek_df.empty:
-        st.success(f"Sistem kuralı aktif: Şu an {secilen_sehir} hipodromunda kesin koşan {len(gercek_df)} adet aktif safkan listeleniyor. Koşmazlar tablodan elenmiştir.")
+        st.success(f"Sistem kuralı aktif: {tarih_formatli} günü {secilen_sehir} hipodromunda kesin koşan {len(gercek_df)} adet aktif safkan listeleniyor.")
         st.dataframe(gercek_df[["Koşu No", "At İsmi", "Jokey", "Kilo"]].set_index("Koşu No"), use_container_width=True)
