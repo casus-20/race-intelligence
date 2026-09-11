@@ -1,108 +1,152 @@
 import streamlit as st
 from datetime import date
+from typing import Any, Dict, List
 
-from worker.tjk_fetch import (
-    get_program,
-    TJKFetchError
-)
+from worker.tjk_fetch import get_program
 
 
-# =========================================================
+# ============================================================
 # SAYFA AYARLARI
-# =========================================================
+# ============================================================
 
 st.set_page_config(
-    page_title="Race-Intelligence",
+    page_title="Race Intelligence",
     page_icon="🏇",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 
-# =========================================================
-# ANALİZ AĞIRLIKLARI
-# =========================================================
-
-WEIGHTS = {
-    "Pist / Mesafe": 22,
-    "Ortak Rakip": 18,
-    "Sınıf / HP": 14,
-    "Form": 19,
-    "Kilo": 12,
-    "Derece": 8,
-    "Galop / Tempo": 5,
-    "Hız": 3,
-}
-
-
-# =========================================================
-# TÜM TJK HİPODROMLARI
-# =========================================================
+# ============================================================
+# SABİTLER
+# ============================================================
 
 ALL_CITIES = [
     "Adana",
-    "Ankara",
-    "Bursa",
-    "Diyarbakır",
-    "Elazığ",
-    "İstanbul",
     "İzmir",
-    "Kocaeli",
+    "İstanbul",
+    "Bursa",
+    "Ankara",
     "Şanlıurfa",
+    "Elazığ",
+    "Diyarbakır",
+    "Kocaeli",
 ]
 
 
-# =========================================================
+ANALYSIS_WEIGHTS = {
+    "Pist / Mesafe": 22,
+    "Ortak Rakip": 18,
+    "Sınıf / HP": 14,
+    "Güncel Form": 19,
+    "Kilo": 12,
+    "Derece": 8,
+    "Galop / Tempo": 5,
+    "Ham Hız": 3,
+}
+
+
+# ============================================================
 # SESSION STATE
-# =========================================================
+# ============================================================
+
+if "selected_race" not in st.session_state:
+    st.session_state.selected_race = 1
 
 if "program_data" not in st.session_state:
     st.session_state.program_data = None
 
-if "active_cities" not in st.session_state:
-    st.session_state.active_cities = None
+if "loaded_date" not in st.session_state:
+    st.session_state.loaded_date = None
 
-if "active_cities_date" not in st.session_state:
-    st.session_state.active_cities_date = None
-
-if "selected_date" not in st.session_state:
-    st.session_state.selected_date = date.today()
-
-if "selected_city" not in st.session_state:
-    st.session_state.selected_city = None
-
-if "selected_race" not in st.session_state:
-    st.session_state.selected_race = None
-
-if "race_data" not in st.session_state:
-    st.session_state.race_data = None
-
-if "horse_data" not in st.session_state:
-    st.session_state.horse_data = []
-
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
-
-if "in_flight" not in st.session_state:
-    st.session_state.in_flight = False
+if "loaded_city" not in st.session_state:
+    st.session_state.loaded_city = None
 
 
-# =========================================================
-# TARİHE GÖRE KOŞAN HİPODROMLARI BUL
-# =========================================================
+# ============================================================
+# CSS
+# ============================================================
 
-@st.cache_data(
-    ttl=900,
-    show_spinner=False
+st.markdown(
+    """
+    <style>
+
+    .main-title {
+        font-size: 32px;
+        font-weight: 700;
+        margin-bottom: 0px;
+    }
+
+    .sub-title {
+        font-size: 15px;
+        opacity: 0.75;
+        margin-top: 0px;
+        margin-bottom: 20px;
+    }
+
+    .race-info {
+        padding: 12px 15px;
+        border-radius: 8px;
+        border: 1px solid rgba(128,128,128,0.25);
+        margin-bottom: 15px;
+    }
+
+    .horse-card {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(128,128,128,0.25);
+        margin-bottom: 8px;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
-def find_active_cities(selected_date):
+
+
+# ============================================================
+# BAŞLIK
+# ============================================================
+
+st.markdown(
+    '<div class="main-title">🏇 Race Intelligence</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="sub-title">'
+    "TJK yarış programı ve yarış analiz sistemi"
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# YARDIMCI FONKSİYONLAR
+# ============================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_program(
+    selected_date: date,
+    city: str,
+) -> Dict[str, Any]:
+    """
+    TJK programını getirir.
+    """
+
+    return get_program(
+        selected_date,
+        city,
+    )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def find_active_cities(
+    selected_date: date,
+) -> List[str]:
     """
     Seçilen tarihte gerçekten yarış programı bulunan
-    hipodromları TJK üzerinden belirler.
-
-    Sonuç sadece şehir isimlerinden oluşur.
-    Böylece büyük HTML verileri session/cache içine
-    taşınmaz.
+    hipodromları bulur.
     """
 
     active = []
@@ -111,950 +155,883 @@ def find_active_cities(selected_date):
 
         try:
 
-            result = get_program(
+            result = load_program(
                 selected_date,
-                city
+                city,
             )
 
             races = result.get(
                 "races",
-                []
+                [],
             )
 
             if races:
-
                 active.append(city)
 
         except Exception:
-
-            # Bir hipodromdan veri alınamazsa diğerlerini
-            # kontrol etmeye devam et.
             continue
 
     return active
 
 
-# =========================================================
-# SEÇİLEN TARİH İÇİN HİPODROMLARI HAZIRLA
-# =========================================================
+def safe_int(value: Any):
+    """
+    Güvenli integer dönüşümü.
+    """
 
-current_date = st.session_state.selected_date
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    try:
+        return int(float(text))
+    except Exception:
+        return None
 
 
-if (
-    st.session_state.active_cities is None
-    or
-    st.session_state.active_cities_date != current_date
-):
+def safe_float(value: Any):
+    """
+    Güvenli float dönüşümü.
+    """
 
-    with st.spinner(
-        "Seçilen tarihte yarış olan hipodromlar kontrol ediliyor..."
-    ):
+    if value is None:
+        return None
 
-        active_cities = find_active_cities(
-            current_date
-        )
+    text = str(value).strip()
 
-    st.session_state.active_cities = (
-        active_cities
+    if not text:
+        return None
+
+    text = text.replace("%", "")
+    text = text.replace(",", ".")
+
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def display_value(
+    value: Any,
+    default: str = "-",
+) -> str:
+    """
+    Boş değerleri '-' olarak gösterir.
+    """
+
+    if value is None:
+        return default
+
+    text = str(value).strip()
+
+    if not text:
+        return default
+
+    return text
+
+
+def get_horse_name(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("at_ismi")
+        or horse.get("At İsmi")
     )
 
-    st.session_state.active_cities_date = (
-        current_date
+
+def get_horse_number(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("numara")
+        or horse.get("N")
     )
 
 
-active_cities = (
-    st.session_state.active_cities
-    or []
+def get_horse_weight(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("siklet")
+        or horse.get("Sıklet")
+    )
+
+
+def get_horse_jockey(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("jokey")
+        or horse.get("Jokey")
+    )
+
+
+def get_horse_hp(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("hp")
+        or horse.get("HP")
+    )
+
+
+def get_horse_agf(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("agf")
+        or horse.get("AGF")
+    )
+
+
+def get_horse_form(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("form")
+        or horse.get("Forma")
+    )
+
+
+def get_horse_st(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("st")
+        or horse.get("St")
+    )
+
+
+def get_horse_kgs(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("kgs")
+        or horse.get("KGS")
+    )
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.title("🏇 Yarış Programı")
+
+selected_date = st.sidebar.date_input(
+    "Tarih",
+    value=date.today(),
 )
 
 
-# =========================================================
-# İLK AKTİF HİPODROMU SEÇ
-# =========================================================
-
-if active_cities:
-
-    if (
-        st.session_state.selected_city
-        not in active_cities
-    ):
-
-        st.session_state.selected_city = (
-            active_cities[0]
-        )
-
-else:
-
-    st.session_state.selected_city = None
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
+# ============================================================
+# AKTİF HİPODROMLARI BUL
+# ============================================================
 
 with st.sidebar:
 
-    st.header("🗓️ Yarış Programı")
+    with st.spinner(
+        "Yarış yapılan hipodromlar kontrol ediliyor..."
+    ):
 
-    new_date = st.date_input(
-        "Tarih",
-        value=st.session_state.selected_date,
-        format="DD/MM/YYYY"
+        active_cities = find_active_cities(
+            selected_date
+        )
+
+
+if not active_cities:
+
+    st.warning(
+        f"{selected_date.strftime('%d.%m.%Y')} "
+        "tarihinde yarış programı alınamadı."
     )
 
-
-    # -----------------------------------------------------
-    # TARİH DEĞİŞTİYSE AKTİF HİPODROMLARI YENİLE
-    # -----------------------------------------------------
-
-    if new_date != st.session_state.selected_date:
-
-        st.session_state.selected_date = new_date
-
-        st.session_state.program_data = None
-        st.session_state.selected_race = None
-        st.session_state.race_data = None
-        st.session_state.horse_data = []
-        st.session_state.analysis_result = None
-
-        st.session_state.active_cities = None
-        st.session_state.active_cities_date = None
-
-        st.rerun()
-
-
-    # -----------------------------------------------------
-    # SADECE O GÜN KOŞAN HİPODROMLAR
-    # -----------------------------------------------------
-
-    if active_cities:
-
-        selected_city = st.selectbox(
-            "Hipodrom",
-            active_cities,
-            index=(
-                active_cities.index(
-                    st.session_state.selected_city
-                )
-                if st.session_state.selected_city
-                in active_cities
-                else 0
-            )
-        )
-
-        st.session_state.selected_city = (
-            selected_city
-        )
-
-    else:
-
-        st.error(
-            "Bu tarihte programı alınabilen "
-            "aktif hipodrom bulunamadı."
-        )
-
-        selected_city = None
-
-
-    st.divider()
-
-
-    # -----------------------------------------------------
-    # PROGRAM BUTONU
-    # -----------------------------------------------------
-
-    get_program_button = st.button(
-        "🔄 PROGRAMI GETİR",
-        use_container_width=True,
-        type="primary",
-        disabled=not bool(active_cities)
+    st.info(
+        "Tarih seçimini kontrol edin veya birkaç saniye sonra tekrar deneyin."
     )
 
+    st.stop()
 
-# =========================================================
-# ANA BAŞLIK
-# =========================================================
 
-st.title("🏇 Race-Intelligence")
+# ============================================================
+# HİPODROM SEÇİMİ
+# ============================================================
 
-st.caption(
-    "TJK Yarış Analiz Platformu"
+default_city_index = 0
+
+if (
+    st.session_state.loaded_city
+    in active_cities
+):
+    default_city_index = active_cities.index(
+        st.session_state.loaded_city
+    )
+
+selected_city = st.sidebar.selectbox(
+    "Hipodrom",
+    active_cities,
+    index=default_city_index,
 )
 
 
-# =========================================================
-# AKTİF HİPODROMLAR BİLGİSİ
-# =========================================================
+# ============================================================
+# PROGRAMI GETİR BUTONU
+# ============================================================
 
-if active_cities:
-
-    st.caption(
-        "Bugün yarış olan hipodromlar: "
-        + " • ".join(active_cities)
-    )
+get_program_button = st.sidebar.button(
+    "📥 PROGRAMI GETİR",
+    use_container_width=True,
+)
 
 
-# =========================================================
-# PROGRAMI GETİR
-# =========================================================
+if get_program_button:
 
+    with st.spinner(
+        f"{selected_city} programı getiriliyor..."
+    ):
+
+        try:
+
+            result = load_program(
+                selected_date,
+                selected_city,
+            )
+
+            st.session_state.program_data = result
+            st.session_state.loaded_date = selected_date
+            st.session_state.loaded_city = selected_city
+            st.session_state.selected_race = 1
+
+        except Exception as exc:
+
+            st.error(
+                "Program alınırken hata oluştu."
+            )
+
+            st.code(
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            st.stop()
+
+
+# ============================================================
+# PROGRAM VERİSİ
+# ============================================================
+
+program_data = st.session_state.program_data
+
+
+# Tarih veya hipodrom değiştiyse mevcut veriyi kullanma
 if (
-    get_program_button
-    and selected_city
+    program_data is not None
+    and (
+        st.session_state.loaded_date
+        != selected_date
+        or st.session_state.loaded_city
+        != selected_city
+    )
 ):
 
-    st.session_state.in_flight = True
+    program_data = None
+
+
+# ============================================================
+# OTOMATİK PROGRAM GETİR
+# ============================================================
+
+if program_data is None:
 
     try:
 
         with st.spinner(
-            f"{selected_city} programı TJK'dan alınıyor..."
+            f"{selected_city} programı hazırlanıyor..."
         ):
 
-            program = get_program(
-                st.session_state.selected_date,
-                selected_city
+            program_data = load_program(
+                selected_date,
+                selected_city,
             )
 
-        st.session_state.program_data = (
-            program
-        )
-
-        st.session_state.selected_race = None
-        st.session_state.race_data = None
-        st.session_state.horse_data = []
-        st.session_state.analysis_result = None
-
-        st.session_state.in_flight = False
-
-        if program.get("ok", False):
-
-            st.success(
-                f"{selected_city} programı alındı."
-            )
-
-        else:
-
-            st.warning(
-                "TJK programı alındı ancak "
-                "ayrıştırma sırasında sorun oluştu."
-            )
-
-    except TJKFetchError as exc:
-
-        st.session_state.in_flight = False
-
-        st.error(
-            "TJK bağlantı hatası: "
-            + str(exc)
-        )
+        st.session_state.program_data = program_data
+        st.session_state.loaded_date = selected_date
+        st.session_state.loaded_city = selected_city
 
     except Exception as exc:
 
-        st.session_state.in_flight = False
-
         st.error(
-            "Beklenmeyen hata: "
-            + str(exc)
+            "Beklenmeyen hata oluştu."
         )
 
+        st.code(
+            f"{type(exc).__name__}: {exc}"
+        )
 
-# =========================================================
-# PROGRAM VERİSİ
-# =========================================================
+        st.stop()
 
-program_data = (
-    st.session_state.program_data
+
+# ============================================================
+# PROGRAM KONTROLÜ
+# ============================================================
+
+if not isinstance(
+    program_data,
+    dict,
+):
+
+    st.error(
+        "TJK'dan gelen program verisi geçersiz."
+    )
+
+    st.stop()
+
+
+races = program_data.get(
+    "races",
+    [],
 )
 
 
-if program_data is not None:
+if not races:
 
-    races = program_data.get(
-        "races",
-        []
+    st.warning(
+        f"{selected_city} — "
+        f"{selected_date.strftime('%d.%m.%Y')} "
+        "için koşu bulunamadı."
     )
 
+    st.stop()
 
-    # =====================================================
-    # YARIŞ PROGRAMI
-    # =====================================================
 
-    st.divider()
+# ============================================================
+# ÜST BİLGİ
+# ============================================================
 
-    st.header("📋 Yarış Programı")
+st.success(
+    f"{selected_city} — "
+    f"{selected_date.strftime('%d/%m/%Y')} — "
+    f"{len(races)} koşu bulundu."
+)
 
-    st.success(
-        f"{st.session_state.selected_city} — "
-        f"{st.session_state.selected_date.strftime('%d/%m/%Y')} "
-        f"— {len(races)} koşu bulundu."
+
+# ============================================================
+# KOŞU SEÇİMİ
+# ============================================================
+
+st.subheader("Koşular")
+
+
+# Çok fazla koşu varsa yatay kolonları küçült
+race_columns = st.columns(
+    len(races)
+)
+
+
+for index, race in enumerate(races):
+
+    race_number = race.get(
+        "race_number",
+        index + 1,
     )
 
-
-    # =====================================================
-    # TJK PARSER DEBUG
-    # =====================================================
-
-    debug_data = program_data.get(
-        "debug",
-        {}
+    race_time = display_value(
+        race.get(
+            "race_time"
+        )
     )
 
-    if debug_data:
+    is_selected = (
+        st.session_state.selected_race
+        == race_number
+    )
 
-        with st.expander(
-            "🔧 TJK Parser Debug",
-            expanded=False
-        ):
+    button_label = str(
+        race_number
+    )
 
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-
-                st.metric(
-                    "HTML",
-                    debug_data.get(
-                        "html_length",
-                        0
-                    )
-                )
-
-            with col2:
-
-                st.metric(
-                    "Görünen metin",
-                    debug_data.get(
-                        "visible_text_length",
-                        0
-                    )
-                )
-
-            with col3:
-
-                st.metric(
-                    "HTML table",
-                    debug_data.get(
-                        "table_count",
-                        0
-                    )
-                )
-
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-
-                st.write(
-                    "Koşu:",
-                    "✅"
-                    if debug_data.get(
-                        "has_kosu_text",
-                        False
-                    )
-                    else "❌"
-                )
-
-            with col2:
-
-                st.write(
-                    "At İsmi:",
-                    "✅"
-                    if debug_data.get(
-                        "has_at_ismi_text",
-                        False
-                    )
-                    else "❌"
-                )
-
-            with col3:
-
-                st.write(
-                    "Jokey:",
-                    "✅"
-                    if debug_data.get(
-                        "has_jokey_text",
-                        False
-                    )
-                    else "❌"
-                )
-
-            with col4:
-
-                st.write(
-                    "Koşu regex:",
-                    debug_data.get(
-                        "race_pattern_count",
-                        0
-                    )
-                )
-
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-
-                st.write(
-                    "H1:",
-                    debug_data.get(
-                        "h1_count",
-                        0
-                    )
-                )
-
-            with col2:
-
-                st.write(
-                    "H2:",
-                    debug_data.get(
-                        "h2_count",
-                        0
-                    )
-                )
-
-            with col3:
-
-                st.write(
-                    "H3:",
-                    debug_data.get(
-                        "h3_count",
-                        0
-                    )
-                )
-
-            with col4:
-
-                st.write(
-                    "H4:",
-                    debug_data.get(
-                        "h4_count",
-                        0
-                    )
-                )
-
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-
-                st.metric(
-                    "Bulunan at tablosu",
-                    debug_data.get(
-                        "horse_table_count",
-                        0
-                    )
-                )
-
-            with col2:
-
-                st.metric(
-                    "Ayrıştırılan koşu",
-                    debug_data.get(
-                        "parsed_race_count",
-                        0
-                    )
-                )
-
-
-            parse_error = program_data.get(
-                "parse_error"
-            )
-
-            if parse_error:
-
-                st.error(
-                    "Parser hatası: "
-                    + str(parse_error)
-                )
-
-
-            html_start = debug_data.get(
-                "html_start",
-                ""
-            )
-
-            if html_start:
-
-                show_html = st.checkbox(
-                    "TJK HTML başlangıcını göster",
-                    value=False
-                )
-
-                if show_html:
-
-                    st.code(
-                        html_start,
-                        language="html"
-                    )
-
-
-    # =====================================================
-    # KOŞULAR
-    # =====================================================
-
-    if races:
-
-        st.divider()
-
-        st.subheader(
-            "🏁 Koşu Seç"
+    if race_time != "-":
+        button_label = (
+            f"{race_number}\n"
+            f"{race_time}"
         )
 
+    with race_columns[index]:
 
-        # -------------------------------------------------
-        # YATAY KOŞU BUTONLARI
-        # -------------------------------------------------
-
-        race_columns = st.columns(
-            len(races)
-        )
-
-
-        current_race_number = None
-
-        if st.session_state.selected_race:
-
-            current_race_number = (
-                st.session_state.selected_race.get(
-                    "race_number"
-                )
-            )
-
-
-        for index, race in enumerate(
-            races
+        if st.button(
+            button_label,
+            key=f"race_button_{race_number}",
+            use_container_width=True,
+            type=(
+                "primary"
+                if is_selected
+                else "secondary"
+            ),
         ):
-
-            race_number = race.get(
-                "race_number",
-                index + 1
-            )
-
-            race_time = race.get(
-                "race_time",
-                ""
-            )
-
-
-            if race_time:
-
-                button_label = (
-                    f"{race_number}\n"
-                    f"{race_time}"
-                )
-
-            else:
-
-                button_label = (
-                    f"{race_number}"
-                )
-
-
-            is_selected = (
-                current_race_number
-                == race_number
-            )
-
-
-            with race_columns[index]:
-
-                if is_selected:
-
-                    clicked = st.button(
-                        button_label,
-                        key=(
-                            f"race_selected_"
-                            f"{race_number}"
-                        ),
-                        use_container_width=True,
-                        type="primary"
-                    )
-
-                else:
-
-                    clicked = st.button(
-                        button_label,
-                        key=(
-                            f"race_"
-                            f"{race_number}"
-                        ),
-                        use_container_width=True
-                    )
-
-
-                if clicked:
-
-                    st.session_state.selected_race = (
-                        race
-                    )
-
-                    st.session_state.race_data = (
-                        race
-                    )
-
-                    st.session_state.horse_data = (
-                        race.get(
-                            "horses",
-                            []
-                        )
-                    )
-
-                    st.session_state.analysis_result = (
-                        None
-                    )
-
-                    st.rerun()
-
-
-        # -------------------------------------------------
-        # İLK KOŞUYU OTOMATİK SEÇ
-        # -------------------------------------------------
-
-        if st.session_state.selected_race is None:
-
-            first_race = races[0]
 
             st.session_state.selected_race = (
-                first_race
+                race_number
             )
 
-            st.session_state.race_data = (
-                first_race
-            )
-
-            st.session_state.horse_data = (
-                first_race.get(
-                    "horses",
-                    []
-                )
-            )
+            st.rerun()
 
 
-        # -------------------------------------------------
-        # SEÇİLEN KOŞU
-        # -------------------------------------------------
+# ============================================================
+# SEÇİLİ KOŞUYU BUL
+# ============================================================
 
-        selected_race = (
-            st.session_state.selected_race
+selected_race = None
+
+for race in races:
+
+    if (
+        race.get("race_number")
+        == st.session_state.selected_race
+    ):
+
+        selected_race = race
+
+        break
+
+
+# Eğer seçili yarış bulunamazsa ilk yarışı seç
+if selected_race is None:
+
+    selected_race = races[0]
+
+    st.session_state.selected_race = (
+        selected_race.get(
+            "race_number",
+            1,
         )
-
-        selected_race_number = (
-            selected_race.get(
-                "race_number"
-            )
-        )
-
-
-        # Güncel race objesini bul
-        for race in races:
-
-            if race.get(
-                "race_number"
-            ) == selected_race_number:
-
-                selected_race = race
-
-                st.session_state.selected_race = (
-                    race
-                )
-
-                st.session_state.race_data = (
-                    race
-                )
-
-                st.session_state.horse_data = (
-                    race.get(
-                        "horses",
-                        []
-                    )
-                )
-
-                break
-
-
-        # =================================================
-        # SEÇİLEN KOŞU BİLGİLERİ
-        # =================================================
-
-        st.divider()
-
-        st.header(
-            f"🏇 {selected_race_number}. Koşu"
-        )
-
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-
-            st.metric(
-                "Koşu",
-                str(
-                    selected_race.get(
-                        "race_number",
-                        "-"
-                    )
-                )
-            )
-
-        with col2:
-
-            st.metric(
-                "Saat",
-                selected_race.get(
-                    "race_time",
-                    "-"
-                ) or "-"
-            )
-
-        with col3:
-
-            st.metric(
-                "Mesafe",
-                selected_race.get(
-                    "distance",
-                    "-"
-                ) or "-"
-            )
-
-        with col4:
-
-            st.metric(
-                "Pist",
-                selected_race.get(
-                    "surface",
-                    "-"
-                ) or "-"
-            )
-
-
-        # -------------------------------------------------
-        # KOŞU ŞARTI
-        # -------------------------------------------------
-
-        race_condition = selected_race.get(
-            "race_condition",
-            ""
-        )
-
-        if race_condition:
-
-            st.info(
-                "Koşu şartı: "
-                + str(race_condition)
-            )
-
-
-        # =================================================
-        # ATLAR
-        # =================================================
-
-        st.divider()
-
-        st.header("🐎 Atlar")
-
-        horses = selected_race.get(
-            "horses",
-            []
-        )
-
-
-        if horses:
-
-            st.success(
-                f"{len(horses)} at verisi bulundu."
-            )
-
-            horse_rows = []
-
-            for horse in horses:
-
-                row = dict(horse)
-
-                row.pop(
-                    "at_ismi",
-                    None
-                )
-
-                horse_rows.append(
-                    row
-                )
-
-
-            if horse_rows:
-
-                st.dataframe(
-                    horse_rows,
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-        else:
-
-            st.info(
-                "Seçilen koşuya ait at verisi "
-                "henüz alınmadı."
-            )
-
-
-    # =====================================================
-    # KOŞU BULUNAMADI
-    # =====================================================
-
-    else:
-
-        st.warning(
-            "Program sayfası açıldı fakat "
-            "koşu verisi ayrıştırılamadı."
-        )
-
-
-# =========================================================
-# PROGRAM YÜKLENMEDİYSE
-# =========================================================
-
-elif not active_cities:
-
-    st.warning(
-        "Seçilen tarihte yarış programı "
-        "bulunamadı."
     )
 
 
-# =========================================================
-# ANALİZ MOTORU
-# =========================================================
+# ============================================================
+# KOŞU BİLGİLERİ
+# ============================================================
 
-st.divider()
+race_number = selected_race.get(
+    "race_number",
+    "-",
+)
 
-st.header("🧠 Analiz Motoru")
+race_time = display_value(
+    selected_race.get(
+        "race_time"
+    )
+)
 
+distance = display_value(
+    selected_race.get(
+        "distance"
+    )
+)
 
-# =========================================================
-# AĞIRLIKLAR
-# =========================================================
+surface = display_value(
+    selected_race.get(
+        "surface"
+    )
+)
 
-weight_items = list(
-    WEIGHTS.items()
+condition = display_value(
+    selected_race.get(
+        "condition"
+    )
 )
 
 
-for row_start in range(
-    0,
-    len(weight_items),
-    4
-):
+st.markdown(
+    "---"
+)
 
-    columns = st.columns(4)
+st.subheader(
+    f"{race_number}. Koşu"
+)
 
-    row_items = weight_items[
-        row_start:row_start + 4
+
+info1, info2, info3, info4 = st.columns(4)
+
+
+with info1:
+
+    st.metric(
+        "Saat",
+        race_time,
+    )
+
+
+with info2:
+
+    st.metric(
+        "Mesafe",
+        distance,
+    )
+
+
+with info3:
+
+    st.metric(
+        "Pist",
+        surface,
+    )
+
+
+with info4:
+
+    st.metric(
+        "Şart",
+        condition,
+    )
+
+
+# ============================================================
+# ATLAR
+# ============================================================
+
+horses = selected_race.get(
+    "horses",
+    [],
+)
+
+
+st.subheader(
+    f"Atlar ({len(horses)})"
+)
+
+
+if not horses:
+
+    st.warning(
+        "Seçilen koşuya ait at verisi henüz alınmadı."
+    )
+
+else:
+
+    # --------------------------------------------------------
+    # TABLO BAŞLIĞI
+    # --------------------------------------------------------
+
+    header_columns = st.columns(
+        [
+            0.5,
+            2.2,
+            0.7,
+            1.2,
+            1.8,
+            0.8,
+            0.9,
+            1.0,
+            0.9,
+            0.9,
+        ]
+    )
+
+    headers = [
+        "No",
+        "At",
+        "Yaş",
+        "Kilo",
+        "Jokey",
+        "HP",
+        "AGF",
+        "St",
+        "KGS",
+        "Form",
     ]
 
+    for column, header in zip(
+        header_columns,
+        headers,
+    ):
 
-    for index, (
-        name,
-        weight
-    ) in enumerate(row_items):
-
-        with columns[index]:
-
-            st.metric(
-                name,
-                f"%{weight}"
+        with column:
+            st.markdown(
+                f"**{header}**"
             )
 
 
-st.caption(
-    "Ağırlık toplamı: %101 — "
-    "nihai skor hesaplamasında "
-    "100 puana normalize edilecektir."
+    # --------------------------------------------------------
+    # AT SATIRLARI
+    # --------------------------------------------------------
+
+    for horse_index, horse in enumerate(
+        horses
+    ):
+
+        columns = st.columns(
+            [
+                0.5,
+                2.2,
+                0.7,
+                1.2,
+                1.8,
+                0.8,
+                0.9,
+                1.0,
+                0.9,
+                0.9,
+            ]
+        )
+
+        horse_number = get_horse_number(
+            horse
+        )
+
+        if horse_number == "-":
+            horse_number = str(
+                horse_index + 1
+            )
+
+        horse_name = get_horse_name(
+            horse
+        )
+
+        horse_age = display_value(
+            horse.get("yas")
+            or horse.get("Yaş")
+        )
+
+        horse_weight = get_horse_weight(
+            horse
+        )
+
+        horse_jockey = get_horse_jockey(
+            horse
+        )
+
+        horse_hp = get_horse_hp(
+            horse
+        )
+
+        horse_agf = get_horse_agf(
+            horse
+        )
+
+        horse_st = get_horse_st(
+            horse
+        )
+
+        horse_kgs = get_horse_kgs(
+            horse
+        )
+
+        horse_form = get_horse_form(
+            horse
+        )
+
+        values = [
+            horse_number,
+            horse_name,
+            horse_age,
+            horse_weight,
+            horse_jockey,
+            horse_hp,
+            horse_agf,
+            horse_st,
+            horse_kgs,
+            horse_form,
+        ]
+
+        for column, value in zip(
+            columns,
+            values,
+        ):
+
+            with column:
+
+                st.write(
+                    display_value(value)
+                )
+
+        st.divider()
+
+
+# ============================================================
+# ANALİZ SİSTEMİ
+# ============================================================
+
+st.markdown(
+    "---"
+)
+
+st.subheader(
+    "🧠 Analiz Sistemi"
 )
 
 
-# =========================================================
-# SİSTEM DURUMU
-# =========================================================
-
-st.divider()
-
-st.header("⚙️ Sistem Durumu")
-
-status_columns = st.columns(4)
+st.write(
+    "Yarış değerlendirmesinde kullanılacak ağırlıklar:"
+)
 
 
-with status_columns[0]:
-
-    st.success(
-        "Streamlit\n\nÇalışıyor"
-    )
+weight_columns = st.columns(4)
 
 
-with status_columns[1]:
-
-    if program_data is not None:
-
-        st.success(
-            "TJK Fetch\n\nBağlı"
-        )
-
-    else:
-
-        st.warning(
-            "TJK Fetch\n\nBekliyor"
-        )
+weight_items = list(
+    ANALYSIS_WEIGHTS.items()
+)
 
 
-with status_columns[2]:
-
-    st.warning(
-        "Cache\n\nSıradaki aşama"
-    )
-
-
-with status_columns[3]:
-
-    st.warning(
-        "Analiz\n\nSıradaki aşama"
-    )
-
-
-# =========================================================
-# MİMARİ DURUMU
-# =========================================================
-
-st.divider()
-
-with st.expander(
-    "ℹ️ Race-Intelligence Mimari Durumu",
-    expanded=False
+for index, (
+    criterion,
+    weight,
+) in enumerate(
+    weight_items
 ):
 
-    st.markdown(
-        """
-### Worker Katmanı
+    column = weight_columns[
+        index % 4
+    ]
 
-- TJK Fetch
-- Cache
-- Horse-data cache
-- Request dedup
-- Kontrollü concurrency
-- Temiz API
+    with column:
 
-### Analiz Katmanı
+        st.metric(
+            criterion,
+            f"%{weight}",
+        )
 
-- Pist / Mesafe — **%22**
-- Ortak Rakip — **%18**
-- Sınıf / HP — **%14**
-- Form — **%19**
-- Kilo — **%12**
-- Derece — **%8**
-- Galop / Tempo — **%5**
-- Hız — **%3**
 
-### Skor Normalizasyonu
+# ============================================================
+# AĞIRLIK TOPLAMI
+# ============================================================
 
-**Nihai Skor = HAM SKOR / 101 × 100**
-"""
+raw_weight_total = sum(
+    ANALYSIS_WEIGHTS.values()
+)
+
+normalized_total = (
+    raw_weight_total
+)
+
+
+st.info(
+    f"Ham ağırlık toplamı: "
+    f"%{raw_weight_total}. "
+    f"Final puanlama bu toplam üzerinden "
+    f"normalize edilecektir."
+)
+
+
+# ============================================================
+# SİSTEM DURUMU
+# ============================================================
+
+st.markdown(
+    "---"
+)
+
+st.subheader(
+    "⚙️ Sistem Durumu"
+)
+
+
+status1, status2, status3, status4 = (
+    st.columns(4)
+)
+
+
+with status1:
+
+    st.metric(
+        "TJK bağlantısı",
+        "OK",
+    )
+
+
+with status2:
+
+    st.metric(
+        "Koşu sayısı",
+        len(races),
+    )
+
+
+with status3:
+
+    total_horses = sum(
+        len(
+            race.get(
+                "horses",
+                [],
+            )
+        )
+        for race in races
+    )
+
+    st.metric(
+        "Toplam at",
+        total_horses,
+    )
+
+
+with status4:
+
+    st.metric(
+        "Aktif hipodrom",
+        len(active_cities),
+    )
+
+
+# ============================================================
+# DEBUG
+# ============================================================
+
+with st.expander(
+    "🔧 Teknik Debug"
+):
+
+    debug = program_data.get(
+        "debug",
+        {},
+    )
+
+    st.write(
+        "Program sonucu:"
+    )
+
+    st.json(
+        {
+            "ok": program_data.get(
+                "ok"
+            ),
+            "source": program_data.get(
+                "source"
+            ),
+            "date": program_data.get(
+                "date"
+            ),
+            "city": program_data.get(
+                "city"
+            ),
+            "race_count": program_data.get(
+                "race_count"
+            ),
+            "total_horses": program_data.get(
+                "total_horses"
+            ),
+        }
+    )
+
+    st.write(
+        "Parser debug:"
+    )
+
+    st.json(
+        debug
+    )
+
+
+# ============================================================
+# HAM AT VERİSİ
+# ============================================================
+
+show_raw_horses = st.checkbox(
+    "Seçilen koşunun ham at verisini göster"
+)
+
+
+if show_raw_horses:
+
+    st.json(
+        horses
     )
