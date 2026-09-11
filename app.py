@@ -14,7 +14,8 @@ from worker.tjk_fetch import (
 st.set_page_config(
     page_title="Race-Intelligence",
     page_icon="🏇",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 
@@ -119,7 +120,7 @@ with st.sidebar:
 
 
 # =========================================================
-# BAŞLIK
+# ANA BAŞLIK
 # =========================================================
 
 st.title("🏇 Race-Intelligence")
@@ -130,7 +131,7 @@ st.caption(
 
 
 # =========================================================
-# PROGRAMI TJK'DAN AL
+# PROGRAMI GETİR
 # =========================================================
 
 if get_program_button:
@@ -150,7 +151,7 @@ if get_program_button:
 
         st.session_state.program_data = program
 
-        # Eski seçimleri temizle
+        # Yeni program geldiğinde eski seçimleri temizle
         st.session_state.selected_race = None
         st.session_state.race_data = None
         st.session_state.horse_data = []
@@ -230,220 +231,230 @@ if program_data is not None:
 
     if debug_data:
 
-        with st.expander(
-            "🔧 TJK Parser Debug",
-            expanded=True
-        ):
+        st.subheader("🔧 TJK Parser Debug")
 
-            st.subheader(
-                "TJK'dan Gelen Veri"
+        st.caption(
+            "TJK'dan alınan HTML ve parser sonuçları"
+        )
+
+        # -------------------------------------------------
+        # ANA METRİKLER
+        # -------------------------------------------------
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            st.metric(
+                "HTML uzunluğu",
+                debug_data.get(
+                    "html_length",
+                    0
+                )
             )
 
-            # -------------------------------------------------
-            # ANA DEBUG METRİKLERİ
-            # -------------------------------------------------
+        with col2:
 
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-
-                st.metric(
-                    "HTML uzunluğu",
-                    debug_data.get(
-                        "html_length",
-                        0
-                    )
+            st.metric(
+                "Görünen metin",
+                debug_data.get(
+                    "visible_text_length",
+                    0
                 )
-
-            with col2:
-
-                st.metric(
-                    "Görünen metin",
-                    debug_data.get(
-                        "visible_text_length",
-                        0
-                    )
-                )
-
-            with col3:
-
-                st.metric(
-                    "HTML table",
-                    debug_data.get(
-                        "table_count",
-                        0
-                    )
-                )
-
-
-            # -------------------------------------------------
-            # METİN KONTROLLERİ
-            # -------------------------------------------------
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-
-                st.write(
-                    "Koşu bulundu:",
-                    debug_data.get(
-                        "has_kosu_text",
-                        False
-                    )
-                )
-
-            with col2:
-
-                st.write(
-                    "At İsmi bulundu:",
-                    debug_data.get(
-                        "has_at_ismi_text",
-                        False
-                    )
-                )
-
-            with col3:
-
-                st.write(
-                    "Jokey bulundu:",
-                    debug_data.get(
-                        "has_jokey_text",
-                        False
-                    )
-                )
-
-            with col4:
-
-                st.write(
-                    "Koşu regex:",
-                    debug_data.get(
-                        "race_pattern_count",
-                        0
-                    )
-                )
-
-
-            # -------------------------------------------------
-            # HTML BAŞLIK SAYILARI
-            # -------------------------------------------------
-
-            st.divider()
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-
-                st.metric(
-                    "H1",
-                    debug_data.get(
-                        "h1_count",
-                        0
-                    )
-                )
-
-            with col2:
-
-                st.metric(
-                    "H2",
-                    debug_data.get(
-                        "h2_count",
-                        0
-                    )
-                )
-
-            with col3:
-
-                st.metric(
-                    "H3",
-                    debug_data.get(
-                        "h3_count",
-                        0
-                    )
-                )
-
-            with col4:
-
-                st.metric(
-                    "H4",
-                    debug_data.get(
-                        "h4_count",
-                        0
-                    )
-                )
-
-
-            # -------------------------------------------------
-            # PARSER SONUCU
-            # -------------------------------------------------
-
-            st.divider()
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-
-                st.metric(
-                    "Bulunan at tablosu",
-                    debug_data.get(
-                        "horse_table_count",
-                        0
-                    )
-                )
-
-            with col2:
-
-                st.metric(
-                    "Ayrıştırılan koşu",
-                    debug_data.get(
-                        "parsed_race_count",
-                        0
-                    )
-                )
-
-
-            # -------------------------------------------------
-            # PARSER HATASI
-            # -------------------------------------------------
-
-            parse_error = program_data.get(
-                "parse_error"
             )
 
-            if parse_error:
+        with col3:
 
-                st.error(
-                    "Parser hatası: "
-                    + str(parse_error)
+            st.metric(
+                "HTML table",
+                debug_data.get(
+                    "table_count",
+                    0
                 )
-
-
-            # -------------------------------------------------
-            # HAM HTML
-            # -------------------------------------------------
-
-            html_start = debug_data.get(
-                "html_start",
-                ""
             )
 
-            if html_start:
 
-                with st.expander(
-                    "TJK HTML ham verisini göster",
-                    expanded=False
-                ):
+        # -------------------------------------------------
+        # İÇERİK KONTROLLERİ
+        # -------------------------------------------------
 
-                    st.code(
-                        html_start,
-                        language="html"
-                    )
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+
+            value = debug_data.get(
+                "has_kosu_text",
+                False
+            )
+
+            st.write("Koşu:", "✅" if value else "❌")
+
+        with col2:
+
+            value = debug_data.get(
+                "has_at_ismi_text",
+                False
+            )
+
+            st.write(
+                "At İsmi:",
+                "✅" if value else "❌"
+            )
+
+        with col3:
+
+            value = debug_data.get(
+                "has_jokey_text",
+                False
+            )
+
+            st.write(
+                "Jokey:",
+                "✅" if value else "❌"
+            )
+
+        with col4:
+
+            st.write(
+                "Koşu regex:",
+                debug_data.get(
+                    "race_pattern_count",
+                    0
+                )
+            )
+
+
+        # -------------------------------------------------
+        # HTML BAŞLIKLARI
+        # -------------------------------------------------
+
+        st.divider()
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+
+            st.metric(
+                "H1",
+                debug_data.get(
+                    "h1_count",
+                    0
+                )
+            )
+
+        with col2:
+
+            st.metric(
+                "H2",
+                debug_data.get(
+                    "h2_count",
+                    0
+                )
+            )
+
+        with col3:
+
+            st.metric(
+                "H3",
+                debug_data.get(
+                    "h3_count",
+                    0
+                )
+            )
+
+        with col4:
+
+            st.metric(
+                "H4",
+                debug_data.get(
+                    "h4_count",
+                    0
+                )
+            )
+
+
+        # -------------------------------------------------
+        # PARSER SONUCU
+        # -------------------------------------------------
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.metric(
+                "Bulunan at tablosu",
+                debug_data.get(
+                    "horse_table_count",
+                    0
+                )
+            )
+
+        with col2:
+
+            st.metric(
+                "Ayrıştırılan koşu",
+                debug_data.get(
+                    "parsed_race_count",
+                    0
+                )
+            )
+
+
+        # -------------------------------------------------
+        # PARSER HATASI
+        # -------------------------------------------------
+
+        parse_error = program_data.get(
+            "parse_error"
+        )
+
+        if parse_error:
+
+            st.error(
+                "Parser hatası: "
+                + str(parse_error)
+            )
+
+
+        # -------------------------------------------------
+        # HAM HTML
+        #
+        # NOT:
+        # Burada EXPANDER kullanmıyoruz.
+        # Çünkü TJK Parser Debug zaten ayrı bir
+        # bölüm ve iç içe expander Streamlit'te hataya
+        # neden oluyor.
+        # -------------------------------------------------
+
+        html_start = debug_data.get(
+            "html_start",
+            ""
+        )
+
+        if html_start:
+
+            show_html = st.checkbox(
+                "TJK HTML başlangıcını göster",
+                value=False
+            )
+
+            if show_html:
+
+                st.code(
+                    html_start,
+                    language="html"
+                )
 
 
     # =====================================================
-    # KOŞULAR VARSA
+    # KOŞULAR
     # =====================================================
 
     if races:
+
+        st.divider()
 
         st.subheader(
             "🏁 Koşu Seç"
@@ -512,7 +523,7 @@ if program_data is not None:
 
 
         # -------------------------------------------------
-        # KOŞU SEÇİM KUTUSU
+        # KOŞU SEÇ
         # -------------------------------------------------
 
         selected_label = st.selectbox(
@@ -537,7 +548,6 @@ if program_data is not None:
             selected_race
         )
 
-
         horses = selected_race.get(
             "horses",
             []
@@ -549,7 +559,7 @@ if program_data is not None:
 
 
         # =================================================
-        # SEÇİLEN KOŞU
+        # SEÇİLEN KOŞU BİLGİLERİ
         # =================================================
 
         st.divider()
@@ -601,9 +611,9 @@ if program_data is not None:
             )
 
 
-        # =================================================
+        # -------------------------------------------------
         # KOŞU ŞARTI
-        # =================================================
+        # -------------------------------------------------
 
         race_condition = selected_race.get(
             "race_condition",
@@ -638,7 +648,6 @@ if program_data is not None:
 
                 row = dict(horse)
 
-                # İç sistem alanı
                 row.pop(
                     "at_ismi",
                     None
@@ -676,8 +685,9 @@ if program_data is not None:
         )
 
         st.info(
-            "Yukarıdaki TJK Parser Debug "
-            "bölümündeki bilgiler kullanılacaktır."
+            "TJK Parser Debug bölümündeki "
+            "değerler parser sorununu "
+            "belirlemek için kullanılmaktadır."
         )
 
 
@@ -815,7 +825,5 @@ with st.expander(
 Ağırlık toplamı %101 olduğu için:
 
 **Nihai Skor = HAM SKOR / 101 × 100**
-
-şeklinde 100 puanlık sisteme dönüştürülecektir.
 """
     )
