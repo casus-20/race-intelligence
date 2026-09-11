@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import date, datetime
+from datetime import date
 
 from worker.tjk_fetch import (
     get_program,
@@ -16,46 +16,6 @@ st.set_page_config(
     page_icon="🏇",
     layout="wide"
 )
-
-
-# =========================================================
-# BAŞLIK
-# =========================================================
-
-st.title("🏇 Race-Intelligence")
-
-st.caption(
-    "TJK Yarış Analiz Platformu"
-)
-
-
-# =========================================================
-# SESSION STATE
-# =========================================================
-
-if "program_data" not in st.session_state:
-    st.session_state.program_data = None
-
-if "selected_date" not in st.session_state:
-    st.session_state.selected_date = date.today()
-
-if "selected_city" not in st.session_state:
-    st.session_state.selected_city = "İstanbul"
-
-if "selected_race" not in st.session_state:
-    st.session_state.selected_race = None
-
-if "race_data" not in st.session_state:
-    st.session_state.race_data = None
-
-if "horse_data" not in st.session_state:
-    st.session_state.horse_data = []
-
-if "in_flight" not in st.session_state:
-    st.session_state.in_flight = False
-
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
 
 
 # =========================================================
@@ -92,6 +52,35 @@ CITIES = [
 
 
 # =========================================================
+# SESSION STATE
+# =========================================================
+
+if "program_data" not in st.session_state:
+    st.session_state.program_data = None
+
+if "selected_date" not in st.session_state:
+    st.session_state.selected_date = date.today()
+
+if "selected_city" not in st.session_state:
+    st.session_state.selected_city = "İstanbul"
+
+if "selected_race" not in st.session_state:
+    st.session_state.selected_race = None
+
+if "race_data" not in st.session_state:
+    st.session_state.race_data = None
+
+if "horse_data" not in st.session_state:
+    st.session_state.horse_data = []
+
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
+if "in_flight" not in st.session_state:
+    st.session_state.in_flight = False
+
+
+# =========================================================
 # SIDEBAR
 # =========================================================
 
@@ -108,11 +97,13 @@ with st.sidebar:
     selected_city = st.selectbox(
         "Hipodrom",
         CITIES,
-        index=CITIES.index(
-            st.session_state.selected_city
+        index=(
+            CITIES.index(
+                st.session_state.selected_city
+            )
+            if st.session_state.selected_city in CITIES
+            else 0
         )
-        if st.session_state.selected_city in CITIES
-        else 0
     )
 
     st.session_state.selected_date = selected_date
@@ -128,7 +119,18 @@ with st.sidebar:
 
 
 # =========================================================
-# PROGRAM GETİR
+# BAŞLIK
+# =========================================================
+
+st.title("🏇 Race-Intelligence")
+
+st.caption(
+    "TJK Yarış Analiz Platformu"
+)
+
+
+# =========================================================
+# PROGRAMI TJK'DAN AL
 # =========================================================
 
 if get_program_button:
@@ -148,7 +150,7 @@ if get_program_button:
 
         st.session_state.program_data = program
 
-        # Yeni program geldiğinde seçimleri sıfırla
+        # Eski seçimleri temizle
         st.session_state.selected_race = None
         st.session_state.race_data = None
         st.session_state.horse_data = []
@@ -197,14 +199,14 @@ program_data = st.session_state.program_data
 
 if program_data is not None:
 
-    # -----------------------------------------------------
-    # GENEL DURUM
-    # -----------------------------------------------------
-
     races = program_data.get(
         "races",
         []
     )
+
+    # =====================================================
+    # YARIŞ PROGRAMI
+    # =====================================================
 
     st.divider()
 
@@ -217,9 +219,9 @@ if program_data is not None:
     )
 
 
-    # -----------------------------------------------------
-    # PARSER DEBUG
-    # -----------------------------------------------------
+    # =====================================================
+    # TJK PARSER DEBUG
+    # =====================================================
 
     debug_data = program_data.get(
         "debug",
@@ -236,6 +238,10 @@ if program_data is not None:
             st.subheader(
                 "TJK'dan Gelen Veri"
             )
+
+            # -------------------------------------------------
+            # ANA DEBUG METRİKLERİ
+            # -------------------------------------------------
 
             col1, col2, col3 = st.columns(3)
 
@@ -269,6 +275,10 @@ if program_data is not None:
                     )
                 )
 
+
+            # -------------------------------------------------
+            # METİN KONTROLLERİ
+            # -------------------------------------------------
 
             col1, col2, col3, col4 = st.columns(4)
 
@@ -313,14 +323,18 @@ if program_data is not None:
                 )
 
 
+            # -------------------------------------------------
+            # HTML BAŞLIK SAYILARI
+            # -------------------------------------------------
+
             st.divider()
 
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
 
-                st.write(
-                    "H1:",
+                st.metric(
+                    "H1",
                     debug_data.get(
                         "h1_count",
                         0
@@ -329,8 +343,8 @@ if program_data is not None:
 
             with col2:
 
-                st.write(
-                    "H2:",
+                st.metric(
+                    "H2",
                     debug_data.get(
                         "h2_count",
                         0
@@ -339,8 +353,8 @@ if program_data is not None:
 
             with col3:
 
-                st.write(
-                    "H3:",
+                st.metric(
+                    "H3",
                     debug_data.get(
                         "h3_count",
                         0
@@ -349,14 +363,18 @@ if program_data is not None:
 
             with col4:
 
-                st.write(
-                    "H4:",
+                st.metric(
+                    "H4",
                     debug_data.get(
                         "h4_count",
                         0
                     )
                 )
 
+
+            # -------------------------------------------------
+            # PARSER SONUCU
+            # -------------------------------------------------
 
             st.divider()
 
@@ -387,39 +405,22 @@ if program_data is not None:
             # PARSER HATASI
             # -------------------------------------------------
 
-            if program_data.get(
+            parse_error = program_data.get(
                 "parse_error"
-            ):
+            )
+
+            if parse_error:
 
                 st.error(
                     "Parser hatası: "
-                    + str(
-                        program_data.get(
-                            "parse_error"
-                        )
-                    )
+                    + str(parse_error)
                 )
 
 
             # -------------------------------------------------
-            # HTML BAŞLANGICI
+            # HAM HTML
             # -------------------------------------------------
-html_start = debug_data.get(
-    "html_start",
-    ""
-)
 
-if html_start:
-
-    with st.expander(
-        "TJK HTML ham verisini göster",
-        expanded=False
-    ):
-
-        st.code(
-            html_start,
-            language="html"
-        )
             html_start = debug_data.get(
                 "html_start",
                 ""
@@ -427,19 +428,20 @@ if html_start:
 
             if html_start:
 
-                st.subheader(
-                    "TJK HTML başlangıcı"
-                )
+                with st.expander(
+                    "TJK HTML ham verisini göster",
+                    expanded=False
+                ):
 
-                st.code(
-                    html_start,
-                    language="html"
-                )
+                    st.code(
+                        html_start,
+                        language="html"
+                    )
 
 
-    # -----------------------------------------------------
-    # KOŞU SEÇİMİ
-    # -----------------------------------------------------
+    # =====================================================
+    # KOŞULAR VARSA
+    # =====================================================
 
     if races:
 
@@ -479,33 +481,45 @@ if html_start:
             )
 
 
-        # Mevcut seçim
+        # -------------------------------------------------
+        # ÖNCEKİ SEÇİM
+        # -------------------------------------------------
+
         default_index = 0
 
-        if st.session_state.selected_race:
+        previous_race = (
+            st.session_state.selected_race
+        )
+
+        if previous_race:
 
             previous_number = (
-                st.session_state.selected_race.get(
+                previous_race.get(
                     "race_number"
                 )
             )
 
-            for i, race in enumerate(races):
+            for index, race in enumerate(
+                races
+            ):
 
                 if race.get(
                     "race_number"
                 ) == previous_number:
 
-                    default_index = i
+                    default_index = index
                     break
 
+
+        # -------------------------------------------------
+        # KOŞU SEÇİM KUTUSU
+        # -------------------------------------------------
 
         selected_label = st.selectbox(
             "Koşu",
             race_options,
             index=default_index
         )
-
 
         selected_index = race_options.index(
             selected_label
@@ -523,6 +537,7 @@ if html_start:
             selected_race
         )
 
+
         horses = selected_race.get(
             "horses",
             []
@@ -533,9 +548,9 @@ if html_start:
         )
 
 
-        # -------------------------------------------------
-        # SEÇİLİ KOŞU BİLGİLERİ
-        # -------------------------------------------------
+        # =================================================
+        # SEÇİLEN KOŞU
+        # =================================================
 
         st.divider()
 
@@ -586,9 +601,26 @@ if html_start:
             )
 
 
-        # -------------------------------------------------
-        # AT LİSTESİ
-        # -------------------------------------------------
+        # =================================================
+        # KOŞU ŞARTI
+        # =================================================
+
+        race_condition = selected_race.get(
+            "race_condition",
+            ""
+        )
+
+        if race_condition:
+
+            st.info(
+                "Koşu şartı: "
+                + str(race_condition)
+            )
+
+
+        # =================================================
+        # ATLAR
+        # =================================================
 
         st.divider()
 
@@ -600,39 +632,28 @@ if html_start:
                 f"{len(horses)} at verisi bulundu."
             )
 
-            # DataFrame oluştur
-            try:
+            horse_rows = []
 
-                horse_rows = []
+            for horse in horses:
 
-                for horse in horses:
+                row = dict(horse)
 
-                    row = dict(horse)
+                # İç sistem alanı
+                row.pop(
+                    "at_ismi",
+                    None
+                )
 
-                    # İç sistem alanını kullanıcıya
-                    # tekrar göstermemek için kaldır
-                    row.pop(
-                        "at_ismi",
-                        None
-                    )
+                horse_rows.append(
+                    row
+                )
 
-                    horse_rows.append(
-                        row
-                    )
+            if horse_rows:
 
-                if horse_rows:
-
-                    st.dataframe(
-                        horse_rows,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-
-            except Exception as exc:
-
-                st.error(
-                    "At tablosu gösterilemedi: "
-                    + str(exc)
+                st.dataframe(
+                    horse_rows,
+                    use_container_width=True,
+                    hide_index=True
                 )
 
         else:
@@ -643,9 +664,9 @@ if html_start:
             )
 
 
-    # -----------------------------------------------------
-    # KOŞU YOK
-    # -----------------------------------------------------
+    # =====================================================
+    # KOŞU BULUNAMADI
+    # =====================================================
 
     else:
 
@@ -655,10 +676,8 @@ if html_start:
         )
 
         st.info(
-            "Yukarıdaki "
-            "'TJK Parser Debug' bölümündeki "
-            "değerler parser sorununun kaynağını "
-            "belirlemek için kullanılacaktır."
+            "Yukarıdaki TJK Parser Debug "
+            "bölümündeki bilgiler kullanılacaktır."
         )
 
 
@@ -670,27 +689,38 @@ st.divider()
 
 st.header("🧠 Analiz Motoru")
 
-weight_columns = st.columns(4)
+
+# =========================================================
+# AĞIRLIKLAR
+# =========================================================
 
 weight_items = list(
     WEIGHTS.items()
 )
 
-for index, (
-    name,
-    weight
-) in enumerate(weight_items):
+for row_start in range(
+    0,
+    len(weight_items),
+    4
+):
 
-    column = weight_columns[
-        index % 4
+    columns = st.columns(4)
+
+    row_items = weight_items[
+        row_start:row_start + 4
     ]
 
-    with column:
+    for index, (
+        name,
+        weight
+    ) in enumerate(row_items):
 
-        st.metric(
-            name,
-            f"%{weight}"
-        )
+        with columns[index]:
+
+            st.metric(
+                name,
+                f"%{weight}"
+            )
 
 
 st.caption(
@@ -701,7 +731,7 @@ st.caption(
 
 
 # =========================================================
-# ANALİZ MOTORU DURUMU
+# SİSTEM DURUMU
 # =========================================================
 
 st.divider()
@@ -748,43 +778,44 @@ with status_columns[3]:
 
 
 # =========================================================
-# GELİŞTİRME DURUMU
+# MİMARİ DURUMU
 # =========================================================
 
 st.divider()
 
 with st.expander(
-    "ℹ️ Race-Intelligence Mimari Durumu"
+    "ℹ️ Race-Intelligence Mimari Durumu",
+    expanded=False
 ):
 
-    st.write(
+    st.markdown(
         """
-        **Worker katmanı**
-        
-        • TJK Fetch  
-        • Cache  
-        • Horse-data cache  
-        • Request dedup  
-        • Kontrollü concurrency  
-        • Temiz API  
-        
-        **Analiz katmanı**
-        
-        • Pist / Mesafe — %22  
-        • Ortak Rakip — %18  
-        • Sınıf / HP — %14  
-        • Form — %19  
-        • Kilo — %12  
-        • Derece — %8  
-        • Galop / Tempo — %5  
-        • Hız — %3  
-        
-        **Toplam ağırlık: %101**
-        
-        Nihai skor daha sonra:
-        
-        `HAM SKOR / 101 × 100`
-        
-        şeklinde normalize edilecektir.
-        """
+### Worker Katmanı
+
+- TJK Fetch
+- Cache
+- Horse-data cache
+- Request dedup
+- Kontrollü concurrency
+- Temiz API
+
+### Analiz Katmanı
+
+- Pist / Mesafe — **%22**
+- Ortak Rakip — **%18**
+- Sınıf / HP — **%14**
+- Form — **%19**
+- Kilo — **%12**
+- Derece — **%8**
+- Galop / Tempo — **%5**
+- Hız — **%3**
+
+### Skor Normalizasyonu
+
+Ağırlık toplamı %101 olduğu için:
+
+**Nihai Skor = HAM SKOR / 101 × 100**
+
+şeklinde 100 puanlık sisteme dönüştürülecektir.
+"""
     )
