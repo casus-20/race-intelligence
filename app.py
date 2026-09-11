@@ -1,9 +1,9 @@
 import streamlit as st
 
 st.set_page_config(
-    page_title="TJK Yarış Analiz Platformu",
+    page_title="race-intelligence",
     layout="wide"
 )
 
-st.title("🏇 TJK Yarış Analiz Platformu")
+st.title("🏇 race-intelligence")
 st.success("Streamlit bağlantısı başarılı.")
