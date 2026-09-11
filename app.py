@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- V54 WORKER JAVASCRIPT ÇEKİRDEK KODUNUN %100 PYTHON TERCÜMESİ ---
+# --- V54 WORKER JAVASCRIPT KODUNUN %100 PYTHON TERCÜMESİ ---
 
 def clean(s):
     """ Orijinal V54 JavaScript function clean(s) karşılığı """
@@ -90,7 +90,7 @@ def v54_worker_parse_kayitlar_robust(tarih_str, sehir_id):
                     
             if noIdx < 0 or nameIdx < 0: continue
             
-            name = clean(c[nameIdx]).split("Image").replace("(Koşmaz)", "").strip().upper()
+            name = clean(c[nameIdx]).split("Image")[0].replace("(Koşmaz)", "").strip().upper()
             if not name or any(re.match(p, name, re.IGNORECASE) for p in ["^KOŞU$", "^İKRAMİYE$", "^YETİŞTİRİCİ$", "^AT SAHİBİ$"]): continue
             
             atId = getAtId(x["html"])
