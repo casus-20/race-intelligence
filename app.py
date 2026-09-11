@@ -112,7 +112,7 @@ with sekme_analiz:
         "At İsmi": ["GÜZELAT", "RÜZGAROĞLU", "KARAŞAHİN", "ALTINPRENS"],
         "Kazanma İhtimali": [f"%{kriter_1*0.4 + kriter_3*0.6:.1f}", f"%{kriter_2*0.5 + kriter_4*0.5:.1f}", f"%{kriter_7*0.7 + kriter_8*0.3:.1f}", f"%{kriter_5*0.3 + kriter_6*0.7:.1f}"],
         "Jokey": ["H. KARATAŞ", "G. KOCAKAYA", "A. ÇELİK", "M. ÇİÇEK"],
-        "Kilo":,
+        "Kilo": ["56", "58", "54", "55"],
         "Son 3 Yarış": ["1-2-1", "3-1-4", "2-5-1", "4-2-3"],
         "Durum": ["Kesin Koşuyor", "Kesin Koşuyor", "Kesin Koşuyor", "Kesin Koşuyor"]
     }
