@@ -36,10 +36,10 @@ WEIGHTS = {
 
 
 # =========================================================
-# HİPODROMLAR
+# TÜM TJK HİPODROMLARI
 # =========================================================
 
-CITIES = [
+ALL_CITIES = [
     "Adana",
     "Ankara",
     "Bursa",
@@ -59,11 +59,17 @@ CITIES = [
 if "program_data" not in st.session_state:
     st.session_state.program_data = None
 
+if "active_cities" not in st.session_state:
+    st.session_state.active_cities = None
+
+if "active_cities_date" not in st.session_state:
+    st.session_state.active_cities_date = None
+
 if "selected_date" not in st.session_state:
     st.session_state.selected_date = date.today()
 
 if "selected_city" not in st.session_state:
-    st.session_state.selected_city = "İstanbul"
+    st.session_state.selected_city = None
 
 if "selected_race" not in st.session_state:
     st.session_state.selected_race = None
@@ -82,6 +88,109 @@ if "in_flight" not in st.session_state:
 
 
 # =========================================================
+# TARİHE GÖRE KOŞAN HİPODROMLARI BUL
+# =========================================================
+
+@st.cache_data(
+    ttl=900,
+    show_spinner=False
+)
+def find_active_cities(selected_date):
+    """
+    Seçilen tarihte gerçekten yarış programı bulunan
+    hipodromları TJK üzerinden belirler.
+
+    Sonuç sadece şehir isimlerinden oluşur.
+    Böylece büyük HTML verileri session/cache içine
+    taşınmaz.
+    """
+
+    active = []
+
+    for city in ALL_CITIES:
+
+        try:
+
+            result = get_program(
+                selected_date,
+                city
+            )
+
+            races = result.get(
+                "races",
+                []
+            )
+
+            if races:
+
+                active.append(city)
+
+        except Exception:
+
+            # Bir hipodromdan veri alınamazsa diğerlerini
+            # kontrol etmeye devam et.
+            continue
+
+    return active
+
+
+# =========================================================
+# SEÇİLEN TARİH İÇİN HİPODROMLARI HAZIRLA
+# =========================================================
+
+current_date = st.session_state.selected_date
+
+
+if (
+    st.session_state.active_cities is None
+    or
+    st.session_state.active_cities_date != current_date
+):
+
+    with st.spinner(
+        "Seçilen tarihte yarış olan hipodromlar kontrol ediliyor..."
+    ):
+
+        active_cities = find_active_cities(
+            current_date
+        )
+
+    st.session_state.active_cities = (
+        active_cities
+    )
+
+    st.session_state.active_cities_date = (
+        current_date
+    )
+
+
+active_cities = (
+    st.session_state.active_cities
+    or []
+)
+
+
+# =========================================================
+# İLK AKTİF HİPODROMU SEÇ
+# =========================================================
+
+if active_cities:
+
+    if (
+        st.session_state.selected_city
+        not in active_cities
+    ):
+
+        st.session_state.selected_city = (
+            active_cities[0]
+        )
+
+else:
+
+    st.session_state.selected_city = None
+
+
+# =========================================================
 # SIDEBAR
 # =========================================================
 
@@ -89,33 +198,78 @@ with st.sidebar:
 
     st.header("🗓️ Yarış Programı")
 
-    selected_date = st.date_input(
+    new_date = st.date_input(
         "Tarih",
         value=st.session_state.selected_date,
         format="DD/MM/YYYY"
     )
 
-    selected_city = st.selectbox(
-        "Hipodrom",
-        CITIES,
-        index=(
-            CITIES.index(
-                st.session_state.selected_city
-            )
-            if st.session_state.selected_city in CITIES
-            else 0
-        )
-    )
 
-    st.session_state.selected_date = selected_date
-    st.session_state.selected_city = selected_city
+    # -----------------------------------------------------
+    # TARİH DEĞİŞTİYSE AKTİF HİPODROMLARI YENİLE
+    # -----------------------------------------------------
+
+    if new_date != st.session_state.selected_date:
+
+        st.session_state.selected_date = new_date
+
+        st.session_state.program_data = None
+        st.session_state.selected_race = None
+        st.session_state.race_data = None
+        st.session_state.horse_data = []
+        st.session_state.analysis_result = None
+
+        st.session_state.active_cities = None
+        st.session_state.active_cities_date = None
+
+        st.rerun()
+
+
+    # -----------------------------------------------------
+    # SADECE O GÜN KOŞAN HİPODROMLAR
+    # -----------------------------------------------------
+
+    if active_cities:
+
+        selected_city = st.selectbox(
+            "Hipodrom",
+            active_cities,
+            index=(
+                active_cities.index(
+                    st.session_state.selected_city
+                )
+                if st.session_state.selected_city
+                in active_cities
+                else 0
+            )
+        )
+
+        st.session_state.selected_city = (
+            selected_city
+        )
+
+    else:
+
+        st.error(
+            "Bu tarihte programı alınabilen "
+            "aktif hipodrom bulunamadı."
+        )
+
+        selected_city = None
+
 
     st.divider()
+
+
+    # -----------------------------------------------------
+    # PROGRAM BUTONU
+    # -----------------------------------------------------
 
     get_program_button = st.button(
         "🔄 PROGRAMI GETİR",
         use_container_width=True,
-        type="primary"
+        type="primary",
+        disabled=not bool(active_cities)
     )
 
 
@@ -131,10 +285,25 @@ st.caption(
 
 
 # =========================================================
+# AKTİF HİPODROMLAR BİLGİSİ
+# =========================================================
+
+if active_cities:
+
+    st.caption(
+        "Bugün yarış olan hipodromlar: "
+        + " • ".join(active_cities)
+    )
+
+
+# =========================================================
 # PROGRAMI GETİR
 # =========================================================
 
-if get_program_button:
+if (
+    get_program_button
+    and selected_city
+):
 
     st.session_state.in_flight = True
 
@@ -145,13 +314,14 @@ if get_program_button:
         ):
 
             program = get_program(
-                selected_date,
+                st.session_state.selected_date,
                 selected_city
             )
 
-        st.session_state.program_data = program
+        st.session_state.program_data = (
+            program
+        )
 
-        # Yeni program geldiğinde seçimleri temizle
         st.session_state.selected_race = None
         st.session_state.race_data = None
         st.session_state.horse_data = []
@@ -195,7 +365,9 @@ if get_program_button:
 # PROGRAM VERİSİ
 # =========================================================
 
-program_data = st.session_state.program_data
+program_data = (
+    st.session_state.program_data
+)
 
 
 if program_data is not None:
@@ -215,9 +387,9 @@ if program_data is not None:
     st.header("📋 Yarış Programı")
 
     st.success(
-        f"{selected_city} — "
-        f"{selected_date.strftime('%d/%m/%Y')} — "
-        f"{len(races)} koşu bulundu."
+        f"{st.session_state.selected_city} — "
+        f"{st.session_state.selected_date.strftime('%d/%m/%Y')} "
+        f"— {len(races)} koşu bulundu."
     )
 
 
@@ -236,10 +408,6 @@ if program_data is not None:
             "🔧 TJK Parser Debug",
             expanded=False
         ):
-
-            # -------------------------------------------------
-            # ANA METRİKLER
-            # -------------------------------------------------
 
             col1, col2, col3 = st.columns(3)
 
@@ -273,10 +441,6 @@ if program_data is not None:
                     )
                 )
 
-
-            # -------------------------------------------------
-            # KONTROLLER
-            # -------------------------------------------------
 
             col1, col2, col3, col4 = st.columns(4)
 
@@ -326,10 +490,6 @@ if program_data is not None:
                     )
                 )
 
-
-            # -------------------------------------------------
-            # PARSER SONUCU
-            # -------------------------------------------------
 
             col1, col2, col3, col4 = st.columns(4)
 
@@ -397,10 +557,6 @@ if program_data is not None:
                 )
 
 
-            # -------------------------------------------------
-            # PARSER HATASI
-            # -------------------------------------------------
-
             parse_error = program_data.get(
                 "parse_error"
             )
@@ -412,10 +568,6 @@ if program_data is not None:
                     + str(parse_error)
                 )
 
-
-            # -------------------------------------------------
-            # HAM HTML
-            # -------------------------------------------------
 
             html_start = debug_data.get(
                 "html_start",
@@ -438,19 +590,26 @@ if program_data is not None:
 
 
     # =====================================================
-    # KOŞU SEÇİMİ
+    # KOŞULAR
     # =====================================================
 
     if races:
 
         st.divider()
 
-        st.subheader("🏁 Koşu Seç")
+        st.subheader(
+            "🏁 Koşu Seç"
+        )
 
 
         # -------------------------------------------------
-        # SEÇİLİ KOŞU NUMARASI
+        # YATAY KOŞU BUTONLARI
         # -------------------------------------------------
+
+        race_columns = st.columns(
+            len(races)
+        )
+
 
         current_race_number = None
 
@@ -461,18 +620,6 @@ if program_data is not None:
                     "race_number"
                 )
             )
-
-
-        # -------------------------------------------------
-        # YATAY KOŞU BUTONLARI
-        # -------------------------------------------------
-
-        # Her koşu için bir sütun oluştur.
-        # Böylece koşular HTML'deki gibi yatay görünür.
-
-        race_columns = st.columns(
-            len(races)
-        )
 
 
         for index, race in enumerate(
@@ -490,27 +637,19 @@ if program_data is not None:
             )
 
 
-            # -------------------------------------------------
-            # BUTON METNİ
-            # -------------------------------------------------
-
             if race_time:
 
                 button_label = (
-                    f"{race_number}. Koşu\n"
+                    f"{race_number}\n"
                     f"{race_time}"
                 )
 
             else:
 
                 button_label = (
-                    f"{race_number}. Koşu"
+                    f"{race_number}"
                 )
 
-
-            # -------------------------------------------------
-            # AKTİF BUTON
-            # -------------------------------------------------
 
             is_selected = (
                 current_race_number
@@ -524,7 +663,10 @@ if program_data is not None:
 
                     clicked = st.button(
                         button_label,
-                        key=f"race_selected_{race_number}",
+                        key=(
+                            f"race_selected_"
+                            f"{race_number}"
+                        ),
                         use_container_width=True,
                         type="primary"
                     )
@@ -533,7 +675,10 @@ if program_data is not None:
 
                     clicked = st.button(
                         button_label,
-                        key=f"race_{race_number}",
+                        key=(
+                            f"race_"
+                            f"{race_number}"
+                        ),
                         use_container_width=True
                     )
 
@@ -555,7 +700,9 @@ if program_data is not None:
                         )
                     )
 
-                    st.session_state.analysis_result = None
+                    st.session_state.analysis_result = (
+                        None
+                    )
 
                     st.rerun()
 
@@ -585,7 +732,7 @@ if program_data is not None:
 
 
         # -------------------------------------------------
-        # SEÇİLİ KOŞUYU BUL
+        # SEÇİLEN KOŞU
         # -------------------------------------------------
 
         selected_race = (
@@ -599,9 +746,7 @@ if program_data is not None:
         )
 
 
-        # Program güncellendiyse doğru race objesini
-        # program listesinden tekrar al.
-
+        # Güncel race objesini bul
         for race in races:
 
             if race.get(
@@ -745,7 +890,6 @@ if program_data is not None:
                     hide_index=True
                 )
 
-
         else:
 
             st.info(
@@ -764,6 +908,18 @@ if program_data is not None:
             "Program sayfası açıldı fakat "
             "koşu verisi ayrıştırılamadı."
         )
+
+
+# =========================================================
+# PROGRAM YÜKLENMEDİYSE
+# =========================================================
+
+elif not active_cities:
+
+    st.warning(
+        "Seçilen tarihte yarış programı "
+        "bulunamadı."
+    )
 
 
 # =========================================================
