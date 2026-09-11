@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 
 # ============================================================
-# TJK HİPODROM ID'LERİ
+# TJK ŞEHİR ID'LERİ
 # ============================================================
 
 CITY_IDS = {
@@ -25,18 +25,18 @@ CITY_IDS = {
 
 
 # ============================================================
-# TJK PROGRAM URL
+# GÜNCEL TJK PROGRAM ADRESİ
 # ============================================================
 
 TJK_URL = (
     "https://www.tjk.org/"
-    "TR/YarisSever/Info/"
+    "TR/Yetistiricilik/Info/"
     "Sehir/GunlukYarisProgrami"
 )
 
 
 # ============================================================
-# HTTP BAŞLIKLARI
+# HTTP AYARLARI
 # ============================================================
 
 HEADERS = {
@@ -46,240 +46,120 @@ HEADERS = {
         "Chrome/140.0.0.0 Safari/537.36"
     ),
     "Accept": (
-        "text/html,application/xhtml+xml,"
-        "application/xml;q=0.9,image/avif,"
-        "image/webp,*/*;q=0.8"
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
-    "Accept-Language": (
-        "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
-    ),
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.tjk.org/",
     "Connection": "keep-alive",
 }
 
 
 # ============================================================
-# GENEL METİN TEMİZLEME
+# GENEL YARDIMCI FONKSİYONLAR
 # ============================================================
 
 def normalize_text(value: Any) -> str:
-
     if value is None:
         return ""
 
     text = str(value)
 
-    text = (
-        text
-        .replace("\xa0", " ")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .replace("\t", " ")
-    )
+    text = text.replace("\xa0", " ")
+    text = text.replace("\n", " ")
+    text = text.replace("\r", " ")
+    text = text.replace("\t", " ")
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
-# ============================================================
-# BAŞLIK NORMALİZASYONU
-# ============================================================
-
 def normalize_header(value: Any) -> str:
+    text = normalize_text(value).lower()
+
+    replacements = {
+        "ı": "i",
+        "ş": "s",
+        "ğ": "g",
+        "ü": "u",
+        "ö": "o",
+        "ç": "c",
+        "İ": "i",
+        "Ş": "s",
+        "Ğ": "g",
+        "Ü": "u",
+        "Ö": "o",
+        "Ç": "c",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    return text
+
+
+def format_date(value: Any) -> str:
+    """
+    Her türlü yaygın tarih formatını DD/MM/YYYY yapar.
+    """
+
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
 
     text = normalize_text(value)
 
-    replacements = {
-        "At İsmi": "At İsmi",
-        "At Ismi": "At İsmi",
-        "AT İSMİ": "At İsmi",
-
-        "At Adı": "At İsmi",
-        "At Adi": "At İsmi",
-
-        "N": "N",
-
-        "Yaş": "Yaş",
-        "Yas": "Yaş",
-
-        "Sıklet": "Sıklet",
-        "Siklet": "Sıklet",
-
-        "Jokey": "Jokey",
-
-        "Sahip": "Sahip",
-
-        "Antrenör": "Antrenör",
-
-        "St": "St",
-
-        "HP": "HP",
-
-        "KGS": "KGS",
-
-        "s20": "s20",
-        "S20": "s20",
-
-        "Son 6 Y.": "Son 6 Y.",
-        "Son 6 Y": "Son 6 Y.",
-
-        "En İyi D.": "En İyi D.",
-        "En Iyi D.": "En İyi D.",
-
-        "Gny": "Gny",
-
-        "AGF": "AGF",
-
-        "İdm": "İdm",
-        "Idm": "İdm",
-
-        "Forma": "Forma",
-
-        "Orijin(Baba - Anne)": (
-            "Orijin(Baba - Anne)"
-        ),
-
-        "Orijin (Baba - Anne)": (
-            "Orijin(Baba - Anne)"
-        ),
-    }
-
-    return replacements.get(
-        text,
-        text,
-    )
-
-
-# ============================================================
-# TARİH FORMATLAMA
-# ============================================================
-
-def format_date(
-    selected_date: Any,
-) -> str:
-    """
-    TJK program sorgusu için:
-
-    DD/MM/YYYY
-
-    formatını kullanır.
-    """
-
-    if isinstance(
-        selected_date,
-        datetime,
-    ):
-
-        selected_date = (
-            selected_date.date()
-        )
-
-    if isinstance(
-        selected_date,
-        date,
-    ):
-
-        return selected_date.strftime(
-            "%d/%m/%Y"
-        )
-
-    text = normalize_text(
-        selected_date
-    )
-
     if not text:
-
-        return date.today().strftime(
-            "%d/%m/%Y"
-        )
-
-    # YYYY-MM-DD
-    match = re.fullmatch(
-        r"(\d{4})-(\d{1,2})-(\d{1,2})",
-        text,
-    )
-
-    if match:
-
-        year, month, day = (
-            match.groups()
-        )
-
-        return (
-            f"{int(day):02d}/"
-            f"{int(month):02d}/"
-            f"{int(year):04d}"
-        )
+        return date.today().strftime("%d/%m/%Y")
 
     # DD.MM.YYYY
-    match = re.fullmatch(
-        r"(\d{1,2})\."
-        r"(\d{1,2})\."
-        r"(\d{4})",
-        text,
-    )
+    match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
 
     if match:
+        day, month, year = match.groups()
+        return f"{int(day):02d}/{int(month):02d}/{year}"
 
-        day, month, year = (
-            match.groups()
-        )
+    # DD-MM-YYYY
+    match = re.fullmatch(r"(\d{1,2})-(\d{1,2})-(\d{4})", text)
 
-        return (
-            f"{int(day):02d}/"
-            f"{int(month):02d}/"
-            f"{int(year):04d}"
-        )
+    if match:
+        day, month, year = match.groups()
+        return f"{int(day):02d}/{int(month):02d}/{year}"
 
     # DD/MM/YYYY
-    match = re.fullmatch(
-        r"(\d{1,2})/"
-        r"(\d{1,2})/"
-        r"(\d{4})",
-        text,
-    )
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
 
     if match:
+        day, month, year = match.groups()
+        return f"{int(day):02d}/{int(month):02d}/{year}"
 
-        day, month, year = (
-            match.groups()
-        )
+    # YYYY-MM-DD
+    match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
 
-        return (
-            f"{int(day):02d}/"
-            f"{int(month):02d}/"
-            f"{int(year):04d}"
-        )
+    if match:
+        year, month, day = match.groups()
+        return f"{int(day):02d}/{int(month):02d}/{year}"
 
     return text
 
 
 # ============================================================
-# PROGRAM URL OLUŞTUR
+# URL OLUŞTURMA
 # ============================================================
 
-def build_program_url(
-    selected_date: Any,
-    city: str,
-) -> str:
+def build_program_url(city: str, tarih: Any) -> str:
+    city = normalize_text(city)
+    tarih = format_date(tarih)
 
-    city_id = CITY_IDS.get(
-        city
-    )
+    city_id = CITY_IDS.get(city)
 
     if city_id is None:
-
         raise ValueError(
-            f"Geçersiz hipodrom: {city}"
+            f"Desteklenmeyen hipodrom: {city}"
         )
-
-    tarih = format_date(
-        selected_date
-    )
 
     params = {
         "Era": "today",
@@ -288,62 +168,74 @@ def build_program_url(
         "SehirId": city_id,
     }
 
-    return (
-        f"{TJK_URL}?"
-        f"{urlencode(params)}"
-    )
+    return f"{TJK_URL}?{urlencode(params)}"
 
 
 # ============================================================
-# HTML GET
+# TJK HTML ÇEKME
 # ============================================================
 
 def fetch_program_html(
-    selected_date: Any,
     city: str,
-    timeout: int = 30,
-) -> str:
+    tarih: Any,
+) -> Dict[str, Any]:
 
-    url = build_program_url(
-        selected_date,
-        city,
+    url = build_program_url(city, tarih)
+
+    session = requests.Session()
+
+    session.headers.update(HEADERS)
+
+    try:
+        response = session.get(
+            url,
+            timeout=30,
+            allow_redirects=True,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"TJK bağlantı hatası: {exc}"
+        ) from exc
+
+    html = response.text or ""
+
+    final_url = response.url
+
+    content_type = response.headers.get(
+        "content-type",
+        "",
     )
 
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=timeout,
-        allow_redirects=True,
-    )
+    history = []
+
+    for item in response.history:
+        history.append(
+            {
+                "status": item.status_code,
+                "url": item.url,
+                "location": item.headers.get("Location", ""),
+            }
+        )
 
     if response.status_code != 200:
-
-        raise requests.HTTPError(
-            (
-                f"TJK HTTP {response.status_code}. "
-                f"URL: {response.url}"
-            ),
-            response=response,
-        )
-
-    response.encoding = (
-        response.apparent_encoding
-        or "utf-8"
-    )
-
-    html = response.text
-
-    if not html:
-
         raise RuntimeError(
-            "TJK boş HTML döndürdü."
+            "TJK HTTP hatası: "
+            f"{response.status_code} | "
+            f"URL: {final_url}"
         )
 
-    return html
+    return {
+        "html": html,
+        "status_code": response.status_code,
+        "url": url,
+        "final_url": final_url,
+        "content_type": content_type,
+        "history": history,
+    }
 
 
 # ============================================================
-# HTML TABLO SATIRLARINI ÇIKAR
+# HTML TABLOLARINI ÇIKAR
 # ============================================================
 
 def extract_html_table_rows(
@@ -352,9 +244,7 @@ def extract_html_table_rows(
 
     rows = []
 
-    for tr in table.find_all(
-        "tr"
-    ):
+    for tr in table.find_all("tr"):
 
         cells = tr.find_all(
             ["th", "td"]
@@ -366,116 +256,101 @@ def extract_html_table_rows(
         row = []
 
         for cell in cells:
-
-            value = normalize_text(
-                cell.get_text(
-                    " ",
-                    strip=True,
+            row.append(
+                normalize_text(
+                    cell.get_text(
+                        " ",
+                        strip=True,
+                    )
                 )
             )
 
-            row.append(
-                value
-            )
-
         if any(row):
-
-            rows.append(
-                row
-            )
+            rows.append(row)
 
     return rows
 
 
 # ============================================================
-# AT TABLOSU BAŞLIĞINI BUL
+# BAŞLIK SATIRINI BUL
 # ============================================================
 
 def find_header_row(
     rows: List[List[str]],
 ) -> Optional[int]:
 
-    for index, row in enumerate(
-        rows
-    ):
+    for index, row in enumerate(rows):
 
-        headers = [
-            normalize_header(
-                value
-            )
-            for value in row
+        normalized = [
+            normalize_header(cell)
+            for cell in row
         ]
 
+        joined = " | ".join(normalized)
+
         has_horse = (
-            "At İsmi" in headers
+            "at ismi" in joined
+            or "atismi" in joined
         )
 
         has_weight = (
-            "Sıklet" in headers
+            "siklet" in joined
+            or "kilo" in joined
         )
 
         has_jockey = (
-            "Jokey" in headers
+            "jokey" in joined
         )
 
-        has_number = (
-            "N" in headers
-        )
-
-        if (
-            has_horse
-            and (
-                has_weight
-                or has_jockey
-                or has_number
-            )
+        if has_horse and (
+            has_weight
+            or has_jockey
         ):
-
             return index
 
     return None
 
 
 # ============================================================
-# AT İSMİ KONTROL
+# AT İSMİ KONTROLÜ
 # ============================================================
 
 def looks_like_horse_name(
-    value: Any,
+    value: str,
 ) -> bool:
 
-    text = normalize_text(
-        value
-    )
+    text = normalize_text(value)
 
     if not text:
         return False
 
-    lower = text.lower()
+    normalized = normalize_header(text)
 
-    invalid = {
+    bad_values = {
         "at ismi",
-        "at adı",
-        "at adi",
-        "koşu",
-        "kosu",
-        "forma",
+        "atismi",
         "jokey",
-        "sıklet",
         "siklet",
-        "toplam",
-        "agf",
-        "hp",
-        "horse name",
+        "yok",
+        "kosmaz",
+        "forma",
     }
 
-    if lower in invalid:
+    if normalized in bad_values:
         return False
 
-    if len(text) < 2:
-        return False
+    # Başında numara varsa at satırı olma ihtimali çok yüksek.
+    if re.match(
+        r"^\d+\s*[\.\-]?\s*.+",
+        text,
+    ):
+        return True
 
-    return True
+    # Normal isim uzunluğu
+    if len(text) >= 3:
+        return True
+
+    return False
 
 
 # ============================================================
@@ -486,173 +361,121 @@ def parse_single_horse_table(
     table,
 ) -> List[Dict[str, Any]]:
 
-    rows = extract_html_table_rows(
-        table
-    )
+    rows = extract_html_table_rows(table)
 
     if not rows:
         return []
 
-    header_index = find_header_row(
-        rows
-    )
+    header_index = find_header_row(rows)
 
     if header_index is None:
         return []
 
-    headers = [
-        normalize_header(
-            value
-        )
-        for value in rows[
-            header_index
-        ]
+    headers = rows[header_index]
+
+    normalized_headers = [
+        normalize_header(h)
+        for h in headers
     ]
-
-    # --------------------------------------------------------
-    # AT İSMİ SÜTUNU
-    # --------------------------------------------------------
-
-    horse_index = None
-
-    for index, header in enumerate(
-        headers
-    ):
-
-        if header == "At İsmi":
-
-            horse_index = index
-
-            break
-
-    if horse_index is None:
-        return []
-
-    # --------------------------------------------------------
-    # ATLARI OKU
-    # --------------------------------------------------------
 
     horses = []
 
-    for row in rows[
-        header_index + 1:
-    ]:
+    for row in rows[header_index + 1:]:
 
-        if not row:
+        if len(row) < 2:
             continue
 
-        # Kolon sayısını eşitle
+        # Satır uzunluğunu başlık uzunluğuna eşitle
         if len(row) < len(headers):
-
-            row = row + (
-                [""] *
-                (
-                    len(headers)
-                    - len(row)
-                )
+            row = row + [""] * (
+                len(headers) - len(row)
             )
 
         elif len(row) > len(headers):
+            row = row[:len(headers)]
 
-            row = row[
-                :len(headers)
-            ]
+        item = {}
 
-        horse_name = normalize_text(
-            row[horse_index]
-        )
+        for index, header in enumerate(
+            normalized_headers
+        ):
+            item[header] = (
+                row[index]
+                if index < len(row)
+                else ""
+            )
+
+        # At numarası
+        number = ""
+
+        for key in (
+            "n",
+            "no",
+            "numara",
+        ):
+            if key in item:
+                number = item[key]
+                break
+
+        # At adı
+        horse_name = ""
+
+        for key in (
+            "at ismi",
+            "atismi",
+        ):
+            if key in item:
+                horse_name = item[key]
+                break
+
+        # Eğer ilk kolon numara, ikinci kolon isim ise
+        if not horse_name and len(row) >= 2:
+            if re.match(
+                r"^\d+[\.\-]?$",
+                row[0],
+            ):
+                number = row[0]
+                horse_name = row[1]
 
         if not looks_like_horse_name(
             horse_name
         ):
             continue
 
-        # ----------------------------------------------------
-        # Koşu başlığına denk gelirse geç
-        # ----------------------------------------------------
-
-        if re.match(
-            r"^\d{1,2}\s*\.?\s*Koşu",
+        # Numara içeren at adı
+        match = re.match(
+            r"^(\d+)\s*[\.\-]?\s*(.+)$",
             horse_name,
-            re.IGNORECASE,
-        ):
+        )
 
-            continue
+        if match:
+            if not number:
+                number = match.group(1)
 
-        horse = {}
+            horse_name = match.group(2).strip()
 
-        # ----------------------------------------------------
-        # Ham kolonları sakla
-        # ----------------------------------------------------
+        item["no"] = normalize_text(number)
+        item["at"] = normalize_text(horse_name)
 
-        for index, header in enumerate(
-            headers
-        ):
+        # Kullanıcı arayüzünün beklediği alanlar
+        item["yas"] = item.get("yaş", "")
+        item["kilo"] = item.get("siklet", "")
+        item["jokey"] = item.get("jokey", "")
+        item["hp"] = item.get("hp", "")
+        item["agf"] = item.get("agf", "")
+        item["st"] = item.get("st", "")
+        item["kgs"] = item.get("kgs", "")
 
-            if not header:
-                continue
-
-            horse[
-                header
-            ] = normalize_text(
-                row[index]
+        item["form"] = (
+            item.get(
+                "son 6 y.",
+                item.get("son 6 y", ""),
             )
-
-        # ----------------------------------------------------
-        # Standart alanlar
-        # ----------------------------------------------------
-
-        horse["at_ismi"] = (
-            horse_name
         )
 
-        horse["numara"] = (
-            horse.get("N", "")
-        )
+        item["raw"] = dict(item)
 
-        horse["yas"] = (
-            horse.get("Yaş", "")
-        )
-
-        horse["siklet"] = (
-            horse.get("Sıklet", "")
-        )
-
-        horse["jokey"] = (
-            horse.get("Jokey", "")
-        )
-
-        horse["hp"] = (
-            horse.get("HP", "")
-        )
-
-        horse["agf"] = (
-            horse.get("AGF", "")
-        )
-
-        horse["st"] = (
-            horse.get("St", "")
-        )
-
-        horse["form"] = (
-            horse.get("Forma", "")
-        )
-
-        horse["kgs"] = (
-            horse.get("KGS", "")
-        )
-
-        horse["gny"] = (
-            horse.get("Gny", "")
-        )
-
-        horse["idm"] = (
-            horse.get("İdm", "")
-        )
-
-        horses.append(
-            horse
-        )
+        horses.append(item)
 
     return horses
 
@@ -672,57 +495,46 @@ def parse_horse_tables(
 
     horse_tables = []
 
-    tables = soup.find_all(
-        "table"
-    )
+    for table in soup.find_all("table"):
 
-    for table in tables:
+        rows = extract_html_table_rows(table)
 
-        try:
-
-            horses = (
-                parse_single_horse_table(
-                    table
-                )
-            )
-
-            if horses:
-
-                horse_tables.append(
-                    horses
-                )
-
-        except Exception:
-
+        if not rows:
             continue
+
+        header_index = find_header_row(rows)
+
+        if header_index is None:
+            continue
+
+        horses = parse_single_horse_table(
+            table
+        )
+
+        if horses:
+            horse_tables.append(horses)
 
     return horse_tables
 
 
 # ============================================================
-# YARIŞ BAŞLIKLARINI BUL
+# KOŞU BAŞLIKLARINI BUL
 # ============================================================
 
 def parse_race_headings(
     html: str,
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, str]]:
 
     soup = BeautifulSoup(
         html,
         "html.parser",
     )
 
-    candidates = []
+    headings = []
 
-    # Önce başlık elementleri
+    # Önce başlık etiketleri
     elements = soup.find_all(
-        [
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "th",
-        ]
+        ["h1", "h2", "h3", "h4", "h5", "strong"]
     )
 
     seen = set()
@@ -739,203 +551,86 @@ def parse_race_headings(
         if not text:
             continue
 
-        # ----------------------------------------------------
-        # Örn:
-        #
-        # 1. Koşu 17.45
-        # 2. Koşu 18.15
-        # ----------------------------------------------------
-
-        matches = re.finditer(
-            r"(\d{1,2})\s*\.\s*Koşu"
-            r"(?:\s+|[-—–]\s*)?"
-            r"(\d{1,2})[:.](\d{2})",
+        match = re.search(
+            r"(\d+)\.\s*Koşu"
+            r"(?:\s+(\d{1,2}[.:]\d{2}))?",
             text,
             re.IGNORECASE,
         )
 
-        found = False
+        if not match:
+            continue
 
-        for match in matches:
+        number = match.group(1)
+        time = match.group(2) or ""
 
-            found = True
+        key = (
+            number,
+            time,
+        )
 
-            number = int(
-                match.group(1)
-            )
+        if key in seen:
+            continue
 
-            hour = int(
-                match.group(2)
-            )
+        seen.add(key)
 
-            minute = int(
-                match.group(3)
-            )
+        headings.append(
+            {
+                "no": number,
+                "time": time,
+                "title": text,
+            }
+        )
 
-            race_time = (
-                f"{hour:02d}:"
-                f"{minute:02d}"
-            )
+    # Başlık etiketlerinde bulunamadıysa
+    # tüm görünür metinden ara
+    if not headings:
+
+        text = soup.get_text(
+            "\n",
+            strip=True,
+        )
+
+        pattern = re.compile(
+            r"(\d+)\.\s*Koşu"
+            r"(?:\s+(\d{1,2}[.:]\d{2}))?",
+            re.IGNORECASE,
+        )
+
+        for match in pattern.finditer(text):
+
+            number = match.group(1)
+            time = match.group(2) or ""
 
             key = (
                 number,
-                race_time,
+                time,
             )
 
             if key in seen:
                 continue
 
-            seen.add(
-                key
-            )
+            seen.add(key)
 
-            candidates.append(
+            headings.append(
                 {
-                    "race_number": number,
-                    "race_time": race_time,
-                    "heading": text,
+                    "no": number,
+                    "time": time,
+                    "title": match.group(0),
                 }
             )
 
-        # ----------------------------------------------------
-        # Saat bulunamayan başlık
-        # ----------------------------------------------------
-
-        if not found:
-
-            simple = re.search(
-                r"(\d{1,2})\s*\.\s*Koşu",
-                text,
-                re.IGNORECASE,
-            )
-
-            if simple:
-
-                number = int(
-                    simple.group(1)
-                )
-
-                key = (
-                    number,
-                    "",
-                )
-
-                if key not in seen:
-
-                    seen.add(
-                        key
-                    )
-
-                    candidates.append(
-                        {
-                            "race_number": number,
-                            "race_time": "",
-                            "heading": text,
-                        }
-                    )
-
-    # --------------------------------------------------------
-    # Son çare: bütün görünür metin
-    # --------------------------------------------------------
-
-    if not candidates:
-
-        text = normalize_text(
-            soup.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        pattern = re.compile(
-            r"(\d{1,2})\s*\.\s*Koşu"
-            r"(?:\s+|[-—–]\s*)?"
-            r"(\d{1,2})[:.](\d{2})?",
-            re.IGNORECASE,
-        )
-
-        for match in pattern.finditer(
-            text
-        ):
-
-            number = int(
-                match.group(1)
-            )
-
-            hour = match.group(2)
-
-            minute = match.group(3)
-
-            if (
-                hour
-                and minute
-            ):
-
-                race_time = (
-                    f"{int(hour):02d}:"
-                    f"{int(minute):02d}"
-                )
-
-            else:
-
-                race_time = ""
-
-            candidates.append(
-                {
-                    "race_number": number,
-                    "race_time": race_time,
-                    "heading": (
-                        match.group(0)
-                    ),
-                }
-            )
-
-    # --------------------------------------------------------
-    # Sırala
-    # --------------------------------------------------------
-
-    candidates.sort(
-        key=lambda item: (
-            item["race_number"],
-            item["race_time"],
-        )
-    )
-
-    # --------------------------------------------------------
-    # Aynı yarış numarasını tekilleştir
-    # --------------------------------------------------------
-
-    races = []
-
-    used = set()
-
-    for race in candidates:
-
-        number = race[
-            "race_number"
-        ]
-
-        if number in used:
-            continue
-
-        used.add(
-            number
-        )
-
-        races.append(
-            race
-        )
-
-    return races
+    return headings
 
 
 # ============================================================
-# YARIŞ DETAYLARINI BUL
+# KOŞU DETAYLARI
 # ============================================================
 
 def extract_race_details(
     html: str,
-    race_number: int,
+    race_index: int,
+    heading: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
 
     soup = BeautifulSoup(
@@ -944,31 +639,28 @@ def extract_race_details(
     )
 
     result = {
-        "race_time": "",
+        "time": "",
         "distance": "",
         "surface": "",
         "condition": "",
     }
 
-    # --------------------------------------------------------
-    # İLGİLİ KOŞU BAŞLIĞINI BUL
-    # --------------------------------------------------------
+    if heading:
+        result["time"] = heading.get(
+            "time",
+            "",
+        )
 
-    race_heading = None
-
-    pattern = re.compile(
-        rf"{race_number}\s*\.\s*Koşu",
+    # Koşu başlığını bul
+    race_pattern = re.compile(
+        rf"{race_index + 1}\.\s*Koşu",
         re.IGNORECASE,
     )
 
+    node = None
+
     for element in soup.find_all(
-        [
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "th",
-        ]
+        ["h1", "h2", "h3", "h4", "h5", "strong"]
     ):
 
         text = normalize_text(
@@ -978,167 +670,105 @@ def extract_race_details(
             )
         )
 
-        if pattern.search(text):
-
-            race_heading = text
-
+        if race_pattern.search(text):
+            node = element
             break
 
-    # --------------------------------------------------------
-    # SAAT
-    # --------------------------------------------------------
+    if node:
 
-    if race_heading:
+        # Başlıktan sonraki metinleri incele
+        texts = []
 
-        match = re.search(
-            r"\b(\d{1,2})[:.](\d{2})\b",
-            race_heading,
-        )
-
-        if match:
-
-            result["race_time"] = (
-                f"{int(match.group(1)):02d}:"
-                f"{int(match.group(2)):02d}"
+        for sibling in node.find_all_next(
+            limit=15
+        ):
+            text = normalize_text(
+                sibling.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
-    # --------------------------------------------------------
-    # KOŞU BİLGİSİNE YAKIN METİN
-    # --------------------------------------------------------
+            if text:
+                texts.append(text)
 
-    search_text = ""
+        joined = " ".join(texts)
 
-    if race_heading:
-
-        # Başlığın kendisi
-        search_text = race_heading
-
-    # Genel metinden de destek al
-    full_text = normalize_text(
-        soup.get_text(
+    else:
+        joined = soup.get_text(
             " ",
             strip=True,
         )
+
+    # Mesafe
+    distance_match = re.search(
+        r"\b(\d{3,4})\s*(m|metre)\b",
+        joined,
+        re.IGNORECASE,
     )
 
-    # --------------------------------------------------------
-    # MESAFE
-    # --------------------------------------------------------
+    if distance_match:
+        result["distance"] = (
+            distance_match.group(1)
+        )
 
-    distance_patterns = [
-        r"\b(\d{3,4})\s*m\b",
-        r"\b(\d{3,4})\s*metre\b",
+    # Pist
+    surface_match = re.search(
+        r"\b(Kum|Çim|Sentetik|Suni)\b",
+        joined,
+        re.IGNORECASE,
+    )
+
+    if surface_match:
+        result["surface"] = (
+            surface_match.group(1)
+        )
+
+    # Koşu şartı
+    condition_patterns = [
+        r"(Maiden)",
+        r"(Handikap\s*\d+)",
+        r"(Şartlı\s*\d+)",
+        r"(KV[-\s]?\d+)",
+        r"(Satış\s*\d+)",
+        r"(Gazi Koşusu)",
     ]
 
-    for pattern_distance in (
-        distance_patterns
-    ):
+    for pattern in condition_patterns:
 
         match = re.search(
-            pattern_distance,
-            search_text,
+            pattern,
+            joined,
             re.IGNORECASE,
         )
 
         if match:
-
-            result["distance"] = (
-                f"{match.group(1)} m"
-            )
-
-            break
-
-    # Eğer başlıkta yoksa genel metinde ara
-    if not result["distance"]:
-
-        for pattern_distance in (
-            distance_patterns
-        ):
-
-            match = re.search(
-                pattern_distance,
-                full_text,
-                re.IGNORECASE,
-            )
-
-            if match:
-
-                result["distance"] = (
-                    f"{match.group(1)} m"
+            result["condition"] = (
+                normalize_text(
+                    match.group(1)
                 )
-
-                break
-
-    # --------------------------------------------------------
-    # PİST
-    # --------------------------------------------------------
-
-    surface_candidates = [
-        ("Sentetik", "Sentetik"),
-        ("Kum", "Kum"),
-        ("Çim", "Çim"),
-        ("Fiber Kum", "Fiber Kum"),
-        ("All Weather", "Sentetik"),
-    ]
-
-    for needle, value in (
-        surface_candidates
-    ):
-
-        if re.search(
-            rf"\b{re.escape(needle)}\b",
-            search_text,
-            re.IGNORECASE,
-        ):
-
-            result["surface"] = value
-
+            )
             break
-
-    if not result["surface"]:
-
-        for needle, value in (
-            surface_candidates
-        ):
-
-            if re.search(
-                rf"\b{re.escape(needle)}\b",
-                full_text,
-                re.IGNORECASE,
-            ):
-
-                result["surface"] = value
-
-                break
 
     return result
 
 
 # ============================================================
-# ATLARI YARIŞLARA BAĞLA
+# ATLARI KOŞULARA BAĞLA
 # ============================================================
 
 def attach_horses_to_races(
     races: List[Dict[str, Any]],
-    horse_tables: List[
-        List[Dict[str, Any]]
-    ],
+    horse_tables: List[List[Dict[str, Any]]],
 ) -> List[Dict[str, Any]]:
 
-    for index, race in enumerate(
-        races
-    ):
+    for index, race in enumerate(races):
 
-        if index < len(
-            horse_tables
-        ):
-
+        if index < len(horse_tables):
             race["horses"] = (
                 horse_tables[index]
             )
-
         else:
-
             race["horses"] = []
 
     return races
@@ -1150,110 +780,10 @@ def attach_horses_to_races(
 
 def parse_program(
     html: str,
-    selected_date: Any = None,
-    city: str = "",
+    city: str,
+    tarih: str,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-
-    if not html:
-
-        raise ValueError(
-            "Parse edilecek HTML boş."
-        )
-
-    # --------------------------------------------------------
-    # 1. KOŞULAR
-    # --------------------------------------------------------
-
-    races = parse_race_headings(
-        html
-    )
-
-    # --------------------------------------------------------
-    # 2. AT TABLOLARI
-    # --------------------------------------------------------
-
-    horse_tables = (
-        parse_horse_tables(
-            html
-        )
-    )
-
-    # --------------------------------------------------------
-    # 3. ATLARI KOŞULARA BAĞLA
-    # --------------------------------------------------------
-
-    races = attach_horses_to_races(
-        races,
-        horse_tables,
-    )
-
-    # --------------------------------------------------------
-    # 4. DETAYLAR
-    # --------------------------------------------------------
-
-    for race in races:
-
-        number = race.get(
-            "race_number"
-        )
-
-        details = (
-            extract_race_details(
-                html,
-                number,
-            )
-        )
-
-        if not race.get(
-            "race_time"
-        ):
-
-            race["race_time"] = (
-                details.get(
-                    "race_time",
-                    "",
-                )
-            )
-
-        race["distance"] = (
-            details.get(
-                "distance",
-                "",
-            )
-        )
-
-        race["surface"] = (
-            details.get(
-                "surface",
-                "",
-            )
-        )
-
-        race["condition"] = (
-            details.get(
-                "condition",
-                "",
-            )
-        )
-
-    # --------------------------------------------------------
-    # 5. TOPLAM AT
-    # --------------------------------------------------------
-
-    total_horses = 0
-
-    for race in races:
-
-        total_horses += len(
-            race.get(
-                "horses",
-                [],
-            )
-        )
-
-    # --------------------------------------------------------
-    # 6. GÖRÜNÜR METİN
-    # --------------------------------------------------------
 
     soup = BeautifulSoup(
         html,
@@ -1268,143 +798,249 @@ def parse_program(
     )
 
     # --------------------------------------------------------
-    # 7. DEBUG
+    # AT TABLOLARI
+    # --------------------------------------------------------
+
+    horse_tables = parse_horse_tables(
+        html
+    )
+
+    # --------------------------------------------------------
+    # KOŞU BAŞLIKLARI
+    # --------------------------------------------------------
+
+    headings = parse_race_headings(
+        html
+    )
+
+    # --------------------------------------------------------
+    # KOŞULARI OLUŞTUR
+    # --------------------------------------------------------
+
+    races = []
+
+    race_count = max(
+        len(headings),
+        len(horse_tables),
+    )
+
+    for index in range(
+        race_count
+    ):
+
+        heading = (
+            headings[index]
+            if index < len(headings)
+            else {}
+        )
+
+        details = extract_race_details(
+            html,
+            index,
+            heading,
+        )
+
+        race = {
+            "race_no": index + 1,
+            "no": index + 1,
+            "time": details.get(
+                "time",
+                "",
+            ),
+            "distance": details.get(
+                "distance",
+                "",
+            ),
+            "surface": details.get(
+                "surface",
+                "",
+            ),
+            "condition": details.get(
+                "condition",
+                "",
+            ),
+            "title": heading.get(
+                "title",
+                "",
+            ),
+            "horses": [],
+        }
+
+        races.append(race)
+
+    # --------------------------------------------------------
+    # ATLARI KOŞULARA BAĞLA
+    # --------------------------------------------------------
+
+    races = attach_horses_to_races(
+        races,
+        horse_tables,
+    )
+
+    total_horses = sum(
+        len(race.get("horses", []))
+        for race in races
+    )
+
+    horses_per_race = {}
+
+    for race in races:
+        horses_per_race[
+            str(race["race_no"])
+        ] = len(
+            race.get(
+                "horses",
+                [],
+            )
+        )
+
+    # --------------------------------------------------------
+    # DEBUG
     # --------------------------------------------------------
 
     debug = {
-        "html_length": len(
-            html
-        ),
-
+        "html_length": len(html),
         "visible_text_length": len(
             visible_text
         ),
-
         "html_table_count": len(
-            soup.find_all(
-                "table"
-            )
+            soup.find_all("table")
         ),
-
-        "race_count": len(
-            races
-        ),
-
+        "race_count": len(races),
         "horse_table_count": len(
             horse_tables
         ),
-
-        "total_horse_count": (
-            total_horses
-        ),
-
-        "horses_per_race": {
-            str(
-                race.get(
-                    "race_number"
-                )
-            ): len(
-                race.get(
-                    "horses",
-                    [],
-                )
-            )
-            for race in races
-        },
-
+        "total_horse_count": total_horses,
+        "horses_per_race": horses_per_race,
         "city": city,
-
-        "date": (
-            format_date(
-                selected_date
-            )
-            if selected_date is not None
-            else ""
-        ),
-
+        "date": tarih,
         "contains_at_ismi": (
-            "At İsmi" in html
-            or "At Ismi" in html
-        ),
-
-        "contains_jokey": (
-            "Jokey" in html
-        ),
-
-        "contains_siklet": (
-            "Sıklet" in html
-            or "Siklet" in html
-        ),
-
-        "url": (
-            build_program_url(
-                selected_date,
-                city,
+            "at ismi"
+            in normalize_header(
+                html
             )
-            if city
-            else ""
+        ),
+        "contains_jokey": (
+            "jokey"
+            in normalize_header(
+                html
+            )
+        ),
+        "contains_siklet": (
+            "siklet"
+            in normalize_header(
+                html
+            )
         ),
     }
 
-    # --------------------------------------------------------
-    # 8. SONUÇ
-    # --------------------------------------------------------
+    if metadata:
+        debug.update(
+            {
+                "status_code": metadata.get(
+                    "status_code"
+                ),
+                "requested_url": metadata.get(
+                    "url"
+                ),
+                "final_url": metadata.get(
+                    "final_url"
+                ),
+                "content_type": metadata.get(
+                    "content_type"
+                ),
+                "redirect_history": metadata.get(
+                    "history"
+                ),
+            }
+        )
 
     return {
         "ok": True,
-
-        "source": (
-            "TJK Günlük Yarış Programı"
-        ),
-
-        "date": (
-            format_date(
-                selected_date
-            )
-            if selected_date is not None
-            else ""
-        ),
-
+        "source": "TJK Günlük Yarış Programı",
+        "date": tarih,
         "city": city,
-
         "races": races,
-
-        "race_count": len(
-            races
-        ),
-
-        "total_horses": (
-            total_horses
-        ),
-
+        "race_count": len(races),
+        "total_horses": total_horses,
         "debug": debug,
     }
 
 
 # ============================================================
-# ANA DIŞ FONKSİYON
+# ANA VERİ ÇEKME FONKSİYONU
 # ============================================================
 
 def get_program(
-    selected_date: Any,
     city: str,
+    tarih: Any,
 ) -> Dict[str, Any]:
 
-    if city not in CITY_IDS:
+    city = normalize_text(city)
+    tarih = format_date(tarih)
 
-        raise ValueError(
-            f"Desteklenmeyen hipodrom: {city}"
-        )
-
-    html = fetch_program_html(
-        selected_date,
+    metadata = fetch_program_html(
         city,
+        tarih,
     )
 
+    html = metadata.get(
+        "html",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # BOŞ / HATALI SAYFA KONTROLÜ
+    # --------------------------------------------------------
+
+    if len(html.strip()) < 5000:
+
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
+        )
+
+        visible_text = normalize_text(
+            soup.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        # Program sayfası yerine hata/boş sayfa
+        # geldiyse bunu debug'a yaz.
+        result = parse_program(
+            html,
+            city,
+            tarih,
+            metadata,
+        )
+
+        result["debug"][
+            "warning"
+        ] = (
+            "TJK yanıtı beklenenden kısa. "
+            "Program sayfası yerine boş/hata "
+            "sayfası dönmüş olabilir."
+        )
+
+        result["debug"][
+            "response_preview"
+        ] = normalize_text(
+            html[:1000]
+        )
+
+        result["debug"][
+            "visible_preview"
+        ] = visible_text[:1000]
+
+        return result
+
     return parse_program(
-        html=html,
-        selected_date=selected_date,
-        city=city,
+        html,
+        city,
+        tarih,
+        metadata,
     )
 
 
@@ -1413,112 +1049,6 @@ def get_program(
 # ============================================================
 
 def get_supported_cities() -> List[str]:
-
     return list(
         CITY_IDS.keys()
     )
-
-
-# ============================================================
-# TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    test_date = date.today()
-
-    test_city = "Ankara"
-
-    print(
-        "================================"
-    )
-
-    print(
-        "TJK TEST"
-    )
-
-    print(
-        "================================"
-    )
-
-    print(
-        "Tarih:",
-        format_date(
-            test_date
-        )
-    )
-
-    print(
-        "Hipodrom:",
-        test_city
-    )
-
-    try:
-
-        url = build_program_url(
-            test_date,
-            test_city,
-        )
-
-        print(
-            "URL:",
-            url
-        )
-
-        result = get_program(
-            test_date,
-            test_city,
-        )
-
-        print(
-            "OK:",
-            result.get(
-                "ok"
-            )
-        )
-
-        print(
-            "Koşu:",
-            result.get(
-                "race_count"
-            )
-        )
-
-        print(
-            "Toplam at:",
-            result.get(
-                "total_horses"
-            )
-        )
-
-        print(
-            "Debug:"
-        )
-
-        print(
-            result.get(
-                "debug"
-            )
-        )
-
-        for race in result.get(
-            "races",
-            [],
-        ):
-
-            print(
-                f"{race.get('race_number')}. Koşu "
-                f"{race.get('race_time')} "
-                f"{race.get('distance')} "
-                f"{race.get('surface')} "
-                f"At: "
-                f"{len(race.get('horses', []))}"
-            )
-
-    except Exception as exc:
-
-        print(
-            "HATA:",
-            type(exc).__name__,
-            str(exc)
-        )
