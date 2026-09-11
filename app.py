@@ -404,7 +404,22 @@ if program_data is not None:
             # -------------------------------------------------
             # HTML BAŞLANGICI
             # -------------------------------------------------
+html_start = debug_data.get(
+    "html_start",
+    ""
+)
 
+if html_start:
+
+    with st.expander(
+        "TJK HTML ham verisini göster",
+        expanded=False
+    ):
+
+        st.code(
+            html_start,
+            language="html"
+        )
             html_start = debug_data.get(
                 "html_start",
                 ""
