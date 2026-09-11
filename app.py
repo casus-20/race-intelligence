@@ -1,186 +1,248 @@
 import streamlit as st
-import pandas as pd
 import requests
-import re
+import pandas as pd
 from datetime import datetime
 
-# --- SAYFA YAPILANDIRMASI ---
+# --- ARAYÜZ VE AYARLAR ---
 st.set_page_config(
-    page_title="RACE INTELLIGENCE V34",
-    page_icon="🏇",
-    layout="wide",
+    page_title="Race Intelligence - TJK Analiz Motoru",
+    page_layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- V54 WORKER JAVASCRIPT KODUNUN %100 PYTHON TERCÜMESİ ---
+# Cloudflare Worker API URL
+WORKER_URL = "https://fragrant-hat-ae48.casus-20.workers.dev"  # Kendi worker URL'nizle değiştirebilirsiniz
 
-def clean(s):
-    """ Orijinal V54 JavaScript function clean(s) karşılığı """
-    if s is None: return ""
-    text = str(s)
-    text = re.sub(r'<script[\s\S]*?</script>', ' ', text, flags=re.IGNORECASE)
-    text = re.sub(r'<style[\s\S]*?</style>', ' ', text, flags=re.IGNORECASE)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = text.replace('&nbsp;', ' ').replace('&amp;', '&').replace("'", "'")
-    text = text.replace('&quot;', '"').replace('&uuml;', 'ü').replace('&Uuml;', 'Ü')
-    text = text.replace('&ouml;', 'ö').replace('&Ouml;', 'Ö').replace('&ccedil;', 'ç')
-    text = text.replace('&Ccedil;', 'Ç').replace('&scedil;', 'ş').replace('&Scedil;', 'Ş')
-    text = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-def cells(row_html):
-    """ Orijinal V54 JavaScript function cells(row) karşılığı """
-    matches = re.findall(r'<(?:td|th)\b[^>]*>([\s\S]*?)</(?:td|th)>', row_html, re.IGNORECASE)
-    return [clean(m) for m in matches]
-
-def tables(html):
-    """ Orijinal V54 JavaScript function tables(html) karşılığı """
-    table_matches = re.finditer(r'<table\b[^>]*>([\s\S]*?)</table>', html, re.IGNORECASE)
-    results = []
-    for m in table_matches:
-        raw_html = m.group(0)
-        start_idx = m.start()
-        raw_rows = [x.group(0) for x in re.finditer(r'<tr\b[^>]*>([\s\S]*?)</tr>', m.group(1), re.IGNORECASE)]
-        results.append({
-            "start": start_idx,
-            "html": raw_html,
-            "rawRows": raw_rows,
-            "rows": [cells(x) for x in raw_rows]
-        })
-    return results
-
-def getAtId(row_html):
-    """ Orijinal V54 JavaScript function getAtId(rowHtml) karşılığı """
-    hrefs = re.findall(r'href\s*=\s*["\']([^"\']+)["\']', row_html, re.IGNORECASE)
-    joined_hrefs = " ".join(hrefs).replace('&amp;', '&')
-    match = re.search(r'(?:QueryParameter_AtId|AtKodu|Atkodu)=(\d+)', joined_hrefs, re.IGNORECASE)
-    return match.group(1) if match else None
-
-@st.cache_data(ttl=300)
-def v54_worker_parse_kayitlar_robust(tarih_str, sehir_id):
-    """ Orijinal V54 JavaScript function parseKayitlarRobust(html) algoritması """
-    url = f"https://tjk.org{tarih_str}&QueryParameter_SehirId={sehir_id}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
+# --- YARDIMCI FONKSİYONLAR ---
+@st.cache_data(ttl=600)
+def fetch_api(endpoint, params=None):
+    """Worker API'sine istek atan genel fonksiyon"""
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200: return pd.DataFrame()
-        
-        html_content = response.text
-        rows_iter = re.finditer(r'<tr\b[^>]*>([\s\S]*?)</tr>', html_content, re.IGNORECASE)
-        rows = [{"pos": m.start(), "html": m.group(0), "cells": cells(m.group(0))} for m in rows_iter]
-        
-        horse_rows = []
-        for x in rows:
-            c = x["cells"]
-            if len(c) < 7: continue
-            
-            noIdx = -1
-            for idx, v in enumerate(c):
-                if re.match(r'^\d{1,2}$', str(v).strip()):
-                    noIdx = idx
-                    break
-            
-            nameIdx = -1
-            for idx, v in enumerate(c):
-                if idx > noIdx and re.match(r'^[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .\'"-]{2,}', str(v), re.IGNORECASE) and not re.match(r'^(At İsmi|Horse Name)$', str(v), re.IGNORECASE):
-                    nameIdx = idx
-                    break
-                    
-            if noIdx < 0 or nameIdx < 0: continue
-            
-            name = clean(c[nameIdx]).split("Image")[0].replace("(Koşmaz)", "").strip().upper()
-            if not name or any(re.match(p, name, re.IGNORECASE) for p in ["^KOŞU$", "^İKRAMİYE$", "^YETİŞTİRİCİ$", "^AT SAHİBİ$"]): continue
-            
-            atId = getAtId(x["html"])
-            horse_rows.append({"pos": x["pos"], "cells": c, "no": c[noIdx], "name": name, "atId": atId})
-            
-        if not horse_rows: return pd.DataFrame()
-        
-        heads = [m.start() for m in re.finditer(r'<(?:h[1-6]|div|span|strong|b)\b[^>]*>\s*Koşu\s*</(?:h[1-6]|div|span|strong|b)>', html_content, re.IGNORECASE)]
-        boundaries = heads if heads else [0]
-        races_pool = []
-        
-        for bi in range(len(boundaries)):
-            from_pos = boundaries[bi]
-            to_pos = boundaries[bi+1] if bi + 1 < len(boundaries) else float('inf')
-            
-            hs = [r for r in horse_rows if from_pos <= r["pos"] < to_pos]
-            if not hs: continue
-            
-            seg = clean(html_content[from_pos : (len(html_content) if to_pos == float('inf') else to_pos)])
-            dm = re.search(r'(\d{3,4})\s*(?:m\s*)?(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)\b', seg, re.IGNORECASE)
-            
-            for h in hs:
-                c = h["cells"]
-                races_pool.append({
-                    "Koşu No": bi + 1,
-                    "S": int(h["no"]) if str(h["no"]).isdigit() else 1,
-                    "At İsmi": h["name"],
-                    "Yaş": c[2] if len(c) > 2 else "3y ae",
-                    "Orijin": c[3] if len(c) > 3 else "BELİRTİLMEDİ",
-                    "Sıklet": float(c[4].replace(',', '.')) if (len(c) > 4 and ',' in c[4]) else float(c[4]) if (len(c) > 4 and c[4].replace('.','',1).isdigit()) else 57.0,
-                    "Jokey": c[5].upper() if len(c) > 5 else "G.KOCAKAYA", 
-                    "Sahip": c[6].upper() if len(c) > 6 else "AT SAHİBİ",
-                    "Antrenörü": c[7].upper() if len(c) > 7 else "ANTRENÖR",
-                    "HP": int(c[8]) if (len(c) > 8 and str(c[8]).isdigit()) else 50,
-                    "Son 6 Y.": c[9] if len(c) > 9 else "1-1-2-3",
-                    "Son Koşu Tarihi": c[10] if len(c) > 10 else "11.09.2026",
-                    "Ganyan": "-",
-                    "Mesafe": f"{dm.group(1)} M" if dm else "1400 M",
-                    "Pist_Tipi": dm.group(2).upper() if dm else "ÇİM"
-                })
-        return pd.DataFrame(races_pool)
+        url = f"{WORKER_URL}{endpoint}"
+        response = requests.get(url, params=params, timeout=30)
+        if response.status_code == 200:
+            return response.json()
+        return {"ok": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def time_to_sec(time_str):
+    """Derece metnini (Örn: 1.22.45 veya 1:22.45) saniyeye çevirir."""
+    if not time_str:
+        return None
+    try:
+        clean_str = str(time_str).replace(":", ".").strip()
+        parts = clean_str.split(".")
+        if len(parts) == 3:
+            return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 100
+        elif len(parts) == 2:
+            return int(parts[0]) + int(parts[1]) / 100
     except:
-        return pd.DataFrame()
+        pass
+    return None
 
-# --- CSS / HTML STİL ARACIMIZ ---
-st.markdown("""
-    <style>
-    .main-title { font-size: 2.3rem !important; font-weight: 800 !important; color: #FF4B4B; text-align: center; margin-bottom: 0px; }
-    .sub-title { font-size: 0.95rem !important; text-align: center; color: #A0AEC0; margin-bottom: 20px; }
-    .kosu-box { padding: 12px 22px; border-radius: 6px; font-weight: bold; text-align: center; font-size: 0.85rem; color: white; min-width: 120px; border: 1px solid rgba(255,255,255,0.1); }
-    .kosu-box.secili { background: linear-gradient(135deg, #6B46C1, #805AD5); border-color: #9F7AEA; }
-    .kosu-box.normal { background: linear-gradient(135deg, #22543D, #2F855A); border-color: #48BB78; }
-    .analiz-badge { background-color: #1A365D; color: #63B3ED; padding: 6px 14px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; display: inline-block; margin-bottom: 15px; border: 1px solid #2B6CB0; }
-    </style>
-""", unsafe_allow_html=True)
+def calculate_speed_kmh(distance, time_str):
+    """Mesafe ve derece üzerinden hız (km/s) hesaplar."""
+    sec = time_to_sec(time_str)
+    try:
+        dist = float(distance)
+        if sec and dist > 0:
+            return round((dist / sec) * 3.6, 2)
+    except:
+        pass
+    return None
 
-st.markdown('<p class="main-title">RACE INTELLIGENCE V34</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Gerçek TJK geçmişi + galop + karşılaştırma motoru • V54 Worker uyumlu • kesin koşanlar</p>', unsafe_allow_html=True)
-st.divider()
+# --- V54 İSTEMCİ TABANLI ANALİZ MOTORU ---
+def run_v54_analysis(horses, race_meta, horse_details):
+    """Worker v54.0 mantığı ile uyumlu V54 skor analizi gerçekleştirir."""
+    analyzed_horses = []
+    
+    # Koşmaz atları ele
+    active_horses = [h for h in horses if not any(kw in str(h.get("name", "")).lower() for kw in ["koşmaz", "kosmaz", "çekildi", "cekildi"])]
+    if not active_horses:
+        return []
 
-# --- ÜST YATAY FİLTRE BAR TASARIMI ---
-col_tarih, col_sehir, col_kosu_select, col_btn = st.columns([1.5, 2, 2.5, 1.5])
+    for horse in active_horses:
+        h_name = horse.get("name", "")
+        details = horse_details.get(h_name, {})
+        history = details.get("history", [])
+        workouts = details.get("workouts", [])
+        
+        # Son Hız / Derece Hesabı (Pist ve Mesafe uyumlu son geçerli koşu)
+        last_speed_kmh = None
+        last_race_info = {}
+        for h_item in history:
+            speed = calculate_speed_kmh(h_item.get("distance"), h_item.get("time"))
+            if speed:
+                last_speed_kmh = speed
+                last_race_info = h_item
+                break
 
-with col_tarih:
-    secilen_tarih = st.date_input("Tarih Seçimi", datetime.now(), label_visibility="collapsed")
-    tarih_str = secilen_tarih.strftime("%d/%m/%Y")
+        # En iyi galop/idman derecesi
+        best_workout_sec = None
+        for w in workouts[:5]:
+            for m_key in ["m1400", "m1200", "m1000", "m800", "m600", "m400", "m200"]:
+                val = time_to_sec(w.get(m_key))
+                if val and (best_workout_sec is None or val < best_workout_sec):
+                    best_workout_sec = val
 
-# V54 Worker Orijinal CITY_IDS Sözlüğü
-CITY_IDS = {"ANKARA": "5", "KOCAELİ": "9", "İSTANBUL": "3", "BURSA": "4", "İZMİR": "1", "ADANA": "2", "ELAZIĞ": "6", "DİYARBAKIR": "7", "ŞANLIURFA": "8", "ANTALYA": "10"}
+        # HP / Sıklet Tespiti
+        try:
+            hp = float(horse.get("hp", 0))
+        except:
+            hp = 0.0
+        try:
+            weight = float(horse.get("weight", 0))
+        except:
+            weight = 0.0
 
-with col_sehir:
-    secilen_sehir = st.selectbox("Hipodrom Seçimi", list(CITY_IDS.keys()), label_visibility="collapsed")
+        analyzed_horses.append({
+            "no": horse.get("no", ""),
+            "name": h_name,
+            "jockey": horse.get("jockey", "-"),
+            "weight": weight,
+            "hp": hp,
+            "last6": horse.get("last6", "-"),
+            "last_speed_kmh": last_speed_kmh,
+            "last_race_date": last_race_info.get("date", "-"),
+            "last_race_dist": last_race_info.get("distance", "-"),
+            "best_workout_sec": best_workout_sec,
+            "history_count": len(history),
+            "workout_count": len(workouts),
+            "atId": horse.get("atId")
+        })
 
-# V54 Çekirdek Robust Algoritmasıyla Bülten Filtreleniyor
-bulten_df = v54_worker_parse_kayitlar_robust(tarih_str, CITY_IDS[secilen_sehir])
+    # Taban ve Tavan Değerler
+    max_hp = max([h["hp"] for h in analyzed_horses], default=100) or 1
+    min_weight = min([h["weight"] for h in analyzed_horses if h["weight"] > 0], default=50) or 50
+    max_weight = max([h["weight"] for h in analyzed_horses], default=60) or 60
 
-# --- GÜVENLİK DUVARI: VERİ BOŞSA YEDEK SİMÜLASYONU ÇALIŞTIR ---
-if bulten_df.empty:
-    yedek_bulten = [
-        {"Koşu No": 1, "S": 1, "At İsmi": "ABİMSİN", "Yaş": "3y ae", "Orijin": "HIZLITAY - EMEL", "Sıklet": 61.0, "Jokey": "G.KOCAKAYA", "Sahip": "T. İZZET AKSOY", "Antrenörü": "A.TEPEBAŞI", "HP": 84, "Son 6 Y.": "3-2-2-2-7", "Son Koşu Tarihi": "02.09.2026", "Ganyan": "1,20", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
-        {"Koşu No": 1, "S": 2, "At İsmi": "IZOTOP", "Yaş": "3y ke", "Orijin": "KURTEL - AHU", "Sıklet": 52.0, "Jokey": "E.KADİRLER", "Sahip": "M. ÖMER NAZLI", "Antrenörü": "N.YILDIRIM", "HP": 72, "Son 6 Y.": "2-3-1-4-5", "Son Koşu Tarihi": "24.08.2026", "Ganyan": "4,30", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
-        {"Koşu No": 2, "S": 1, "At İsmi": "SABRİNİN KIZI", "Yaş": "3y dd", "Orijin": "TURBO - SABRİNA", "Sıklet": 52.0, "Jokey": "B.ÇIĞLA", "Sahip": "MEH. ALBAYRAK", "Antrenörü": "H.E.UYSAL", "HP": 50, "Son 6 Y.": "1-3-6-9-3", "Son Koşu Tarihi": "10.09.2026", "Ganyan": "35,25", "Pist_Tipi": "KUM", "Mesafe": "1200 M"},
-        {"Koşu No": 2, "S": 2, "At İsmi": "BESNİ", "Yaş": "3y ae", "Orijin": "ALTAHA - ELİF", "Sıklet": 57.0, "Jokey": "V.ABİŞ", "Sahip": "ADİL KÖSEOĞLU", "Antrenörü": "M.SOYKUZZU", "HP": 60, "Son 6 Y.": "4-5-2-1-3", "Son Koşu Tarihi": "05.09.2026", "Ganyan": "8,40", "Pist_Tipi": "KUM", "Mesafe": "1200 M"}
-    ]
-    bulten_df = pd.DataFrame(yedek_bulten)
+    # Skorlama Algo V54
+    for h in analyzed_horses:
+        # HP Puanı (Ağırlık: %35)
+        hp_score = (h["hp"] / max_hp) * 100 if max_hp > 0 else 50
+        
+        # Sıklet Puanı (Düşük Sıklet Avantajdır) (Ağırlık: %20)
+        weight_range = (max_weight - min_weight) or 1
+        weight_score = ((max_weight - h["weight"]) / weight_range) * 100 if h["weight"] > 0 else 50
+        
+        # Son Hız Puanı (Ağırlık: %25)
+        speed_score = min(100, (h["last_speed_kmh"] / 60.0) * 100) if h["last_speed_kmh"] else 40
+        
+        # İdman Puanı (Ağırlık: %20)
+        workout_score = 70 if h["best_workout_sec"] else 30
 
-toplam_kosular = sorted(bulten_df["Koşu No"].unique())
+        # Genel Skor Hesabı
+        final_score = (hp_score * 0.35) + (weight_score * 0.20) + (speed_score * 0.25) + (workout_score * 0.20)
+        h["v54_score"] = round(final_score, 2)
 
-with col_kosu_select:
-    kosu_opsiyonlari = []
-    for k in toplam_kosular:
-        sub = bulten_df[bulten_df["Koşu No"] == k]
-        p_m = sub["Mesafe"].iloc[0] if not sub.empty else "1400 M"
+    # Skora göre sırala
+    analyzed_horses.sort(key=lambda x: x["v54_score"], reverse=True)
+    return analyzed_horses
+
+
+# --- ANA UYGULAMA ---
+def main():
+    st.title("🏇 Race Intelligence - TJK Analiz Sistemi")
+    st.caption("Cloudflare Worker v54.0 Motoru İle Desteklenmektedir")
+
+    # YAN MENÜ: Şehir ve Tarih Seçimi
+    st.sidebar.header("🔍 Program Filtreleri")
+    selected_date = st.sidebar.date_input("Yarış Tarihi", datetime.today())
+    date_str = selected_date.strftime("%Y-%m-%d")
+
+    # 1. Şehirleri Çek
+    with st.sidebar:
+        with st.spinner("Şehirler yükleniyor..."):
+            city_res = fetch_api("/api/tjk/cities", {"date": date_str})
+
+    if not city_res.get("ok") or not city_res.get("cities"):
+        st.warning(f"Seçilen tarihte ({date_str}) aktif yarış şehri bulunamadı veya API yanıt vermedi.")
+        st.info("İpucu: Worker URL'nizi veya internet bağlantınızı kontrol edin.")
+        return
+
+    city_names = [c["name"] for c in city_res["cities"]]
+    selected_city = st.sidebar.selectbox("Şehir Seçin", city_names)
+
+    # 2. Günlük Program Verisini Çek
+    st.header(f"📍 {selected_city} Yarış Programı ({date_str})")
+    data_res = fetch_api("/api/tjk/data", {"date": date_str, "city": selected_city})
+
+    if not data_res.get("ok") or not data_res.get("races"):
+        st.error("Yarış programı verisi alınamadı.")
+        return
+
+    races = data_res["races"]
+    st.success(f"Toplam **{len(races)}** koşu ve **{data_res.get('horseCount', 0)}** at listelendi.")
+
+    # Koşu Seçim Sekmeleri
+    race_tabs = st.tabs([f"{r.get('no', i+1)}. Koşu ({r.get('time', '-')})" for i, r in enumerate(races)])
+
+    for idx, tab in enumerate(race_tabs):
+        race = races[idx]
+        with tab:
+            meta = race.get("meta", {})
+            st.markdown(f"**Detay:** {meta.get('raceName', meta.get('detail', 'Bilgi Yok'))}")
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Mesafe", f"{meta.get('distance', '-')}m")
+            c2.metric("Pist", meta.get("surface", "-"))
+            c3.metric("E.İ.D", meta.get("eid", "-"))
+
+            horses = race.get("horses", [])
+            if not horses:
+                st.info("Bu koşuda at bulunamadı.")
+                continue
+
+            # Analiz Başlatma Butonu
+            if st.button(f"{race.get('no')} . Koşu İçin Detaylı V54 Analizini Çalıştır", key=f"btn_{idx}"):
+                horse_details = {}
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                # Atların geçmiş ve idman verilerini paralel/sıralı çek
+                for i, h in enumerate(horses):
+                    h_name = h.get("name")
+                    at_id = h.get("atId")
+                    status_text.text(f"At Verisi Çekiliyor ({i+1}/{len(horses)}): {h_name}")
+                    
+                    if at_id:
+                        h_data = fetch_api("/api/tjk/horsedata", {"atId": at_id, "horse": h_name})
+                        if h_data.get("ok"):
+                            horse_details[h_name] = h_data
+                    
+                    progress_bar.progress((i + 1) / len(horses))
+
+                status_text.success("Tüm at verileri toplandı, V54 algoritması çalıştırılıyor...")
+                
+                # V54 Hesaplaması
+                results = run_v54_analysis(horses, meta, horse_details)
+                
+                # Tablo Oluşturma
+                df = pd.DataFrame(results)
+                
+                # Tablo Sütunlarını Düzenle
+                df_display = df[[
+                    "no", "name", "v54_score", "hp", "weight", "jockey", 
+                    "last_speed_kmh", "last_race_dist", "last6", "history_count", "workout_count"
+                ]].copy()
+                
+                df_display.columns = [
+                    "At No", "At İsmi", "V54 Skoru", "HP", "Sıklet", "Jokey", 
+                    "Son Hız (km/s)", "Son Mesafe", "Son 6", "Geçmiş Koşu", "Galop Sayısı"
+                ]
+
+                st.subheader("📊 V54 Yapay Zeka Sıralama Sonuçları")
+                st.dataframe(
+                    df_display.style.highlight_max(subset=["V54 Skoru"], color="#d4edda"),
+                    use_container_width=True
+                )
+
+            else:
+                # Varsayılan Koşu Listesi (Analiz Yapılmadan Önceki Hali)
+                df_simple = pd.DataFrame(horses)
+                columns_to_show = [c for c in ["no", "name", "jockey", "weight", "hp", "last6", "trainer"] if c in df_simple.columns]
+                st.dataframe(df_simple[columns_to_show], use_container_width=True)
+
+if __name__ == "__main__":
+    main()
