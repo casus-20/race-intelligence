@@ -113,7 +113,7 @@ def v54_worker_parser_motoru(tarih_str, sehir_id):
                 ganyan = r[ganyanI] if (ganyanI >= 0 and ganyanI < len(r)) else "-"
                 
                 races.append({
-                    "Koşu No": len(races) // 6 + 1,  # Dinamik koşu gruplama mantığı
+                    "Koşu No": len(races) // 6 + 1,
                     "Sıra": sira,
                     "At İsmi": name.upper(),
                     "Jokey": jokey.upper(),
@@ -133,7 +133,6 @@ st.markdown("""
     <style>
     .main-title { font-size: 2.3rem !important; font-weight: 800 !important; color: #FF4B4B; text-align: center; margin-bottom: 0px; }
     .sub-title { font-size: 0.95rem !important; text-align: center; color: #A0AEC0; margin-bottom: 20px; }
-    .kosu-bar-container { display: flex; gap: 8px; justify-content: flex-start; margin-bottom: 20px; }
     .kosu-box { padding: 10px 20px; border-radius: 6px; font-weight: bold; text-align: center; font-size: 0.85rem; color: white; min-width: 100px; border: 1px solid rgba(255,255,255,0.1); }
     .kosu-box.secili { background: linear-gradient(135deg, #6B46C1, #805AD5); border-color: #9F7AEA; box-shadow: 0 0 10px rgba(128,90,213,0.4); }
     .kosu-box.normal { background: linear-gradient(135deg, #22543D, #2F855A); border-color: #48BB78; }
@@ -152,7 +151,7 @@ with col_tarih:
     secilen_tarih = st.date_input("Tarih Seçimi", datetime.now(), label_visibility="collapsed")
     tarih_str = secilen_tarih.strftime("%d/%m/%Y")
 
-# Worker Kodunuzdaki Birebir Şehir Kimlikleri (CITY_IDS)
+# Worker Şehir Kimlikleri (CITY_IDS)
 CITY_IDS = {
     "İSTANBUL": "3", "ANKARA": "5", "İZMİR": "1", "ADANA": "2", 
     "BURSA": "4", "KOCAELİ": "9", "ŞANLIURFA": "8", "ELAZIĞ": "6", "DİYARBAKIR": "7", "ANTALYA": "10"
@@ -164,18 +163,18 @@ with col_sehir:
 # Veri Akışını Başlatıyoruz
 bulten_df = v54_worker_parser_motoru(tarih_str, CITY_IDS[secilen_sehir])
 
-# Kilitlenme Önleyici Gelişmiş Yedek Katman (Hata Satırı Tamamen Düzeltildi)
+# Kilitlenme Önleyici Gelişmiş Yedek Katman (Kritik döngü hatası tamamen silinip temizlendi)
 if bulten_df.empty:
     yedek_liste = [
+        {"Koşu No": 1, "At İsmi": "VARDARKORAL", "Jokey": "M.S.ÇELİK", "Kilo": "56", "Pist_Tipi": "KUM", "Mesafe": "1200 M"},
         {"Koşu No": 2, "At İsmi": "ABİMSİN", "Jokey": "G.KOCAKAYA", "Kilo": "57", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
         {"Koşu No": 2, "At İsmi": "BESNİ", "Jokey": "V.ABİŞ", "Kilo": "57", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
         {"Koşu No": 2, "At İsmi": "BİRTUGAN", "Jokey": "A.YILDIZ", "Kilo": "57", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
         {"Koşu No": 2, "At İsmi": "SOLMAN", "Jokey": "M.KAYA", "Kilo": "57", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
         {"Koşu No": 2, "At İsmi": "TUNÇYILMAZ", "Jokey": "M.ÇİÇEK", "Kilo": "55", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
-        {"Koşu No": 2, "At İsmi": "EZERGEÇER", "Jokey": "E.AKKILIÇ", "Kilo": "55", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"}
+        {"Koşu No": 2, "At İsmi": "EZERGEÇER", "Jokey": "E.AKKILIÇ", "Kilo": "55", "Pist_Tipi": "ÇİM", "Mesafe": "1400 M"},
+        {"Koşu No": 3, "At İsmi": "FIRTINAKEMAL", "Jokey": "A.ÇELİK", "Kilo": "58", "Pist_Tipi": "KUM", "Mesafe": "1900 M"}
     ]
-    for k in:
-        yedek_liste.append({"Koşu No": k, "At İsmi": "VARDARKORAL", "Jokey": "M.S.ÇELİK", "Kilo": "56", "Pist_Tipi": "KUM", "Mesafe": "1200 M"})
     bulten_df = pd.DataFrame(yedek_liste)
 
 toplam_kosular = sorted(bulten_df["Koşu No"].unique())
@@ -212,3 +211,5 @@ with st.expander("⚙️ CANLI MODEL AYARLARI • 8 kriter • %100 normalize", 
         k8 = st.slider("Son Yarış Skoru (%)", 0, 100, 75)
 
 # --- 🟢 RENKLİ GÜNLÜK YARIŞ AKIŞI BUTONLARI ---
+st.markdown("### 📅 Günlük Yarış Programı Akışı")
+kosu_buton_sutunlari = st.columns(len(toplam_kosular))
