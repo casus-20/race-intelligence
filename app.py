@@ -1284,99 +1284,143 @@ def _html_real_table(df: pd.DataFrame, widths=None) -> None:
     )
 
 
-def _history_tables(history: List[Dict[str, Any]]) -> None:
-    """TJK resmi At Koşu Bilgileri tablosunu görseldeki kolon düzeninde gösterir.
+def _safe_video_url(row: Dict[str, Any]) -> str:
+    """TJK'nin gerçek yarış video URL'sini döndürür; URL yoksa boş bırakır."""
+    value = _first_value(row, [
+        "videoUrl", "video_url", "video", "videoLink", "video_link",
+        "urlVideo", "videoURL", "raceVideoUrl", "race_video_url",
+    ])
+    text = display_value(value, "")
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    return ""
 
-    Veri yalnızca Worker'ın TJK geçmiş koşu kaydından gelir; alanlar uydurulmaz.
-    """
+
+def _history_tables(history: List[Dict[str, Any]]) -> None:
+    """TJK gerçek koşu geçmişi: sıralanabilir başlıklar + gerçek video bağlantısı."""
     if not history:
         st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
         return
 
-    headers = ["Tarih", "Şehir", "Msf", "Pist", "Sonuç", "K Cinsi", "Grup",
-               "Derece", "Jokey", "Kilo", "Takı", "St", "HP", "Sahip / Antr.",
-               "AGF", "Gny", "İkramiye", ""]
-    rows_html = []
+    rows = []
     for row in history:
         if not isinstance(row, dict):
             continue
         owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
-        trainer = display_value(_first_value(row, ["trainer", "antrenor"]), "-")
-        owner_trainer = f"{owner}<br>{trainer}" if trainer != "-" else owner
-        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye"])
+        trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
+        owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
         prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
-        values = [
-            display_value(_first_value(row, ["date", "tarih", "Tarih"])),
-            display_value(_first_value(row, ["city", "şehir", "Sehir"])),
-            display_value(_first_value(row, ["distance", "msf", "mesafe", "Msf"])),
-            display_value(_first_value(row, ["surface", "pist", "Pist"])),
-            display_value(_first_value(row, ["place", "sira", "Sıra", "S"])),
-            display_value(_first_value(row, ["className", "class", "kcins", "K Cinsi", "raceType"])),
-            display_value(_first_value(row, ["group", "grup", "Grup"])),
-            display_value(_first_value(row, ["time", "derece", "Derece"])),
-            display_value(_first_value(row, ["jockey", "jokey", "Jokey"])),
-            display_value(_first_value(row, ["weight", "kilo", "siklet", "Sıklet"])),
-            display_value(_first_value(row, ["equipment", "taki", "takı", "Takı"])),
-            display_value(_first_value(row, ["post", "st", "start", "St"])),
-            display_value(_first_value(row, ["hp", "HP"])),
-            owner_trainer,
-            display_value(_first_value(row, ["agf", "AGF"])),
-            display_value(_first_value(row, ["odds", "gny", "Gny"])),
-            prize,
-        ]
-        cells_html = "".join(f"<td>{str(v).replace('&','&amp;').replace('<br>','<br>')}</td>" for v in values)
-        rows_html.append(f"<tr>{cells_html}<td class='row-action'>▶</td></tr>")
+        rows.append({
+            "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+            "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
+            "Msf": display_value(_first_value(row, ["distance", "msf", "mesafe", "Msf"])),
+            "Pist": display_value(_first_value(row, ["surface", "pist", "Pist"])),
+            "Sonuç": display_value(_first_value(row, ["place", "sira", "Sıra", "S"])),
+            "K Cinsi": display_value(_first_value(row, ["className", "class", "kcins", "K Cinsi", "raceType"])),
+            "Grup": display_value(_first_value(row, ["group", "grup", "Grup"])),
+            "Derece": display_value(_first_value(row, ["time", "derece", "Derece"])),
+            "Jokey": display_value(_first_value(row, ["jockey", "jokey", "Jokey"])),
+            "Kilo": display_value(_first_value(row, ["weight", "kilo", "siklet", "Sıklet"])),
+            "Takı": display_value(_first_value(row, ["equipment", "taki", "takı", "Takı"])),
+            "St": display_value(_first_value(row, ["post", "st", "start", "St"])),
+            "HP": display_value(_first_value(row, ["hp", "HP"])),
+            "Sahip / Antr.": owner_trainer,
+            "AGF": display_value(_first_value(row, ["agf", "AGF"])),
+            "Gny": display_value(_first_value(row, ["odds", "gny", "Gny"])),
+            "İkramiye": prize,
+            "Video": _safe_video_url(row),
+        })
 
-    head = "".join(f"<th>{h}{' ↕' if h else ''}</th>" for h in headers)
-    html = f"""
-    <div class='tjk-detail-table-wrap'>
-      <table class='tjk-detail-table history-detail'>
-        <thead><tr>{head}</tr></thead>
-        <tbody>{''.join(rows_html)}</tbody>
-      </table>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning("TJK geçmişinde gösterilecek kayıt bulunamadı.")
+        return
+
+    # Native Streamlit DataFrame kullanılır: sütun başlıklarına tıklayınca
+    # artan/azalan sıralama çalışır. Video sütunu gerçek URL'yi yeni sekmede açar.
+    column_config = {
+        "Tarih": st.column_config.TextColumn("Tarih", width=90),
+        "Şehir": st.column_config.TextColumn("Şehir", width=95),
+        "Msf": st.column_config.TextColumn("Msf", width=65),
+        "Pist": st.column_config.TextColumn("Pist", width=90),
+        "Sonuç": st.column_config.TextColumn("Sonuç", width=65),
+        "K Cinsi": st.column_config.TextColumn("K Cinsi", width=110),
+        "Grup": st.column_config.TextColumn("Grup", width=65),
+        "Derece": st.column_config.TextColumn("Derece", width=80),
+        "Jokey": st.column_config.TextColumn("Jokey", width=105),
+        "Kilo": st.column_config.TextColumn("Kilo", width=65),
+        "Takı": st.column_config.TextColumn("Takı", width=70),
+        "St": st.column_config.TextColumn("St", width=45),
+        "HP": st.column_config.TextColumn("HP", width=50),
+        "Sahip / Antr.": st.column_config.TextColumn("Sahip / Antr.", width=155),
+        "AGF": st.column_config.TextColumn("AGF", width=65),
+        "Gny": st.column_config.TextColumn("Gny", width=65),
+        "İkramiye": st.column_config.TextColumn("İkramiye", width=100),
+        "Video": st.column_config.LinkColumn("Video", width=55, display_text="▶"),
+    }
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        height=min(760, 54 + len(df) * 43),
+        row_height=42,
+        key="history_detail_table",
+    )
 
 
 def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
-    """TJK gerçek İdman/Galop tablosunu referans görseldeki kolonlarla gösterir."""
+    """TJK gerçek galopları: sıralanabilir başlıklar + varsa gerçek video bağlantısı."""
     if not workouts:
         st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
         return
 
-    headers = ["Tarih", "Şehir", "İ.Jokey", "1200", "1000", "800", "600", "400",
-               "Çalışma", "Pist", ""]
-    rows_html = []
+    rows = []
     for row in workouts:
         if not isinstance(row, dict):
             continue
-        vals = [
-            display_value(_first_value(row, ["date", "tarih", "Tarih"])),
-            display_value(_first_value(row, ["city", "track", "hipodrom", "şehir", "Sehir"])),
-            display_value(_first_value(row, ["jockey", "jokey", "rider", "binici"])),
-            display_value(_first_value(row, ["m1200", "1200", "time1200"])),
-            display_value(_first_value(row, ["m1000", "1000", "time1000"])),
-            display_value(_first_value(row, ["m800", "800", "time800"])),
-            display_value(_first_value(row, ["m600", "600", "time600"])),
-            display_value(_first_value(row, ["m400", "400", "time400"])),
-            display_value(_first_value(row, ["type", "tur", "Tür", "note", "not"])),
-            display_value(_first_value(row, ["surface", "pist"])),
-        ]
-        cells_html = "".join(f"<td>{str(v).replace('&','&amp;').replace('<br>','<br>')}</td>" for v in vals)
-        rows_html.append(f"<tr>{cells_html}<td class='row-action'>▶</td></tr>")
+        rows.append({
+            "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+            "Şehir": display_value(_first_value(row, ["city", "track", "hipodrom", "şehir", "Sehir"])),
+            "İ.Jokey": display_value(_first_value(row, ["jockey", "jokey", "rider", "binici"])),
+            "1200": display_value(_first_value(row, ["m1200", "1200", "time1200"])),
+            "1000": display_value(_first_value(row, ["m1000", "1000", "time1000"])),
+            "800": display_value(_first_value(row, ["m800", "800", "time800"])),
+            "600": display_value(_first_value(row, ["m600", "600", "time600"])),
+            "400": display_value(_first_value(row, ["m400", "400", "time400"])),
+            "Çalışma": display_value(_first_value(row, ["type", "tur", "Tür", "note", "not"])),
+            "Pist": display_value(_first_value(row, ["surface", "pist"])),
+            "Video": _safe_video_url(row),
+        })
 
-    head = "".join(f"<th>{h}{' ↕' if h else ''}</th>" for h in headers)
-    html = f"""
-    <div class='tjk-detail-table-wrap'>
-      <table class='tjk-detail-table workout-detail'>
-        <thead><tr>{head}</tr></thead>
-        <tbody>{''.join(rows_html)}</tbody>
-      </table>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning("TJK galop verisinde gösterilecek kayıt bulunamadı.")
+        return
 
+    column_config = {
+        "Tarih": st.column_config.TextColumn("Tarih", width=90),
+        "Şehir": st.column_config.TextColumn("Şehir", width=95),
+        "İ.Jokey": st.column_config.TextColumn("İ.Jokey", width=100),
+        "1200": st.column_config.TextColumn("1200", width=65),
+        "1000": st.column_config.TextColumn("1000", width=65),
+        "800": st.column_config.TextColumn("800", width=65),
+        "600": st.column_config.TextColumn("600", width=65),
+        "400": st.column_config.TextColumn("400", width=65),
+        "Çalışma": st.column_config.TextColumn("Çalışma", width=90),
+        "Pist": st.column_config.TextColumn("Pist", width=90),
+        "Video": st.column_config.LinkColumn("Video", width=55, display_text="▶"),
+    }
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        height=min(760, 54 + len(df) * 43),
+        row_height=42,
+        key="workout_detail_table",
+    )
 
 def _number(value: Any) -> float | None:
     if value is None:
