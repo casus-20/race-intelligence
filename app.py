@@ -45,7 +45,7 @@ ALL_CITIES = [
 # ANALİZ AĞIRLIKLARI
 # ============================================================
 
-ANALYSIS_WEIGHTS = {
+DEFAULT_WEIGHTS = {
     "Pist / Mesafe": 22,
     "Ortak Rakip": 18,
     "Sınıf / HP": 14,
@@ -55,6 +55,29 @@ ANALYSIS_WEIGHTS = {
     "Galop / Tempo": 5,
     "Ham Hız": 3,
 }
+
+WEIGHT_KEYS = {
+    "Pist / Mesafe": "w_pist",
+    "Ortak Rakip": "w_ortak",
+    "Sınıf / HP": "w_sinif",
+    "Güncel Form": "w_form",
+    "Kilo": "w_kilo",
+    "Derece": "w_derece",
+    "Galop / Tempo": "w_galop",
+    "Ham Hız": "w_hiz",
+}
+
+for _criterion, _default in DEFAULT_WEIGHTS.items():
+    if WEIGHT_KEYS[_criterion] not in st.session_state:
+        st.session_state[WEIGHT_KEYS[_criterion]] = _default
+
+def current_weights():
+    return {
+        criterion: int(st.session_state[WEIGHT_KEYS[criterion]])
+        for criterion in DEFAULT_WEIGHTS
+    }
+
+ANALYSIS_WEIGHTS = current_weights()
 
 
 # ============================================================
@@ -101,6 +124,50 @@ st.markdown(
         margin-bottom: 10px;
     }
 
+    .ri-header {
+        border: 1px solid rgba(128,128,128,.25);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .ri-title {
+        font-size: 26px;
+        font-weight: 800;
+        letter-spacing: .3px;
+    }
+
+    .ri-subtitle {
+        font-size: 13px;
+        opacity: .72;
+        margin-top: 3px;
+    }
+
+    .ri-clock {
+        font-size: 12px;
+        font-weight: 800;
+        opacity: .7;
+        letter-spacing: 1px;
+    }
+
+    .condition-box {
+        border: 1px solid rgba(80,130,190,.30);
+        border-radius: 7px;
+        padding: 10px 12px;
+        margin: 6px 0 12px 0;
+        font-size: 13px;
+        line-height: 1.55;
+    }
+
+    .model-note {
+        font-size: 12px;
+        opacity: .72;
+        margin-top: -4px;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -108,18 +175,21 @@ st.markdown(
 
 
 # ============================================================
-# BAŞLIK
+# BAŞLIK — V34 GÖRÜNÜMÜ
 # ============================================================
 
 st.markdown(
-    '<div class="main-title">🏇 Race Intelligence</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    '<div class="sub-title">'
-    "TJK yarış programı ve yarış analiz sistemi"
-    "</div>",
+    """
+    <div class="ri-header">
+        <div>
+            <div class="ri-title">🏇 RACE INTELLIGENCE</div>
+            <div class="ri-subtitle">
+                Gerçek TJK geçmişi + galop + karşılaştırma motoru • V54 Worker uyumlu • kesin koşanlar
+            </div>
+        </div>
+        <div class="ri-clock">CANLI MODEL</div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -478,8 +548,9 @@ def calculate_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any], city: 
             "Ham Hız": hiz,
         }
 
-        ham = sum(components[k] * ANALYSIS_WEIGHTS[k] for k in ANALYSIS_WEIGHTS)
-        final_score = ham / sum(ANALYSIS_WEIGHTS.values())
+        weights = current_weights()
+        ham = sum(components[k] * weights[k] for k in weights)
+        final_score = ham / sum(weights.values()) if sum(weights.values()) else 0.0
 
         results.append({
             "horse_index": i,
@@ -844,75 +915,97 @@ if selected_race is None:
 
 
 # ============================================================
+# CANLI MODEL AYARLARI
+# ============================================================
+
+with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
+    st.caption(
+        "Kaydırıcıları değiştirdiğinde puan ve sıralama anında yeniden hesaplanır. "
+        "TJK'ya yeniden istek gönderilmez."
+    )
+
+    weight_items = list(DEFAULT_WEIGHTS.items())
+    cols = st.columns(4)
+
+    for idx, (criterion, default_value) in enumerate(weight_items):
+        key = WEIGHT_KEYS[criterion]
+        with cols[idx % 4]:
+            st.slider(
+                criterion,
+                min_value=0,
+                max_value=40,
+                key=key,
+                step=1,
+                help=f"{criterion} kriterinin model içindeki ham ağırlığı.",
+            )
+
+    ANALYSIS_WEIGHTS = current_weights()
+    weight_total = sum(ANALYSIS_WEIGHTS.values())
+    normalized = {
+        k: (v * 100.0 / weight_total if weight_total else 0.0)
+        for k, v in ANALYSIS_WEIGHTS.items()
+    }
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        if st.button("↩️ GERÇEK VERİYLE VARSAYILANLARA DÖN", use_container_width=True):
+            for criterion, value in DEFAULT_WEIGHTS.items():
+                st.session_state[WEIGHT_KEYS[criterion]] = value
+            st.rerun()
+    with c2:
+        st.button(
+            "🧠 MANUEL ANALİZİ UYGULA",
+            use_container_width=True,
+            type="primary",
+        )
+    with c3:
+        st.markdown(
+            f"<div style='text-align:right;padding-top:8px;font-size:13px;'>"
+            f"<b>Ham: {weight_total}</b> • <b>Normalize: 100</b>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.caption(
+        "Normalize edilmiş ağırlıklar: "
+        + " • ".join(f"{k} %{normalized[k]:.1f}" for k in ANALYSIS_WEIGHTS)
+    )
+
+
+# ============================================================
 # KOŞU BİLGİLERİ
 # ============================================================
 
-race_number = get_race_number(
-    selected_race,
-    1,
-)
-
-race_time = display_value(
-    selected_race.get(
-        "race_time"
-    )
-)
-
-distance = display_value(
-    selected_race.get(
-        "distance"
-    )
-)
-
-surface = display_value(
-    selected_race.get(
-        "surface"
-    )
-)
-
+race_number = get_race_number(selected_race, 1)
+race_time = display_value(selected_race.get("race_time"))
+distance = display_value(selected_race.get("distance"))
+surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
-
 
 st.markdown("---")
 
-
-st.subheader(
-    f"{race_number}. Koşu"
+st.markdown(
+    f"<h2 style='margin-bottom:6px'>{race_number}. Koşu {race_time if race_time != '-' else ''}</h2>",
+    unsafe_allow_html=True,
 )
 
+st.markdown(
+    f"<div class='condition-box'><b>{condition}</b></div>",
+    unsafe_allow_html=True,
+)
 
-info1, info2, info3, info4 = st.columns(4)
-
-
+info1, info2, info3 = st.columns(3)
 with info1:
-
-    st.metric(
-        "Saat",
-        race_time,
-    )
-
-
+    st.metric("Saat", race_time)
 with info2:
-
-    st.metric(
-        "Mesafe",
-        distance,
-    )
-
-
+    st.metric("Mesafe", f"{distance} m" if distance != "-" and "m" not in distance.lower() else distance)
 with info3:
-
-    st.metric(
-        "Pist",
-        surface,
-    )
+    st.metric("Pist", surface)
 
 
-with info4:
-
-    st.markdown("**Şart**")
-    st.write(condition)
-
+# ============================================================
+# AT LİSTESİ
+# ============================================================
 
 # ============================================================
 # AT LİSTESİ
@@ -1052,7 +1145,8 @@ else:
             )
             st.caption(
                 "Not: Günlük Worker verisinde ortak rakip geçmişi ayrı bir veri kümesi olarak gelmediği için "
-                "%18 Ortak Rakip kriteri şu aşamada nötr (%50) tutulur. Eksik veriye puan uydurulmaz."
+                "Ortak Rakip kriteri şu aşamada nötr (%50) tutulur. Eksik veriye puan uydurulmaz. "
+                "Ağırlık değişiklikleri üstteki canlı model ayarlarından uygulanır."
             )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
@@ -1061,56 +1155,17 @@ else:
 
 
 # ============================================================
-# ANALİZ SİSTEMİ
+# MODEL DURUMU
 # ============================================================
 
 st.markdown("---")
-
-
-st.subheader(
-    "🧠 Analiz Sistemi"
+st.markdown(
+    f"**CANLI MODEL:** Ham {sum(ANALYSIS_WEIGHTS.values())} • Normalize 100 • "
+    f"Seçili koşu: {race_number}. koşu",
 )
-
-
-st.write(
-    "Yarış değerlendirmesinde kullanılacak kriter ağırlıkları:"
+st.caption(
+    "Model ağırlıkları üstteki CANLI MODEL AYARLARI bölümünden değiştirilebilir."
 )
-
-
-weight_columns = st.columns(4)
-
-
-for index, (
-    criterion,
-    weight,
-) in enumerate(
-    ANALYSIS_WEIGHTS.items()
-):
-
-    with weight_columns[
-        index % 4
-    ]:
-
-        st.metric(
-            criterion,
-            f"%{weight}",
-        )
-
-
-# ============================================================
-# AĞIRLIK TOPLAMI
-# ============================================================
-
-weight_total = sum(
-    ANALYSIS_WEIGHTS.values()
-)
-
-
-st.info(
-    f"Ham ağırlık toplamı: %{weight_total}. "
-    "Final skorunda bu toplam normalize edilecektir."
-)
-
 
 # ============================================================
 # SİSTEM DURUMU
