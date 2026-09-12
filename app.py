@@ -2938,166 +2938,117 @@ else:
         "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=90),
     }
 
-    selected_horse_index = st.session_state.get("selected_horse_index")
+    # ANA PROGRAM TABLOSU — sabit HTML tablo.
+    # Native st.dataframe yerine kullanılır; böylece No + At İsmi gerçek
+    # CSS sticky ile yatay kaydırmada kesin olarak sabit kalır.
+    from html import escape as _html_escape
 
-    def _row_style(row):
-        try:
-            pos = int(row.name)
-        except Exception:
-            pos = 0
-        if selected_horse_index is not None and int(df.iloc[int(row.name)]["_horse_index"]) == int(selected_horse_index):
-            bg, fg = "#dceeff", "#062b55"
-        else:
-            bg, fg = ("#ffffff", "#17212b") if pos % 2 == 0 else ("#f1f3f5", "#17212b")
-        return [f"background-color:{bg};color:{fg};font-weight:700;" for _ in row]
+    def _esc(v):
+        return _html_escape(str(v if v is not None else "")).replace("\n", "<br>")
 
-    def _cell_style(data):
-        styles = pd.DataFrame("", index=data.index, columns=data.columns)
-        if "No" in data.columns:
-            styles["No"] = "font-weight:900;text-align:center;"
-        return styles
+    def _split2(v):
+        return str(v or "-").split("\n", 1)
 
-    _style_source = df.copy()
-    styled_df = (
-        _style_source[display_columns]
-        .style
-        .apply(_row_style, axis=1)
-        .apply(_cell_style, axis=None)
-        .set_properties(**{
-            "font-size":"9px", "font-weight":"700",
-            "white-space":"pre-line", "vertical-align":"middle",
-            "color":"#17212b"
-        })
-        .set_table_styles([
-            {"selector":"th", "props":[
-                ("background-color","#d5dae2"),("color","#101820"),
-                ("font-weight","900"),("font-size","9px"),
-                ("height","42px"),("text-align","center"),
-                ("border","1px solid #c0c7d0")
-            ]},
-            {"selector":"td", "props":[
-                ("font-size","9px"),("font-weight","700"),
-                ("white-space","pre-line"),("border","1px solid #d2d7de")
-            ]},
-        ])
-    )
+    def _jockey_html(v):
+        p = _split2(v)
+        return (f"<span class='ri-blue'>{_esc(p[0])}</span><br><span class='ri-red'>{_esc(p[1])}</span>"
+                if len(p) == 2 else _esc(v))
 
-    # Hücre içi vurgu: isim/orijin/jokey/sahip-antrenör/kilo/EİD.
-    # Native dataframe korunur; böylece satır seçimi ve yatay kaydırma çalışmaya devam eder.
-    def _semantic_cell_style(data):
-        out = pd.DataFrame("", index=data.index, columns=data.columns)
-        if "At İsmi" in data.columns:
-            out["At İsmi"] = "font-weight:900;"
-        if "Jokey" in data.columns:
-            out["Jokey"] = "font-weight:800;"
-        if "Sahip / Antrenör" in data.columns:
-            out["Sahip / Antrenör"] = "font-weight:800;"
-        if "Kilo" in data.columns:
-            out["Kilo"] = "font-weight:900;"
-        if "EİD" in data.columns:
-            out["EİD"] = "color:#d62828 !important;font-weight:900;"
-        return out
+    def _owner_html(v):
+        p = _split2(v)
+        return (f"<span class='ri-blue'>{_esc(p[0])}</span><br><span class='ri-red'>{_esc(p[1])}</span>"
+                if len(p) == 2 else _esc(v))
 
-    styled_df = styled_df.apply(_semantic_cell_style, axis=None)
+    def _origin_html(v):
+        p = _split2(v)
+        return (f"<span class='ri-blue'>{_esc(p[0])}</span><br><span class='ri-black'>{_esc(p[1])}</span>"
+                if len(p) == 2 else _esc(v))
 
-    table_row_height = 44
-    table_height = 54 + (len(df) * table_row_height) + 28
+    def _weight_html(v):
+        p = _split2(v)
+        return (f"<span>{_esc(p[0])}</span> <span class='ri-red'>{_esc(p[1])}</span>"
+                if len(p) == 2 and p[1].strip() else _esc(v))
 
-    st.markdown("""
-    <style>
-    .ri-mode-badge { text-align:center; font-size:9px; padding:9px 4px; color:#66717d; }
-    .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
-    .ri-model-summary { text-align:right; font-size:9px; color:#46515d; }
-    div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:visible !important; }
-    
-    div[data-testid="stDataFrame"] [role="columnheader"] {
-        background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
-        font-weight:900 !important; height:34px !important; min-height:34px !important;
-        line-height:34px !important; border-color:#c0c7d0 !important; text-transform:none !important;
-    }
-    div[data-testid="stDataFrame"] [role="columnheader"] * { color:#101820 !important; font-weight:900 !important; background:transparent !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"] {
-        line-height:1.18 !important;
-        white-space:pre-line !important;
-        color:#17212b !important;
-    }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical { width:0 !important; }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal { height:12px !important; }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb { background:#aeb7c2 !important; border-radius:8px !important; }
-    /* Seçim kutusu görünür ve mavi */
-    div[data-testid="stDataFrame"] input[type="checkbox"] {
-        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
-        min-width:15px !important; margin:0 !important; accent-color:#1976d2 !important;
-        cursor:pointer !important;
-    }
-    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) {
-        width:30px !important; min-width:30px !important; max-width:30px !important;
-        padding:0 !important; background:#171b24 !important;
-    }
-    /* No + At İsmi sabitleme column_config icindeki pinned=True ile yapilir.
-       Grid'e position:sticky zorlanmaz; bu yatay kaydirmayi bozabilir. */
-    /* PROGRAMI GETİR: daima mavi */
-    .st-key-program_get_button button {
-        background:#1976d2 !important;
-        border-color:#1976d2 !important;
-        color:#ffffff !important;
-        font-size:14px !important;
-        font-weight:800 !important;
-        line-height:1.15 !important;
-        min-height:42px !important;
-        padding:7px 10px !important;
-        white-space:normal !important;
-    }
-    .st-key-program_get_button button:hover {
-        background:#1565c0 !important; border-color:#1565c0 !important;
-    }
+    def _eid_html(hidx, value):
+        txt = str(value or "-")
+        if txt == "-": return "-"
+        h = horses[hidx] if 0 <= hidx < len(horses) else {}
+        info = []
+        for key, label in (("bestTime", "EİD"), ("bestTimeDistance", "Mesafe"), ("bestTimeTrack", "Pist"), ("bestTimeDate", "Tarih")):
+            vv = h.get(key)
+            if vv not in (None, "", "-"): info.append(f"<div><b>{_esc(label)}:</b> {_esc(vv)}</div>")
+        if not info: info = [f"<div><b>EİD:</b> {_esc(txt)}</div>"]
+        return f"<details class='ri-eid'><summary>{_esc(txt)}</summary>{''.join(info)}</details>"
 
-    /* Üst işlem düğmeleri: key tabanlıdır; veri yüklenmeden önce de renklidir. */
-    .st-key-reset_model_button_top button, .st-key-reset_model_button_top button[kind="secondary"] {
-        background:#c58a2b !important; border-color:#c58a2b !important; color:#fff !important;
-    }
-    .st-key-real_analysis_button_top button, .st-key-real_analysis_button_top button[kind="secondary"] {
-        background:#20a34a !important; border-color:#20a34a !important; color:#fff !important;
-    }
-    .st-key-manual_analysis_button_top button, .st-key-manual_analysis_button_top button[kind="secondary"] {
-        background:#ff4b4b !important; border-color:#ff4b4b !important; color:#fff !important;
-    }
-    .st-key-reset_model_button_top button:hover { background:#b77d24 !important; }
-    .st-key-real_analysis_button_top button:hover { background:#188a3e !important; }
-    .st-key-manual_analysis_button_top button:hover { background:#e83f3f !important; }
-
-    /* Tablo seçim kutusu: görünür mavi */
-    div[data-testid="stDataFrame"] input[type="checkbox"] {
-        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
-        min-width:15px !important; accent-color:#1976d2 !important;
-    }
-    /* Ana tablo kompakt TJK görünümü */
-    div[data-testid="stDataFrame"] [role="columnheader"] {
-        font-size:10px !important; font-weight:900 !important;
-    }
-    div[data-testid="stDataFrame"] [role="gridcell"] {
-        white-space:pre-line !important; line-height:1.15 !important;
-    }
-        </style>
-    """, unsafe_allow_html=True)
-
-    table_event = st.dataframe(
-        styled_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-        key="horse_table",
-        on_select="rerun",
-        selection_mode="single-row",
-        height=table_height,
-        row_height=table_row_height,
-    )
-
-    selected_rows = []
+    # HTML tablodaki at seçimi query parametresiyle çalışır. Checkbox görünümü
+    # gerçek bir seçim bağlantısıdır; tıklanınca sayfa aynı atı seçerek yenilenir.
     try:
-        selected_rows = list(table_event.selection.rows)
+        _qno = st.query_params.get("horse_no")
     except Exception:
-        selected_rows = []
+        _qno = None
+    if _qno:
+        for _i, _h in enumerate(horses):
+            if str(get_horse_number(_h, _i + 1)) == str(_qno):
+                st.session_state.selected_horse_index = _i
+                st.session_state.selected_horse_no = get_horse_number(_h, _i + 1)
+                break
+
+    selected_horse_index = st.session_state.get("selected_horse_index")
+    selected_rows = []
+    if selected_horse_index is not None:
+        for _ri, _row in df.iterrows():
+            if int(_row.get("_horse_index", _ri)) == int(selected_horse_index):
+                selected_rows = [_ri]
+                break
+
+    cols = [
+        ("", 38), ("No", 42), ("At İsmi", 155), ("Yaş", 55), ("Orijin (Baba-Anne)", 185),
+        ("Kilo", 70), ("Jokey", 105), ("Sahip / Antrenör", 155), ("St", 38), ("Hp", 42),
+        ("Son 6", 68), ("KGS", 48), ("s20", 45), ("EİD", 75), ("Gny", 58), ("AGF", 58),
+        ("BİZİM SKOR", 82), ("ŞART UYUMU", 78), ("GÜNCEL SINIF", 88), ("SON GALOP", 92),
+        ("SON KOŞU", 82), ("BU YIL KAZANÇ", 105), ("TOPLAM KAZANÇ", 110)
+    ]
+    th = "".join(f"<th class='c{i}'>{_esc(n)}</th>" for i,(n,_) in enumerate(cols))
+    trs = []
+    for ri, row in df.iterrows():
+        hidx = int(row.get("_horse_index", ri)); no = int(row.get("No", hidx + 1))
+        sel = selected_horse_index is not None and hidx == int(selected_horse_index)
+        rc = "selected" if sel else ("even" if ri % 2 == 0 else "odd")
+        check = f"<a class='ri-check checked' href='?horse_no={no}'>✓</a>" if sel else f"<a class='ri-check' href='?horse_no={no}'>□</a>"
+        td = [
+            check, str(no), _esc(row.get("At İsmi", "-")), _esc(row.get("Yaş", "-")),
+            _origin_html(row.get("Orijin (Baba-Anne)", "-")), _weight_html(row.get("Kilo", "-")),
+            _jockey_html(row.get("Jokey", "-")), _owner_html(row.get("Sahip / Antrenör", "-")),
+            _esc(row.get("St", "-")), _esc(row.get("HP", "-")), _esc(row.get("Son 6 Y.", "-")),
+            _esc(row.get("KGS", "-")), _esc(row.get("s20", "-")), _eid_html(hidx, row.get("EİD", "-")),
+            _esc(row.get("Gny", "-")), _esc(row.get("AGF", "-")), _esc(row.get("BİZİM SKOR", "-")),
+            _esc(row.get("ŞART UYUMU", "-")), _esc(row.get("GÜNCEL SINIF", "-")),
+            _esc(row.get("SON GALOP", "-")), _esc(row.get("SON KOŞU", "-")),
+            _esc(row.get("BU YIL KAZANÇ", "-")), _esc(row.get("TOPLAM KAZANÇ", "-"))
+        ]
+        trs.append(f"<tr class='{rc}'>" + "".join(f"<td class='c{i}'>{v}</td>" for i,v in enumerate(td)) + "</tr>")
+
+    st.markdown(f"""
+    <style>
+    .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
+    table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
+    .ri-table th{{position:sticky;top:0;z-index:20;background:#d5dae2;color:#101820;height:38px;padding:5px 7px;border-right:1px solid #bcc4cf;border-bottom:1px solid #aab3bf;text-align:center;font-weight:900;white-space:nowrap;}}
+    .ri-table td{{height:46px;padding:5px 7px;border-right:1px solid #d4d9df;border-bottom:1px solid #d0d5dc;color:#17212b;font-weight:700;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+    .ri-table tr.even td{{background:#fff;}} .ri-table tr.odd td{{background:#eef1f4;}} .ri-table tr.selected td{{background:#cfe6ff!important;color:#07345f!important;}}
+    .ri-table .c0,.ri-table .c1,.ri-table .c2{{position:sticky;z-index:10;}}
+    .ri-table th.c0{{left:0;z-index:30;width:38px;}} .ri-table td.c0{{left:0;z-index:11;width:38px;background:#171d27;}}
+    .ri-table th.c1{{left:38px;z-index:30;width:42px;}} .ri-table td.c1{{left:38px;z-index:11;width:42px;}}
+    .ri-table th.c2{{left:80px;z-index:30;width:155px;text-align:left;}} .ri-table td.c2{{left:80px;z-index:11;width:155px;font-weight:900;}}
+    .ri-table tr.even td.c0,.ri-table tr.even td.c1,.ri-table tr.even td.c2{{background:#fff;}} .ri-table tr.odd td.c0,.ri-table tr.odd td.c1,.ri-table tr.odd td.c2{{background:#eef1f4;}}
+    .ri-table tr.selected td.c0,.ri-table tr.selected td.c1,.ri-table tr.selected td.c2{{background:#cfe6ff!important;}}
+    .ri-check{{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border:1px solid #647180;border-radius:3px;color:#1976d2!important;background:#fff;text-decoration:none!important;font-size:15px;font-weight:900;}} .ri-check.checked{{background:#1976d2;border-color:#1976d2;color:#fff!important;}}
+    .ri-blue{{color:#1976d2;font-weight:900;}} .ri-red{{color:#d62828;font-weight:900;}} .ri-black{{color:#101820;font-weight:800;}}
+    .ri-extra-weight{{color:#d62828;font-weight:900;}} .ri-eid summary{{cursor:pointer;color:#d62828;font-weight:900;}}
+    .ri-eid div{{background:#fff3f3;color:#17212b;border:1px solid #efb2b2;padding:4px 6px;margin-top:3px;border-radius:3px;white-space:normal;min-width:150px;}}
+    .ri-table-wrap::-webkit-scrollbar{{height:12px;}} .ri-table-wrap::-webkit-scrollbar-thumb{{background:#8b96a4;border-radius:7px;}}
+    </style>
+    <div class='ri-table-wrap'><table class='ri-table'><thead><tr>{th}</tr></thead><tbody>{''.join(trs)}</tbody></table></div>
+    """, unsafe_allow_html=True)
 
     if selected_rows:
         selected_display_row = int(selected_rows[0])
