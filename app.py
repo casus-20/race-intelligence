@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+from urllib.parse import quote_plus
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List
@@ -2951,7 +2952,7 @@ else:
 
     def _jockey_html(v):
         p = _split2(v)
-        return (f"<span class='ri-blue'>{_esc(p[0])}</span><br><span class='ri-red'>{_esc(p[1])}</span>"
+        return (f"<span class='ri-blue'>{_esc(p[0])}</span> <span class='ri-red'>{_esc(p[1])}</span>"
                 if len(p) == 2 else _esc(v))
 
     def _owner_html(v):
@@ -2966,8 +2967,18 @@ else:
 
     def _weight_html(v):
         p = _split2(v)
-        return (f"<span>{_esc(p[0])}</span> <span class='ri-red'>{_esc(p[1])}</span>"
+        return (f"<span>{_esc(p[0])}</span><span class='ri-red'>{_esc(p[1])}</span>"
                 if len(p) == 2 and p[1].strip() else _esc(v))
+
+    def _last_race_html(horse):
+        row = horse.get("_last_race") if isinstance(horse, dict) else None
+        if not isinstance(row, dict):
+            return "-"
+        value = display_value(_first_value(row, ["time", "derece", "Derece"]), "-")
+        surface = str(_first_value(row, ["surface", "pist", "Pist"]) or "").strip().lower()
+        # Son koşunun pisti: çim yeşil, kum/sentetik siyah.
+        cls = "ri-green" if ("çim" in surface or "cim" in surface) else "ri-black"
+        return f"<span class='{cls}'>{_esc(value)}</span>"
 
     def _eid_html(hidx, value):
         txt = str(value or "-")
@@ -2984,14 +2995,41 @@ else:
     # gerçek bir seçim bağlantısıdır; tıklanınca sayfa aynı atı seçerek yenilenir.
     try:
         _qno = st.query_params.get("horse_no")
+        _sort = st.query_params.get("sort")
+        _dir = str(st.query_params.get("dir") or "asc").lower()
     except Exception:
         _qno = None
+        _sort = None
+        _dir = "asc"
     if _qno:
         for _i, _h in enumerate(horses):
             if str(get_horse_number(_h, _i + 1)) == str(_qno):
                 st.session_state.selected_horse_index = _i
                 st.session_state.selected_horse_no = get_horse_number(_h, _i + 1)
                 break
+
+    # Statik HTML tablonun başlıkları da gerçek sıralama düğmesidir.
+    # Her tıklamada aynı kolon asc/desc arasında geçer; seçim korunur.
+    _sort_keys = {
+        "No": "No", "At İsmi": "At İsmi", "Yaş": "Yaş",
+        "Orijin (Baba-Anne)": "Orijin (Baba-Anne)", "Kilo": "Kilo",
+        "Jokey": "Jokey", "Sahip / Antrenör": "Sahip / Antrenör",
+        "St": "St", "Hp": "HP", "Son 6": "Son 6 Y.", "KGS": "KGS",
+        "s20": "s20", "EİD": "EİD", "Gny": "Gny", "AGF": "AGF",
+        "BİZİM SKOR": "BİZİM SKOR", "ŞART UYUMU": "ŞART UYUMU",
+        "GÜNCEL SINIF": "GÜNCEL SINIF", "SON GALOP": "SON GALOP",
+        "SON KOŞU": "SON KOŞU", "BU YIL KAZANÇ": "BU YIL KAZANÇ",
+        "TOPLAM KAZANÇ": "TOPLAM KAZANÇ",
+    }
+    if _sort in _sort_keys:
+        _sk = _sort_keys[_sort]
+        def _sortable(v):
+            x = str(v if v is not None else "").strip()
+            if _sk in {"No", "St", "HP", "KGS", "s20", "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF"}:
+                try: return (0, float(x.replace(".", "").replace(",", ".")))
+                except Exception: return (1, x.lower())
+            return (1, x.lower())
+        df = df.sort_values(by=[_sk], key=lambda col: col.map(_sortable), ascending=(_dir != "desc"), kind="mergesort")
 
     selected_horse_index = st.session_state.get("selected_horse_index")
     selected_rows = []
@@ -3008,7 +3046,26 @@ else:
         ("BİZİM SKOR", 82), ("ŞART UYUMU", 78), ("GÜNCEL SINIF", 88), ("SON GALOP", 92),
         ("SON KOŞU", 82), ("BU YIL KAZANÇ", 105), ("TOPLAM KAZANÇ", 110)
     ]
-    th = "".join(f"<th class='c{i}'>{_esc(n)}</th>" for i,(n,_) in enumerate(cols))
+    def _sort_href(label):
+        if label not in _sort_keys:
+            return ""
+        next_dir = "desc" if (_sort == label and _dir != "desc") else "asc"
+        parts = [f"sort={quote_plus(label)}", f"dir={next_dir}"]
+        if selected_horse_index is not None:
+            try:
+                parts.append(f"horse_no={int(get_horse_number(horses[int(selected_horse_index)], int(selected_horse_index)+1))}")
+            except Exception:
+                pass
+        return "?" + "&".join(parts)
+
+    _th_parts = []
+    for i,(n,_) in enumerate(cols):
+        if n in _sort_keys:
+            arrow = " ↓" if (_sort == n and _dir == "desc") else (" ↑" if _sort == n else " ↕")
+            _th_parts.append(f"<th class='c{i}'><a class='ri-sort' href='{_sort_href(n)}'>{_esc(n)}{arrow}</a></th>")
+        else:
+            _th_parts.append(f"<th class='c{i}'>{_esc(n)}</th>")
+    th = "".join(_th_parts)
     trs = []
     for ri, row in df.iterrows():
         hidx = int(row.get("_horse_index", ri)); no = int(row.get("No", hidx + 1))
@@ -3016,14 +3073,14 @@ else:
         rc = "selected" if sel else ("even" if ri % 2 == 0 else "odd")
         check = f"<a class='ri-check checked' href='?horse_no={no}'>✓</a>" if sel else f"<a class='ri-check' href='?horse_no={no}'>□</a>"
         td = [
-            check, str(no), _esc(row.get("At İsmi", "-")), _esc(row.get("Yaş", "-")),
+            check, f"<a class='ri-horse-link' href='?horse_no={no}'>{_esc(row.get('At İsmi', '-'))}</a>", _esc(row.get("Yaş", "-")),
             _origin_html(row.get("Orijin (Baba-Anne)", "-")), _weight_html(row.get("Kilo", "-")),
             _jockey_html(row.get("Jokey", "-")), _owner_html(row.get("Sahip / Antrenör", "-")),
             _esc(row.get("St", "-")), _esc(row.get("HP", "-")), _esc(row.get("Son 6 Y.", "-")),
             _esc(row.get("KGS", "-")), _esc(row.get("s20", "-")), _eid_html(hidx, row.get("EİD", "-")),
             _esc(row.get("Gny", "-")), _esc(row.get("AGF", "-")), _esc(row.get("BİZİM SKOR", "-")),
             _esc(row.get("ŞART UYUMU", "-")), _esc(row.get("GÜNCEL SINIF", "-")),
-            _esc(row.get("SON GALOP", "-")), _esc(row.get("SON KOŞU", "-")),
+            _esc(row.get("SON GALOP", "-")), _last_race_html(horses[hidx]),
             _esc(row.get("BU YIL KAZANÇ", "-")), _esc(row.get("TOPLAM KAZANÇ", "-"))
         ]
         trs.append(f"<tr class='{rc}'>" + "".join(f"<td class='c{i}'>{v}</td>" for i,v in enumerate(td)) + "</tr>")
@@ -3033,6 +3090,9 @@ else:
     .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
     table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
     .ri-table th{{position:sticky;top:0;z-index:20;background:#d5dae2;color:#101820;height:38px;padding:5px 7px;border-right:1px solid #bcc4cf;border-bottom:1px solid #aab3bf;text-align:center;font-weight:900;white-space:nowrap;}}
+.ri-table th .ri-sort{{color:#101820;text-decoration:none;display:block;width:100%;height:100%;}} .ri-table th .ri-sort:hover{{color:#1976d2;}}
+    .ri-horse-link{{color:#101820;text-decoration:none;font-weight:900;}} .ri-horse-link:hover{{color:#1976d2;text-decoration:underline;}}
+    .ri-green{{color:#169447;font-weight:900;}}
     .ri-table td{{height:46px;padding:5px 7px;border-right:1px solid #d4d9df;border-bottom:1px solid #d0d5dc;color:#17212b;font-weight:700;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
     .ri-table tr.even td{{background:#fff;}} .ri-table tr.odd td{{background:#eef1f4;}} .ri-table tr.selected td{{background:#cfe6ff!important;color:#07345f!important;}}
     .ri-table .c0,.ri-table .c1,.ri-table .c2{{position:sticky;z-index:10;}}
