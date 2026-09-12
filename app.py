@@ -3085,7 +3085,7 @@ else:
         ]
         trs.append(f"<tr class='{rc}'>" + "".join(f"<td class='c{i}'>{v}</td>" for i,v in enumerate(td)) + "</tr>")
 
-    st.markdown(f"""
+    st.html(f"""
     <style>
     .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
     table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
@@ -3108,7 +3108,7 @@ else:
     .ri-table-wrap::-webkit-scrollbar{{height:12px;}} .ri-table-wrap::-webkit-scrollbar-thumb{{background:#8b96a4;border-radius:7px;}}
     </style>
     <div class='ri-table-wrap'><table class='ri-table'><thead><tr>{th}</tr></thead><tbody>{''.join(trs)}</tbody></table></div>
-    """, unsafe_allow_html=True)
+    """)
 
     if selected_rows:
         selected_display_row = int(selected_rows[0])
