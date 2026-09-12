@@ -2444,3 +2444,58 @@ div.ri-subtitle {
 }
 </style>
 """, unsafe_allow_html=True)
+
+
+st.markdown("""<style>
+
+/* ANA ATLAR TABLOSU — REFERANS RENKLER */
+div[data-testid="stDataFrame"] [role="gridcell"] {
+    min-height: 54px !important;
+    height: 54px !important;
+    line-height: 54px !important;
+    font-weight: 900 !important;
+    font-size: 14px !important;
+    border-color: rgba(90,190,225,0.35) !important;
+}
+div[data-testid="stDataFrame"] [role="columnheader"] {
+    min-height: 70px !important;
+    height: 70px !important;
+    line-height: 70px !important;
+    background: #0878E8 !important;
+    color: #FFFFFF !important;
+    font-weight: 950 !important;
+    font-size: 15px !important;
+    border-color: rgba(255,255,255,0.35) !important;
+}
+div[data-testid="stDataFrame"] [role="columnheader"] * {
+    color: #FFFFFF !important;
+    font-weight: 950 !important;
+}
+div[data-testid="stDataFrame"] [role="row"]:nth-child(odd) [role="gridcell"] {
+    background: #005B3B !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stDataFrame"] [role="row"]:nth-child(even) [role="gridcell"] {
+    background: #C7E7F8 !important;
+    color: #062C63 !important;
+}
+div[data-testid="stDataFrame"] [role="row"]:nth-child(odd) [role="gridcell"] * {
+    color: #FFFFFF !important;
+    font-weight: 900 !important;
+}
+div[data-testid="stDataFrame"] [role="row"]:nth-child(even) [role="gridcell"] * {
+    color: #062C63 !important;
+    font-weight: 900 !important;
+}
+div[data-testid="stDataFrame"] [role="row"][aria-selected="true"] [role="gridcell"],
+div[data-testid="stDataFrame"] [role="row"][data-selected="true"] [role="gridcell"] {
+    background: #0878E8 !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stDataFrame"] [role="row"][aria-selected="true"] [role="gridcell"] *,
+div[data-testid="stDataFrame"] [role="row"][data-selected="true"] [role="gridcell"] * {
+    color: #FFFFFF !important;
+    font-weight: 950 !important;
+}
+
+</style>""", unsafe_allow_html=True)
