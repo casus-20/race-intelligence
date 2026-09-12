@@ -9,6 +9,11 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
+except Exception:
+    AgGrid = GridOptionsBuilder = JsCode = GridUpdateMode = DataReturnMode = None
+
 from worker.tjk_fetch import get_program, get_horse_enrichment
 
 
@@ -115,6 +120,10 @@ if "selected_horse_no" not in st.session_state:
 if "selected_horse_index" not in st.session_state:
     st.session_state.selected_horse_index = None
     st.session_state["_selected_detail_fetch_key"] = None
+if "_eid_info_open" not in st.session_state:
+    st.session_state["_eid_info_open"] = False
+if "_eid_info_key" not in st.session_state:
+    st.session_state["_eid_info_key"] = None
 if "_selected_detail_fetch_key" not in st.session_state:
     st.session_state["_selected_detail_fetch_key"] = None
 
@@ -964,7 +973,9 @@ def get_horse_weight(
         or horse.get("Sıklet")
         or horse.get("weight")
     )
-    return f"{base}\n{extra}" if extra else base
+    # Ana tabloda kullanıcı istediği biçim: "52 +1.5".
+    # Fazla kilo değeri gerçek veriden gelir; burada yalnızca gösterim normalize edilir.
+    return f"{base} {extra.replace(',', '.')}" if extra else base
 
 
 def get_horse_jockey(
@@ -2891,6 +2902,16 @@ else:
             "_SON_KOSU_PIST": last_race_surface(horse),
             "BU YIL KAZANÇ": _format_tl(year_earnings(horse, target_year)),
             "TOPLAM KAZANÇ": _format_tl(total_earnings(horse)),
+            "_ORIGIN_SIRE": _split_origin(get_horse_origin(horse))[0],
+            "_ORIGIN_DAM": _split_origin(get_horse_origin(horse))[1],
+            "_JOCKEY_NAME": get_horse_jockey(horse).split("\n", 1)[0],
+            "_JOCKEY_AP": (get_horse_jockey(horse).split("\n", 1)[1] if "\n" in get_horse_jockey(horse) else ""),
+            "_OWNER": owner or "-",
+            "_TRAINER": trainer or "-",
+            "_WEIGHT_BASE": _weight_parts(horse.get("siklet") or horse.get("Sıklet") or horse.get("weight"))[0],
+            "_WEIGHT_EXTRA": _weight_parts(horse.get("siklet") or horse.get("Sıklet") or horse.get("weight"))[1],
+            "_EID_RAW": display_value(horse.get("bestTime")),
+            "_CELL_CLICK": "",
             "Sahip": owner or "-",
             "Antrenör": trainer or "-",
         })
@@ -2920,10 +2941,10 @@ else:
         "No": st.column_config.NumberColumn("No", format="%d", width=32, pinned=True),
         "At İsmi": st.column_config.TextColumn("At İsmi", width=110, pinned=True),
         "Yaş": st.column_config.TextColumn("Yaş", width=40),
-        "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=140),
-        "Kilo": st.column_config.TextColumn("Kilo", width=38),
-        "Jokey": st.column_config.TextColumn("Jokey", width=84),
-        "Sahip / Antrenör": st.column_config.TextColumn("Sahip / Antrenör", width=115),
+        "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=155),
+        "Kilo": st.column_config.TextColumn("Kilo", width=58),
+        "Jokey": st.column_config.TextColumn("Jokey", width=92),
+        "Sahip / Antrenör": st.column_config.TextColumn("Sahip / Antrenör", width=135),
         "St": st.column_config.TextColumn("St", width=30),
         "HP": st.column_config.TextColumn("Hp", width=34),
         "Son 6 Y.": st.column_config.TextColumn("Son 6", width=38),
@@ -2941,225 +2962,301 @@ else:
         "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=90),
     }
 
+    # ========================================================
+    # GELİŞMİŞ TJK GRID — FİLTRE + SABİT SÜTUN + HÜCRE OLAYLARI
+    # ========================================================
+    # Native st.dataframe bu isteklerin tamamını aynı anda veremediği için
+    # ana program tablosu AG Grid'e geçirilmiştir. Veri kaynağı ve analiz
+    # hesapları aynıdır; yalnızca tablo render katmanı değişmiştir.
+    if AgGrid is None:
+        st.error("Tablo bileşeni yüklenemedi. requirements.txt içinde streamlit-aggrid-v2==0.3.4 bulunmalıdır.")
+        st.stop()
+
     selected_horse_index = st.session_state.get("selected_horse_index")
 
-    def _row_style(row):
-        try:
-            pos = int(row.name)
-        except Exception:
-            pos = 0
-        if selected_horse_index is not None and int(df.iloc[int(row.name)]["_horse_index"]) == int(selected_horse_index):
-            bg, fg = "#dceeff", "#062b55"
-        else:
-            bg, fg = ("#ffffff", "#17212b") if pos % 2 == 0 else ("#f1f3f5", "#17212b")
-        return [f"background-color:{bg};color:{fg};font-weight:700;" for _ in row]
+    # AG Grid'de gösterilecek veri. Teknik alanlar gizlenir ama seçim/olay
+    # sonrasında gerçek horse_index'i kaybetmemek için DataFrame'de tutulur.
+    _grid_hidden_columns = [
+        "_horse_index", "_horse_no", "_SON_KOSU_PIST",
+        "_ORIGIN_SIRE", "_ORIGIN_DAM", "_JOCKEY_NAME", "_JOCKEY_AP",
+        "_OWNER", "_TRAINER", "_WEIGHT_BASE", "_WEIGHT_EXTRA",
+        "_EID_RAW", "_CELL_CLICK",
+    ]
+    # df kullanılır; df_display yalnızca görünür kolonları içerdiğinden
+    # teknik alanlar selection/event dönüşünde kaybolmamalıdır.
+    grid_df = df[display_columns + _grid_hidden_columns].copy()
 
-    def _cell_style(data):
-        styles = pd.DataFrame("", index=data.index, columns=data.columns)
-        if "No" in data.columns:
-            styles["No"] = "font-weight:900;text-align:center;"
-        # EİD ana tabloda daima kırmızı vurgulanır.
-        if "EİD" in data.columns:
-            styles["EİD"] = "font-weight:900;color:#c62828 !important;"
-        # Kilo içindeki fazla kilo ikinci satırda ayrı gösterilir;
-        # native dataframe hücreyi tek renkte boyadığı için burada yalnız
-        # dönüşüm yapılır, renkli alt metin için mimari değiştirilmez.
-        # Son koşu çim ise derece hücresi yeşil, diğer pistler siyah kalır.
-        if "SON KOŞU" in data.columns:
-            for idx in data.index:
-                try:
-                    surf = str(df.iloc[int(idx)].get("_SON_KOSU_PIST", "")).lower()
-                    if "çim" in surf or "cim" in surf or "grass" in surf or "turf" in surf:
-                        styles.loc[idx, "SON KOŞU"] = "font-weight:900;color:#16833b !important;"
-                    else:
-                        styles.loc[idx, "SON KOŞU"] = "font-weight:900;color:#17212b !important;"
-                except Exception:
-                    pass
-        return styles
+    # Zengin hücre render'ları: Baba/Anne, Jokey/Ap, Sahip/Antrenör,
+    # Kilo ve EİD tek hücre içinde ayrı renklerle gösterilir.
+    origin_renderer = JsCode(r"""
+    function(params) {
+        const sire = params.data._ORIGIN_SIRE || '';
+        const dam = params.data._ORIGIN_DAM || '';
+        return `<div style="line-height:1.15;white-space:normal">
+          <div style="color:#1976d2;font-weight:800">${sire}</div>
+          <div style="color:#111;font-weight:700">${dam}</div>
+        </div>`;
+    }
+    """)
+    jockey_renderer = JsCode(r"""
+    function(params) {
+        const name = params.data._JOCKEY_NAME || '';
+        const ap = params.data._JOCKEY_AP || '';
+        return `<div style="line-height:1.15;white-space:normal">
+          <div style="color:#17212b;font-weight:800">${name}</div>
+          ${ap ? `<div style="color:#e53935;font-weight:900">${ap}</div>` : ''}
+        </div>`;
+    }
+    """)
+    owner_renderer = JsCode(r"""
+    function(params) {
+        const owner = params.data._OWNER || '';
+        const trainer = params.data._TRAINER || '';
+        return `<div style="line-height:1.15;white-space:normal">
+          <div style="color:#1976d2;font-weight:800">${owner}</div>
+          <div style="color:#e53935;font-weight:800">${trainer}</div>
+        </div>`;
+    }
+    """)
+    weight_renderer = JsCode(r"""
+    function(params) {
+        const base = params.data._WEIGHT_BASE || params.value || '';
+        const extra = params.data._WEIGHT_EXTRA || '';
+        return `<div style="line-height:1.15;white-space:normal;font-weight:900">
+          <span style="color:#17212b">${base}</span>${extra ? ` <span style="color:#e53935">+${extra.replace('+','')}</span>` : ''}
+        </div>`;
+    }
+    """)
+    eid_renderer = JsCode(r"""
+    function(params) {
+        const value = params.data._EID_RAW || params.value || '-';
+        return `<span title="Tıkla: EİD bilgisini aç/kapat" style="color:#c62828;font-weight:900;cursor:pointer;text-decoration:underline;text-decoration-style:dotted">${value}</span>`;
+    }
+    """)
+    horse_renderer = JsCode(r"""
+    function(params) {
+        const value = String(params.value || '');
+        const parts = value.split('\\n');
+        const name = parts[0] || '';
+        const equipment = parts.slice(1).join(' ');
+        return `<div style="line-height:1.12;white-space:normal">
+          <div style="font-weight:900;color:#17212b">${name}</div>
+          ${equipment ? `<div style="font-weight:800;color:#e53935">${equipment}</div>` : ''}
+        </div>`;
+    }
+    """)
+    last_race_renderer = JsCode(r"""
+    function(params) {
+        const value = params.value || '-';
+        const surf = String(params.data._SON_KOSU_PIST || '').toLowerCase();
+        const green = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
+        return `<span style="font-weight:900;color:${green ? '#16833b' : '#17212b'}">${value}</span>`;
+    }
+    """)
+    row_style = JsCode(r"""
+    function(params) {
+        if (params.node && params.node.isSelected()) {
+            return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'800'};
+        }
+        return null;
+    }
+    """)
+    # EİD tıklamasını Python'a event_data olarak döndürmek için hücre tıklama
+    # olayında teknik alanı güncelliyoruz. AG Grid v2 cellClicked olayını
+    # Streamlit'e geri iletebiliyor.
+    cell_click = JsCode(r"""
+    function(params) {
+        params.data._CELL_CLICK = String(params.colDef.field || '') + '|' + String(params.node.rowIndex);
+        if (params.colDef.field === 'EİD') {
+            params.node.setSelected(true);
+        }
+    }
+    """)
 
-    _style_source = df.copy()
-    styled_df = (
-        _style_source[display_columns]
-        .style
-        .apply(_row_style, axis=1)
-        .apply(_cell_style, axis=None)
-        .set_properties(**{
-            "font-size":"9px", "font-weight":"700",
-            "white-space":"pre-line", "vertical-align":"middle",
-            "color":"#17212b"
-        })
-        .set_table_styles([
-            {"selector":"th", "props":[
-                ("background-color","#d5dae2"),("color","#101820"),
-                ("font-weight","900"),("font-size","9px"),
-                ("height","42px"),("text-align","center"),
-                ("border","1px solid #c0c7d0")
-            ]},
-            {"selector":"td", "props":[
-                ("font-size","9px"),("font-weight","700"),
-                ("white-space","pre-line"),("border","1px solid #d2d7de")
-            ]},
-        ])
+    gb = GridOptionsBuilder.from_dataframe(grid_df)
+    gb.configure_default_column(
+        sortable=True,
+        filter=True,
+        floatingFilter=True,
+        resizable=True,
+        wrapText=True,
+        autoHeight=False,
+        minWidth=55,
+    )
+    gb.configure_selection(
+        selection_mode="single",
+        use_checkbox=True,
+        header_checkbox=False,
+    )
+    gb.configure_grid_options(
+        rowSelection="single",
+        suppressRowClickSelection=False,
+        getRowStyle=row_style,
+        onCellClicked=cell_click,
+        rowHeight=44,
+        headerHeight=36,
+        floatingFiltersHeight=30,
+        animateRows=False,
+        suppressColumnVirtualisation=False,
+        alwaysShowHorizontalScroll=True,
     )
 
-    table_row_height = 44
-    table_height = 54 + (len(df) * table_row_height) + 28
+    # No + At İsmi solda sabit. Diğer tüm sütunlar yatay kayar.
+    gb.configure_column("No", header_name="No", pinned="left", width=48, minWidth=48, maxWidth=60, filter="agNumberColumn")
+    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=155, minWidth=145, cellRenderer=horse_renderer)
+    gb.configure_column("Yaş", width=58, minWidth=52)
+    gb.configure_column("Orijin (Baba-Anne)", width=180, minWidth=165, cellRenderer=origin_renderer)
+    gb.configure_column("Kilo", width=75, minWidth=68, cellRenderer=weight_renderer)
+    gb.configure_column("Jokey", width=115, minWidth=105, cellRenderer=jockey_renderer)
+    gb.configure_column("Sahip / Antrenör", width=165, minWidth=150, cellRenderer=owner_renderer)
+    gb.configure_column("St", width=48, minWidth=44, filter="agNumberColumn")
+    gb.configure_column("HP", width=52, minWidth=48, filter="agNumberColumn")
+    gb.configure_column("Son 6 Y.", width=72, minWidth=65)
+    gb.configure_column("KGS", width=55, minWidth=50, filter="agNumberColumn")
+    gb.configure_column("s20", width=55, minWidth=50, filter="agNumberColumn")
+    gb.configure_column("EİD", width=78, minWidth=70, cellRenderer=eid_renderer, filter="agTextColumn")
+    gb.configure_column("Gny", width=65, minWidth=58, filter="agNumberColumn")
+    gb.configure_column("AGF", width=65, minWidth=58, filter="agTextColumn")
+    gb.configure_column("BİZİM SKOR", width=90, minWidth=82, filter="agNumberColumn")
+    gb.configure_column("ŞART UYUMU", width=90, minWidth=82, filter="agNumberColumn")
+    gb.configure_column("GÜNCEL SINIF", width=95, minWidth=88, filter="agNumberColumn")
+    gb.configure_column("SON GALOP", width=90, minWidth=82)
+    gb.configure_column("SON KOŞU", width=82, minWidth=75, cellRenderer=last_race_renderer)
+    gb.configure_column("BU YIL KAZANÇ", width=105, minWidth=95)
+    gb.configure_column("TOPLAM KAZANÇ", width=110, minWidth=100)
+
+    for _hidden in [
+        "_horse_index", "_horse_no", "_SON_KOSU_PIST",
+        "_ORIGIN_SIRE", "_ORIGIN_DAM", "_JOCKEY_NAME", "_JOCKEY_AP",
+        "_OWNER", "_TRAINER", "_WEIGHT_BASE", "_WEIGHT_EXTRA",
+        "_EID_RAW", "_CELL_CLICK",
+    ]:
+        gb.configure_column(_hidden, hide=True)
+
+    grid_options = gb.build()
+    # Teknik alanlar yalnızca olay/selection geri dönüşünde kullanılır.
+    grid_options["sideBar"] = False
 
     st.markdown("""
     <style>
-    .ri-mode-badge { text-align:center; font-size:9px; padding:9px 4px; color:#66717d; }
-    .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
-    .ri-model-summary { text-align:right; font-size:9px; color:#46515d; }
-    div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:hidden !important; }
-    div[data-testid="stDataFrame"] input[type="checkbox"] { opacity:0 !important; width:2px !important; margin:0 !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) { width:6px !important; min-width:6px !important; max-width:6px !important; padding:0 !important; }
-    div[data-testid="stDataFrame"] [role="columnheader"] {
-        background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
-        font-weight:900 !important; height:34px !important; min-height:34px !important;
-        line-height:34px !important; border-color:#c0c7d0 !important; text-transform:none !important;
-    }
-    div[data-testid="stDataFrame"] [role="columnheader"] * { color:#101820 !important; font-weight:900 !important; background:transparent !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"],
-    div[data-testid="stDataFrame"] [role="gridcell"] > div {
-        min-height:44px !important; height:44px !important; line-height:1.18 !important;
-        white-space:pre-line !important; overflow:hidden !important; text-overflow:clip !important;
-        overflow-wrap:normal !important; word-break:normal !important; color:#17212b !important;
-    }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical { width:0 !important; }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal { height:12px !important; }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb { background:#aeb7c2 !important; border-radius:8px !important; }
-    /* Seçim kutusu görünür ve mavi */
-    div[data-testid="stDataFrame"] input[type="checkbox"] {
-        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
-        min-width:15px !important; margin:0 !important; accent-color:#1976d2 !important;
-        cursor:pointer !important;
-    }
-    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) {
-        width:30px !important; min-width:30px !important; max-width:30px !important;
-        padding:0 !important; background:#171b24 !important;
-    }
-    /* At İsmi Streamlit'in native pinned column özelliğiyle sabitlenir.
-       CSS ile nth-child/position:sticky uygulanmıyor; çünkü dataframe
-       sanal grid olarak çiziliyor ve bu yöntem yatay kaydırmada çalışmıyor. */
-    /* PROGRAMI GETİR: mavi, kompakt ve okunabilir yazı. */
-    .st-key-program_get_button button {
-        background:#1976d2 !important;
-        border-color:#1976d2 !important;
-        color:#ffffff !important;
-        font-size:14px !important;
-        font-weight:800 !important;
-        line-height:1.2 !important;
-        min-height:42px !important;
-        padding:7px 10px !important;
-        white-space:normal !important;
-    }
-    .st-key-program_get_button button:hover {
-        background:#1565c0 !important;
-        border-color:#1565c0 !important;
-    }
-
-    /* Ana işlem düğmeleri: ana buton tipinden bağımsız sabit renkler. */
-    .st-key-reset_model_button_top button {
-        background:#f2c230 !important; border-color:#d5a900 !important; color:#111 !important;
-        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
-    }
-    .st-key-real_analysis_button_top button {
-        background:#20a34a !important; border-color:#17843a !important; color:#fff !important;
-        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
-    }
-    .st-key-manual_analysis_button_top button {
-        background:#e53935 !important; border-color:#c62828 !important; color:#fff !important;
-        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
-    }
-    .st-key-reset_model_button_top button:hover { filter:brightness(1.06); }
-    .st-key-real_analysis_button_top button:hover { filter:brightness(1.06); }
-    .st-key-manual_analysis_button_top button:hover { filter:brightness(1.06); }
-    .st-key-reset_model_button_top button,
-    .st-key-real_analysis_button_top button,
-    .st-key-manual_analysis_button_top button { border-radius:5px !important; }
-        </style>
+    .ri-aggrid-wrap { border:1px solid #c8cdd4; border-radius:6px; overflow:hidden; }
+    div[data-testid="stAgGrid"] { width:100% !important; }
+    .ag-root-wrapper { border:0 !important; }
+    .ag-header-cell-label { font-weight:900 !important; }
+    .ag-floating-filter { background:#eef1f5 !important; }
+    .ag-floating-filter-input { font-size:11px !important; }
+    .ag-row-selected { background:#dceeff !important; }
+    .ag-row-selected .ag-cell { color:#062b55 !important; }
+    .ag-checkbox-input-wrapper.ag-checked { --ag-checkbox-checked-color:#1976d2 !important; }
+    .ag-checkbox-input-wrapper { --ag-checkbox-checked-color:#1976d2 !important; }
+    .ag-center-cols-viewport, .ag-body-viewport { overflow-x:auto !important; }
+    </style>
     """, unsafe_allow_html=True)
 
-    table_event = st.dataframe(
-        styled_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-        key="horse_table",
-        on_select="rerun",
-        selection_mode="single-row",
-        height=table_height,
-        row_height=table_row_height,
-    )
-
-    selected_rows = []
     try:
-        selected_rows = list(table_event.selection.rows)
-    except Exception:
-        selected_rows = []
+        grid_response = AgGrid(
+            grid_df,
+            gridOptions=grid_options,
+            height=table_height,
+            theme="quartz",
+            update_on=["selectionChanged", "cellClicked"],
+            data_return_mode=DataReturnMode.AS_INPUT,
+            allow_unsafe_jscode=True,
+            key="horse_table_aggrid",
+        )
+    except TypeError:
+        # Eski API ile de çalışabilmesi için güvenli geri dönüş.
+        grid_response = AgGrid(
+            grid_df,
+            gridOptions=grid_options,
+            height=table_height,
+            theme="quartz",
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            data_return_mode=DataReturnMode.AS_INPUT,
+            allow_unsafe_jscode=True,
+            key="horse_table_aggrid",
+        )
 
-    if selected_rows:
-        selected_display_row = int(selected_rows[0])
-        if 0 <= selected_display_row < len(df):
-            selected_horse_index = int(df.iloc[selected_display_row]["_horse_index"])
+    selected_rows_data = getattr(grid_response, "selected_rows", None)
+    if selected_rows_data is None and isinstance(grid_response, dict):
+        selected_rows_data = grid_response.get("selected_rows")
+    if hasattr(selected_rows_data, "to_dict"):
+        selected_records = selected_rows_data.to_dict("records")
+    elif isinstance(selected_rows_data, list):
+        selected_records = selected_rows_data
+    else:
+        selected_records = []
+
+    event_data = getattr(grid_response, "event_data", None)
+    if event_data is None and isinstance(grid_response, dict):
+        event_data = grid_response.get("event_data")
+    if hasattr(event_data, "to_dict"):
+        try:
+            event_data = event_data.to_dict("records")[-1]
+        except Exception:
+            event_data = {}
+    if not isinstance(event_data, dict):
+        event_data = {}
+
+    # Seçilen satır: gerçek TJK at numarası üzerinden değil, gizli horse_index
+    # üzerinden eşlenir; böylece 1,2,3... numarası ile analiz sırası karışmaz.
+    if selected_records:
+        selected_record = selected_records[0]
+        try:
+            selected_horse_index = int(selected_record.get("_horse_index"))
+        except Exception:
+            selected_horse_index = None
+        if selected_horse_index is not None and 0 <= selected_horse_index < len(horses):
             selected_horse = horses[selected_horse_index]
-            st.session_state.selected_horse_no = get_horse_number(
-                selected_horse,
-                selected_horse_index + 1,
-            )
             st.session_state.selected_horse_index = selected_horse_index
-            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
+            st.session_state.selected_horse_no = get_horse_number(
+                selected_horse, selected_horse_index + 1
+            )
 
-            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
-                # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
-                # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
-                try:
-                    load_horse_enrichment.clear()
-                except Exception:
-                    pass
+    # EİD tıklaması: aynı hücreye tekrar tıklamak bilgi kutusunu kapatır.
+    clicked_field = str(event_data.get("colId") or event_data.get("column") or "")
+    clicked_row = event_data.get("rowIndex")
+    if not clicked_field:
+        raw_click = str(event_data.get("_CELL_CLICK") or "")
+        if "|" in raw_click:
+            clicked_field = raw_click.split("|", 1)[0]
+            try:
+                clicked_row = int(raw_click.split("|", 1)[1])
+            except Exception:
+                pass
+    if clicked_field == "EİD":
+        try:
+            clicked_row = int(clicked_row)
+        except Exception:
+            clicked_row = -1
+        if 0 <= clicked_row < len(grid_df):
+            clicked_index = int(grid_df.iloc[clicked_row]["_horse_index"])
+            current_key = (clicked_index, "EİD")
+            if st.session_state.get("_eid_info_key") == current_key and st.session_state.get("_eid_info_open", False):
+                st.session_state._eid_info_open = False
+                st.session_state._eid_info_key = None
+            else:
+                st.session_state._eid_info_open = True
+                st.session_state._eid_info_key = current_key
 
-                horse_status = st.status(
-                    f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
-                    expanded=True,
+    # EİD hücresine tıklanınca gerçek program verisinden bilgi alanı açılır/kapanır.
+    if st.session_state.get("_eid_info_open", False):
+        try:
+            eid_key = st.session_state.get("_eid_info_key")
+            eid_horse_index = int(eid_key[0]) if eid_key else -1
+            if 0 <= eid_horse_index < len(horses):
+                eid_horse = horses[eid_horse_index]
+                eid_value = display_value(eid_horse.get("bestTime"))
+                st.markdown(
+                    f"<div style='margin:6px 0 10px;padding:9px 12px;border:1px solid #e53935;"
+                    f"border-radius:6px;background:#fff5f5;color:#7f1d1d;font-weight:800;'>"
+                    f"EİD BİLGİSİ — {get_horse_number(eid_horse, eid_horse_index + 1)} {get_horse_name(eid_horse)}"
+                    f"<br><span style='font-size:16px;color:#c62828;'>En İyi Derece: {eid_value}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
                 )
-                horse_status.write("📡 Worker /api/tjk/horsedata sorgulanıyor...")
-                horse_status.write(
-                    f"🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}"
-                )
-                try:
-                    enriched_one = enrich_race_horses(
-                        [selected_horse],
-                        target_date=selected_date,
-                        target_city=selected_city,
-                        target_distance=distance,
-                        target_surface=surface,
-                        target_class=condition,
-                    )
-                    if enriched_one:
-                        horses[selected_horse_index] = enriched_one[0]
-                        selected_race["horses"] = horses
-                        selected_horse = horses[selected_horse_index]
-                    if selected_horse.get("_history") or selected_horse.get("_workouts"):
-                        horse_status.update(
-                            label="✅ Atın gerçek koşu ve galop verileri hazır",
-                            state="complete",
-                            expanded=False,
-                        )
-                    else:
-                        horse_status.update(
-                            label="⚠️ TJK bu at için geçmiş/galop verisi döndürmedi",
-                            state="complete",
-                            expanded=True,
-                        )
-                    st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
-                except Exception as exc:
-                    horse_status.update(
-                        label="❌ At geçmişi/galop sorgusu başarısız",
-                        state="error",
-                        expanded=True,
-                    )
-                    st.error(str(exc))
-                    st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
+        except Exception:
+            pass
 
     selected_no = st.session_state.get("selected_horse_no")
     if selected_no is not None:
