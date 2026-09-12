@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -2304,7 +2305,7 @@ st.sidebar.title("🏇 Yarış Programı")
 # yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
 # farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
 # otomatik olarak bugüne geçilir.
-_today = date.today()
+_today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
 if st.session_state.get("_date_auto_sync_day") != _today:
     st.session_state["selected_date_widget"] = _today
     st.session_state["_date_auto_sync_day"] = _today
@@ -2982,9 +2983,24 @@ else:
         width:30px !important; min-width:30px !important; max-width:30px !important;
         padding:0 !important; background:#171b24 !important;
     }
-    /* At İsmi Streamlit'in native pinned column özelliğiyle sabitlenir.
-       CSS ile nth-child/position:sticky uygulanmıyor; çünkü dataframe
-       sanal grid olarak çiziliyor ve bu yöntem yatay kaydırmada çalışmıyor. */
+    /* At İsmi + No: native pinned=True ana yöntemdir.
+       Aşağıdaki sticky katmanı da farklı Streamlit/Glide sürümlerinde
+       yatay kaydırma sırasında ilk iki veri kolonunun görünür kalması için
+       geri uyumluluk sağlar. */
+    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(2),
+    div[data-testid="stDataFrame"] [role="gridcell"]:nth-child(2) {
+        position:sticky !important; left:30px !important; z-index:9 !important;
+        background:#ffffff !important; box-shadow:1px 0 0 #c8cdd4 !important;
+    }
+    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(3),
+    div[data-testid="stDataFrame"] [role="gridcell"]:nth-child(3) {
+        position:sticky !important; left:62px !important; z-index:10 !important;
+        background:#ffffff !important; box-shadow:2px 0 5px rgba(0,0,0,.16) !important;
+    }
+    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(2),
+    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(3) {
+        background:#d5dae2 !important;
+    }
     /* PROGRAMI GETİR: mavi, kompakt ve okunabilir yazı. */
     .st-key-program_get_button button {
         background:#1976d2 !important;
