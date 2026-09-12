@@ -585,7 +585,7 @@ with btn2:
         key="real_analysis_button_top",
         use_container_width=True,
         on_click=_request_real_analysis,
-        type="primary",
+        type="secondary",
     )
 with btn3:
     st.markdown("<span class='ri-manual-marker'></span>", unsafe_allow_html=True)
@@ -2973,9 +2973,8 @@ else:
     .ri-mode-badge { text-align:center; font-size:9px; padding:9px 4px; color:#66717d; }
     .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
     .ri-model-summary { text-align:right; font-size:9px; color:#46515d; }
-    div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:hidden !important; }
-    div[data-testid="stDataFrame"] input[type="checkbox"] { opacity:0 !important; width:2px !important; margin:0 !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) { width:6px !important; min-width:6px !important; max-width:6px !important; padding:0 !important; }
+    div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:visible !important; }
+    
     div[data-testid="stDataFrame"] [role="columnheader"] {
         background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
         font-weight:900 !important; height:34px !important; min-height:34px !important;
@@ -3025,13 +3024,13 @@ else:
     }
 
     /* Üst işlem düğmeleri: key tabanlıdır; veri yüklenmeden önce de renklidir. */
-    .st-key-reset_model_button_top button {
+    .st-key-reset_model_button_top button, .st-key-reset_model_button_top button[kind="secondary"] {
         background:#c58a2b !important; border-color:#c58a2b !important; color:#fff !important;
     }
-    .st-key-real_analysis_button_top button {
+    .st-key-real_analysis_button_top button, .st-key-real_analysis_button_top button[kind="secondary"] {
         background:#20a34a !important; border-color:#20a34a !important; color:#fff !important;
     }
-    .st-key-manual_analysis_button_top button {
+    .st-key-manual_analysis_button_top button, .st-key-manual_analysis_button_top button[kind="secondary"] {
         background:#ff4b4b !important; border-color:#ff4b4b !important; color:#fff !important;
     }
     .st-key-reset_model_button_top button:hover { background:#b77d24 !important; }
