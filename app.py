@@ -12,7 +12,7 @@ from worker.tjk_fetch import get_program, get_horse_enrichment
 # SAYFA AYARLARI
 # ============================================================
 
-# UI_V3_LIGHT_TJK — eski yeşil/mavi tablo stili kaldırıldı
+# UI_V4_REAL_DATA_STATUS_AND_REFRESH — eski yeşil/mavi tablo stili kaldırıldı
 st.set_page_config(
     page_title="Race Intelligence",
     page_icon="🏇",
@@ -2548,6 +2548,24 @@ else:
     # GERÇEK VERİYLE ANALİZ: Worker V1'in mevcut /api/tjk/horsedata
     # endpointi üzerinden her koşan atın geçmiş + galop verisini al.
     if st.session_state.get("real_analysis_requested"):
+        # "GERÇEK VERİ İLE ANALİZ ET" her basıldığında yeni TJK isteği yapılabilsin.
+        # Önceki başarısız/boş cevap cache'de tutulursa buton tekrar basıldığında
+        # Worker'a hiç gitmeden aynı boş sonuç dönebilir.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
+        real_status = st.status(
+            "🔄 TJK gerçek verileri çekiliyor...",
+            expanded=True,
+        )
+        real_status.write(
+            f"📡 {len(horses)} koşan at için gerçek koşu geçmişi + galop sorgulanıyor..."
+        )
+        real_status.write(
+            f"🎯 Hedef: {selected_city} • {distance} • {surface} • {condition}"
+        )
         try:
             horses = enrich_race_horses(
                 horses,
@@ -2557,8 +2575,32 @@ else:
                 target_surface=surface,
                 target_class=condition,
             )
+            history_count = sum(
+                len(h.get("_history", []))
+                for h in horses
+                if isinstance(h, dict)
+            )
+            workout_count = sum(
+                len(h.get("_workouts", []))
+                for h in horses
+                if isinstance(h, dict)
+            )
             st.session_state.real_analysis_done = True
+            real_status.update(
+                label=(
+                    f"✅ Gerçek TJK verileri alındı • "
+                    f"{history_count} koşu kaydı • {workout_count} galop kaydı"
+                ),
+                state="complete",
+                expanded=False,
+            )
         except Exception as exc:
+            real_status.update(
+                label="❌ Gerçek TJK veri analizi başarısız",
+                state="error",
+                expanded=True,
+            )
+            real_status.write(str(exc))
             st.error(f"Gerçek veri analizi sırasında hata: {exc}")
         selected_race["horses"] = horses
         st.session_state.real_analysis_requested = False
@@ -2784,11 +2826,21 @@ else:
             st.session_state.selected_horse_index = selected_horse_index
 
             if not selected_horse.get("_history") and not selected_horse.get("_workouts"):
+                # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
+                # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
+                try:
+                    load_horse_enrichment.clear()
+                except Exception:
+                    pass
+
                 horse_status = st.status(
-                    f"🐎 {get_horse_name(selected_horse)} için gerçek koşu ve galop verileri çekiliyor...",
+                    f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
                     expanded=True,
                 )
-                horse_status.write("Worker V1 /api/tjk/horsedata sorgulanıyor...")
+                horse_status.write("📡 Worker /api/tjk/horsedata sorgulanıyor...")
+                horse_status.write(
+                    f"🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}"
+                )
                 try:
                     enriched_one = enrich_race_horses(
                         [selected_horse],
@@ -2850,6 +2902,17 @@ else:
 
             history = selected_horse.get("_history", [])
             workouts = selected_horse.get("_workouts", [])
+
+            if selected_horse.get("_enrichment_error"):
+                st.warning(
+                    "TJK gerçek veri sorgusu: "
+                    + str(selected_horse.get("_enrichment_error"))
+                )
+            else:
+                st.caption(
+                    f"Gerçek TJK veri: {len(history)} koşu kaydı • "
+                    f"{len(workouts)} galop kaydı"
+                )
 
             with tab_all:
                 _history_tables(history)
