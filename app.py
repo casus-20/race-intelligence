@@ -662,7 +662,11 @@ def enrich_race_horses(horses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Son gerçek yarış: hedef tarihten önceki ilk geçerli kayıt.
         item["_last_race"] = None
         for row in item["_history"]:
-            if isinstance(row, dict) and row.get("date") and row.get("time"):
+            if not isinstance(row, dict):
+                continue
+            has_date = row.get("date") or row.get("tarih")
+            has_time = row.get("time") or row.get("derece")
+            if has_date and has_time:
                 item["_last_race"] = row
                 break
 
@@ -735,7 +739,14 @@ def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
     for w in workouts:
         if not isinstance(w, dict):
             continue
-        if any(str(w.get(k) or "").strip() for k in ("m800", "m1000", "m1200", "m400")):
+        if any(
+            str(w.get(k) or "").strip()
+            for k in (
+                "m400", "m600", "m800", "m1000", "m1200",
+                "400", "600", "800", "1000", "1200",
+                "time", "derece",
+            )
+        ):
             return w
     return None
 
@@ -744,15 +755,21 @@ def workout_display(horse: Dict[str, Any]) -> str:
     w = latest_workout(horse)
     if not w:
         return "-"
-    for key, label in (
-        ("m800", "800"),
-        ("m1000", "1000"),
-        ("m1200", "1200"),
-        ("m400", "400"),
+    for keys, label in (
+        (("m1200", "1200"), "1200"),
+        (("m1000", "1000"), "1000"),
+        (("m800", "800"), "800"),
+        (("m600", "600"), "600"),
+        (("m400", "400"), "400"),
+        (("time", "derece"), ""),
     ):
-        value = display_value(w.get(key), "")
+        value = _first_value(w, list(keys))
+        value = display_value(value, "")
         if value:
-            return f"{value} ({label}m)"
+            if label:
+                return f"{value} ({label}m)"
+            distance = display_value(_first_value(w, ["distance", "msf", "mesafe"]), "")
+            return f"{value} ({distance}m)" if distance else value
     return "-"
 
 
@@ -760,12 +777,132 @@ def last_race_display(horse: Dict[str, Any]) -> str:
     row = horse.get("_last_race")
     if not isinstance(row, dict):
         return "-"
-    time = display_value(row.get("time"), "")
-    distance = display_value(row.get("distance"), "")
-    surface = display_value(row.get("surface"), "")
+    time = display_value(_first_value(row, ["time", "derece"]), "")
+    distance = display_value(_first_value(row, ["distance", "msf", "mesafe"]), "")
+    surface = display_value(_first_value(row, ["surface", "pist"]), "")
+    place = display_value(_first_value(row, ["place", "sira", "S"]), "")
+    date_text = display_value(_first_value(row, ["date", "tarih"]), "")
+    city = display_value(_first_value(row, ["city", "şehir"]), "")
+    parts = []
+    if date_text:
+        parts.append(date_text)
+    if city:
+        parts.append(city)
+    if distance:
+        parts.append(f"{distance}m")
+    if surface:
+        parts.append(surface)
     if time:
-        return " • ".join(x for x in (time, f"{distance}m" if distance else "", surface) if x)
-    return "-"
+        parts.append(time)
+    if place:
+        parts.append(f"{place}.")
+    return " • ".join(parts) if parts else "-"
+
+
+def _first_value(row: Dict[str, Any], keys: List[str]) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _hide_index_table(df: pd.DataFrame):
+    """Gerçek veri tablolarını başlıkları görünür, sıra numarası görünmez çiz."""
+    if df.empty:
+        return
+    try:
+        st.table(df.style.hide(axis="index"))
+    except Exception:
+        # Eski pandas/Streamlit kombinasyonlarında hide desteklenmezse
+        # indeks bilgisi gerçek veri olarak ekrana basılmaz.
+        st.table(df.reset_index(drop=True))
+
+
+def _history_tables(history: List[Dict[str, Any]]) -> None:
+    """TJK'dan gelen gerçek koşu kayıtlarını eksiksiz ve yatay kaydırmasız göster."""
+    if not history:
+        st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
+        return
+
+    rows_main = []
+    rows_detail = []
+
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+
+        rows_main.append({
+            "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
+            "Şehir": _first_value(row, ["city", "şehir", "Sehir"]),
+            "Mesafe": _first_value(row, ["distance", "msf", "mesafe"]),
+            "Pist": _first_value(row, ["surface", "pist"]),
+            "Derece/Sıra": _first_value(row, ["place", "sira", "S"]),
+            "Derece": _first_value(row, ["time", "derece"]),
+            "Kilo": _first_value(row, ["weight", "kilo", "siklet"]),
+            "Jokey": _first_value(row, ["jockey", "jokey"]),
+            "HP": _first_value(row, ["hp", "HP"]),
+            "Sınıf": _first_value(row, ["className", "class", "sinif"]),
+        })
+
+        rows_detail.append({
+            "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
+            "Takı": _first_value(row, ["equipment", "taki"]),
+            "Start": _first_value(row, ["post", "st", "start"]),
+            "Gny": _first_value(row, ["odds", "gny"]),
+            "Grup": _first_value(row, ["group", "grup"]),
+            "Koşu": _first_value(row, ["raceName", "race_name", "kosu"]),
+            "Antrenör": _first_value(row, ["trainer", "antrenor"]),
+            "Sahip": _first_value(row, ["owner", "sahip"]),
+            "İkramiye": _first_value(row, ["prize", "ikramiye"]),
+            "S20": _first_value(row, ["s20", "S20"]),
+        })
+
+    main_df = pd.DataFrame(rows_main)
+    detail_df = pd.DataFrame(rows_detail)
+
+    if not main_df.empty:
+        main_df = main_df.replace({None: "-", "": "-"}).fillna("-")
+        _hide_index_table(main_df)
+
+    if not detail_df.empty:
+        detail_df = detail_df.replace({None: "-", "": "-"}).fillna("-")
+        _hide_index_table(detail_df)
+
+
+def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
+    """TJK gerçek galop kayıtlarının mevcut bütün alanlarını göster."""
+    if not workouts:
+        st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
+        return
+
+    rows = []
+    for row in workouts:
+        if not isinstance(row, dict):
+            continue
+
+        rows.append({
+            "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
+            "Şehir": _first_value(row, ["city", "şehir", "Sehir"]),
+            "Mesafe": _first_value(row, ["distance", "msf", "mesafe"]),
+            "Pist": _first_value(row, ["surface", "pist"]),
+            "Derece": _first_value(row, ["time", "derece"]),
+            "400": _first_value(row, ["m400", "400", "time400"]),
+            "600": _first_value(row, ["m600", "600", "time600"]),
+            "800": _first_value(row, ["m800", "800", "time800"]),
+            "1000": _first_value(row, ["m1000", "1000", "time1000"]),
+            "1200": _first_value(row, ["m1200", "1200", "time1200"]),
+            "Kilo": _first_value(row, ["weight", "kilo", "siklet"]),
+            "Binici": _first_value(row, ["rider", "binici"]),
+            "Jokey": _first_value(row, ["jockey", "jokey"]),
+            "Tür": _first_value(row, ["type", "tur", "Tür"]),
+            "Not": _first_value(row, ["note", "not", "aciklama"]),
+        })
+
+    work_df = pd.DataFrame(rows)
+    if not work_df.empty:
+        work_df = work_df.replace({None: "-", "": "-"}).fillna("-")
+        _hide_index_table(work_df)
 
 
 # ============================================================
@@ -1820,66 +1957,26 @@ else:
                 f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
             )
 
-            d1, d2, d3, d4 = st.columns(4)
+            d1, d2, d3, d4, d5 = st.columns(5)
             with d1:
                 st.metric("Son Galop", workout_display(selected_horse))
             with d2:
+                st.metric("Son Gerçek Koşu", last_race_display(selected_horse))
+            with d3:
                 st.metric(
                     "Bu Yıl Kazanç",
                     f"{year_earnings(selected_horse, selected_date.year):,.0f} ₺",
                 )
-            with d3:
-                st.metric("Sahip", display_value(selected_horse.get("owner")))
             with d4:
+                st.metric("Sahip", display_value(selected_horse.get("owner")))
+            with d5:
                 st.metric("Antrenör", display_value(selected_horse.get("trainer")))
 
             with st.expander("📋 GERÇEK KOŞU GEÇMİŞİ", expanded=True):
-                hist = selected_horse.get("_history", [])
-                if hist:
-                    hist_df = pd.DataFrame(hist)
-                    history_cols = [
-                        c for c in [
-                            "date", "city", "distance", "surface", "place",
-                            "time", "weight", "jockey", "hp", "raceName", "className"
-                        ] if c in hist_df.columns
-                    ]
-                    if history_cols:
-                        hist_df = hist_df[history_cols].copy()
-                    hist_df.columns = [
-                        {
-                            "date": "Tarih", "city": "Şehir", "distance": "Mesafe",
-                            "surface": "Pist", "place": "Derece/Sıra", "time": "Derece",
-                            "weight": "Kilo", "jockey": "Jokey", "hp": "HP",
-                            "raceName": "Koşu", "className": "Sınıf"
-                        }.get(c, c) for c in hist_df.columns
-                    ]
-                    st.table(hist_df)
-                else:
-                    st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
+                _history_tables(selected_horse.get("_history", []))
 
             with st.expander("🏇 GERÇEK GALOP KAYITLARI", expanded=True):
-                workouts = selected_horse.get("_workouts", [])
-                if workouts:
-                    work_df = pd.DataFrame(workouts)
-                    workout_cols = [
-                        c for c in [
-                            "date", "city", "distance", "surface", "time",
-                            "weight", "rider", "jockey", "type", "note"
-                        ] if c in work_df.columns
-                    ]
-                    if workout_cols:
-                        work_df = work_df[workout_cols].copy()
-                    work_df.columns = [
-                        {
-                            "date": "Tarih", "city": "Şehir", "distance": "Mesafe",
-                            "surface": "Pist", "time": "Derece", "weight": "Kilo",
-                            "rider": "Binici", "jockey": "Jokey", "type": "Tür",
-                            "note": "Not"
-                        }.get(c, c) for c in work_df.columns
-                    ]
-                    st.table(work_df)
-                else:
-                    st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
+                _workout_tables(selected_horse.get("_workouts", []))
 
     # Analiz özeti
     if ranking:
