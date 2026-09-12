@@ -1254,11 +1254,11 @@ get_program_clicked = st.sidebar.button(
 )
 
 # Aktif hipodrom özeti doğrudan PROGRAMI GETİR butonunun altında.
+_sidebar_race_count = int(active_city_race_counts.get(selected_city, 0))
 st.sidebar.markdown(
     f"<div class='sidebar-program-status'>"
     f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-    f"{len(races)} koşu bulundu.<br>"
-    f"<b>✓ {len(races)} koşu • {sum(len(r.get('horses', [])) for r in races)} at verisi alındı</b>"
+    f"{_sidebar_race_count} koşu bulundu."
     f"</div>",
     unsafe_allow_html=True,
 )
@@ -1387,6 +1387,19 @@ if (
 
         st.stop()
 
+
+# Program getirildikten sonra gerçek veri özeti sol panelde
+# PROGRAMI GETİR butonunun altında güncellenir.
+if races:
+    st.sidebar.markdown(
+        f"<div class='sidebar-program-status'>"
+        f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
+        f"{len(races)} koşu bulundu.<br>"
+        f"<b>✓ {len(races)} koşu • "
+        f"{sum(len(r.get('horses', [])) for r in races)} at verisi alındı</b>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 # ============================================================
 # KOŞULAR
