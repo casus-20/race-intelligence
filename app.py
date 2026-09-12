@@ -252,6 +252,68 @@ st.markdown(
 
 
     .score-strong { font-weight:900; font-size:13px; }
+    /* Ana içerik alanını mümkün olduğunca geniş kullan. */
+    section.main > div.block-container {
+        max-width: none !important;
+        width: 100% !important;
+        padding-left: 18px !important;
+        padding-right: 18px !important;
+    }
+
+    .race-info-compact {
+        margin-top: 4px;
+        margin-bottom: 5px;
+    }
+
+    .race-info-card {
+        height: 58px;
+        border: 1px solid rgba(80,130,190,.30);
+        border-radius: 8px;
+        padding: 6px 10px;
+        display:flex;
+        flex-direction:column;
+        justify-content:center;
+        box-sizing:border-box;
+    }
+    .race-info-card span {
+        font-size:11px;
+        opacity:.75;
+        font-weight:700;
+        line-height:1.05;
+    }
+    .race-info-card strong {
+        font-size:18px;
+        font-weight:900;
+        line-height:1.15;
+        margin-top:3px;
+        white-space:nowrap;
+    }
+
+    .race-title-inline {
+        min-height:58px;
+        display:flex;
+        align-items:center;
+        gap:10px;
+        flex-wrap:wrap;
+        font-size:19px;
+    }
+    .race-condition-inline {
+        font-size:11px;
+        font-weight:800;
+        opacity:.72;
+        white-space:nowrap;
+    }
+    .analysis-inline {
+        display:inline-block;
+        padding:4px 8px;
+        border-radius:5px;
+        font-size:10px;
+        font-weight:900;
+        background:#e8f4ff;
+        color:#07579f;
+        white-space:nowrap;
+    }
+
     .analysis-badge {
         display:inline-block;
         padding:5px 10px;
@@ -1202,7 +1264,7 @@ for index, race in enumerate(races):
     if race_time != "-":
 
         label = (
-            f"{race_number} {race_time}"
+            f"{race_number}. KOŞU {race_time}"
         )
 
     else:
@@ -1312,7 +1374,7 @@ if st.session_state.pop("_reset_model_next_run", False):
     for criterion, value in DEFAULT_WEIGHTS.items():
         st.session_state[WEIGHT_KEYS[criterion]] = value
 
-with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
+with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=False):
     st.caption(
         "Kaydırıcıları değiştirdiğinde TJK'ya yeniden istek gönderilmez. "
         "Elde edilen gerçek veriler üzerinden puan ve sıralama yeniden hesaplanır."
@@ -1387,35 +1449,36 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
-st.markdown("---")
+st.markdown("<div class='race-info-compact'>", unsafe_allow_html=True)
 
-st.markdown(
-    f"<h2 style='margin-bottom:6px'>{race_number}. Koşu {race_time if race_time != '-' else ''}</h2>",
-    unsafe_allow_html=True,
-)
-
-analysis_badge = (
-    "SKORLAMA AKTİF"
-    if st.session_state.get("real_analysis_done")
-    else "ANALİZ BEKLENİYOR"
-)
-st.markdown(
-    f"<div class='analysis-badge {'analysis-active' if analysis_badge == 'SKORLAMA AKTİF' else 'analysis-waiting'}'>{analysis_badge}</div>",
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"<div class='condition-box'><b>{condition}</b></div>",
-    unsafe_allow_html=True,
-)
-
-info1, info2, info3 = st.columns(3)
+info1, info2, info3, info4 = st.columns([1.05, 1.0, 1.0, 1.9])
 with info1:
-    st.metric("Saat", race_time)
+    st.markdown(
+        f"<div class='race-info-card'><span>Saat</span><strong>{race_time}</strong></div>",
+        unsafe_allow_html=True,
+    )
 with info2:
-    st.metric("Mesafe", f"{distance} m" if distance != "-" and "m" not in distance.lower() else distance)
+    st.markdown(
+        f"<div class='race-info-card'><span>Mesafe</span><strong>{f'{distance} m' if distance != '-' and 'm' not in distance.lower() else distance}</strong></div>",
+        unsafe_allow_html=True,
+    )
 with info3:
-    st.metric("Pist", surface)
+    st.markdown(
+        f"<div class='race-info-card'><span>Pist</span><strong>{surface}</strong></div>",
+        unsafe_allow_html=True,
+    )
+with info4:
+    analysis_badge = (
+        "SKORLAMA AKTİF"
+        if st.session_state.get("real_analysis_done")
+        else "ANALİZ BEKLENİYOR"
+    )
+    st.markdown(
+        f"<div class='race-title-inline'><b>{race_number}. KOŞU {race_time if race_time != '-' else ''}</b><span class='race-condition-inline'>{condition}</span><span class='analysis-inline'>{analysis_badge}</span></div>",
+        unsafe_allow_html=True,
+    )
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -1532,7 +1595,7 @@ else:
         table_rows.append({
             "_horse_index": horse_index,
             "_horse_no": get_horse_number(horse, horse_index + 1),
-            "Sıra": int(r["rank"]) if str(r["rank"]).isdigit() else r["rank"],
+            "_rank": int(r["rank"]) if str(r["rank"]).isdigit() else 999999,
             "No": (_number(get_horse_number(horse, horse_index + 1))
                    if _number(get_horse_number(horse, horse_index + 1)) is not None
                    else get_horse_number(horse, horse_index + 1)),
@@ -1562,13 +1625,13 @@ else:
     # Ekran sırası HER ZAMAN analiz sırasıdır.
     # TJK "No" ise atın gerçek program numarasıdır; satır sıralaması bunu değiştirmez.
     table_rows.sort(key=lambda row: (
-        row["Sıra"] if isinstance(row["Sıra"], (int, float)) else 999999,
+        row.get("_rank", 999999),
         str(row.get("_horse_no", "")),
     ))
 
     df = pd.DataFrame(table_rows)
     display_columns = [
-        "Sıra", "No", "At İsmi / Orijin", "Yaş", "Sıklet", "Jokey",
+        "No", "At İsmi / Orijin", "Yaş", "Sıklet", "Jokey",
         "St", "HP", "Son 6 Y.", "KGS", "s20", "En İyi D.", "Gny", "AGF",
         "BİZİM SKOR", "SINIF / KALİTE", "GÜNCEL SINIF", "SINIF AVANTAJI",
         "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "Sahip", "Antrenör",
@@ -1576,7 +1639,6 @@ else:
     df_display = df[display_columns].copy()
 
     column_config = {
-        "Sıra": st.column_config.NumberColumn("Sıra", format="%d"),
         "No": st.column_config.NumberColumn("No", format="%d"),
         "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin"),
         "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f"),
@@ -1607,8 +1669,8 @@ else:
 
     def _cell_style(data):
         styles = pd.DataFrame("", index=data.index, columns=data.columns)
-        # Sıra ve TJK gerçek No hücreleri sarı vurgulu.
-        for col in ("Sıra", "No"):
+        # TJK gerçek No hücresi sarı vurgulu.
+        for col in ("No",):
             if col in data.columns:
                 styles[col] = "background-color: #ffc928; color: #101010; font-weight: 900; text-align: center;"
         return styles
@@ -1676,6 +1738,12 @@ else:
         div[data-testid="stDataFrame"] ::-webkit-scrollbar-track {
             background: #d8ebff !important;
             border-radius: 10px !important;
+        }
+
+        /* Gerçek koşu ve galop tablolarında yatay kaydırma çubuğu yok. */
+        div.st-key-real_history_table div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal,
+        div.st-key-real_workouts_table div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal {
+            height: 0px !important;
         }
         </style>
         """,
@@ -1785,7 +1853,8 @@ else:
                         pd.DataFrame(hist),
                         use_container_width=True,
                         hide_index=True,
-                        height=330,
+                        height=300,
+                        key="real_history_table",
                     )
                 else:
                     st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
@@ -1797,7 +1866,8 @@ else:
                         pd.DataFrame(workouts),
                         use_container_width=True,
                         hide_index=True,
-                        height=260,
+                        height=240,
+                        key="real_workouts_table",
                     )
                 else:
                     st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
