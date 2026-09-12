@@ -1,4 +1,6 @@
 import streamlit as st
+import pandas as pd
+import re
 from datetime import date
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -240,29 +242,51 @@ def get_horse_number(
 def get_horse_age(
     horse: Dict[str, Any],
 ) -> str:
+    """
+    TJK yaş kodunu okunabilir biçime çevirir.
+
+    Örnek:
+        3yde -> 3y Dişi İngiliz
+        3yke -> 3y Erkek İngiliz
+        3yda -> 3y Dişi Arap
+        3yka -> 3y Erkek Arap
+    """
     value = horse.get("yas") or horse.get("Yaş") or horse.get("age") or ""
     text = display_value(value)
-    parts = text.lower().replace("y", " y ").split()
-    if len(parts) >= 2 and parts[0].isdigit():
-        age = parts[0]
-        sex = parts[2] if len(parts) >= 3 and parts[1] == "y" else parts[1]
-        breed = parts[3] if len(parts) >= 4 and parts[1] == "y" else (parts[2] if len(parts) >= 3 else "")
-        sex_text = {"d": "dişi", "e": "erkek"}.get(sex, sex)
-        breed_text = {"e": "İngiliz", "a": "Arap"}.get(breed, breed)
-        return f"{age} yaş {sex_text}" + (f" {breed_text}" if breed_text else "")
+    if text == "-":
+        return "-"
+
+    compact = re.sub(r"\s+", "", text.lower())
+    match = re.match(r"^(\d+)y([dk])([ea])$", compact)
+    if match:
+        age, sex_code, breed_code = match.groups()
+        sex = {"d": "Dişi", "k": "Erkek"}.get(sex_code, sex_code)
+        breed = {"e": "İngiliz", "a": "Arap"}.get(breed_code, breed_code)
+        return f"{age}y {sex} {breed}"
+
+    # Bazı kaynaklarda boşluklu/uzun yazım gelebilir.
+    match = re.match(r"^(\d+)y?([dk])([ea])?$", compact)
+    if match:
+        age, sex_code, breed_code = match.groups()
+        sex = {"d": "Dişi", "k": "Erkek"}.get(sex_code, sex_code)
+        breed = {"e": "İngiliz", "a": "Arap"}.get(breed_code, breed_code or "")
+        return f"{age}y {sex}" + (f" {breed}" if breed else "")
+
     return text
 
-
 def get_race_condition(race: Dict[str, Any]) -> str:
+    """Koşu şartını Worker V1 meta.detail/meta.raceName üzerinden alır."""
     direct = race.get("condition")
     if direct:
         return display_value(direct)
+
     meta = race.get("meta")
     if isinstance(meta, dict):
         detail = meta.get("detail") or meta.get("raceName") or ""
-        return display_value(detail)
-    return "-"
+        if detail:
+            return display_value(detail)
 
+    return "-"
 
 def get_horse_weight(
     horse: Dict[str, Any],
@@ -744,10 +768,8 @@ with info3:
 
 with info4:
 
-    st.metric(
-        "Şart",
-        condition,
-    )
+    st.markdown("**Şart**")
+    st.write(condition)
 
 
 # ============================================================
@@ -784,12 +806,14 @@ if not horses:
 
 else:
 
-    # Tek kompakt tablo: gereksiz satır çizgileri ve ayrı kolon blokları yok.
     table_rows = []
 
     for horse_index, horse in enumerate(horses):
         if not isinstance(horse, dict):
             continue
+
+        form = get_horse_form(horse)
+        form_digits = " ".join(re.findall(r"[0-9Xx-]", form)) if form != "-" else "-"
 
         table_rows.append({
             "No": get_horse_number(horse, horse_index + 1),
@@ -801,18 +825,37 @@ else:
             "AGF": get_horse_agf(horse),
             "St": get_horse_start(horse),
             "KGS": get_horse_kgs(horse),
-            "Form": get_horse_form(horse),
+            "Form": form_digits,
         })
 
+    df = pd.DataFrame(table_rows)
+
+    def form_row_style(row):
+        styles = [""] * len(row)
+        form_value = str(row.get("Form", ""))
+        digits = [int(x) for x in re.findall(r"[1-9]", form_value)]
+        if not digits:
+            return styles
+        avg = sum(digits) / len(digits)
+        if avg <= 3:
+            style = "font-weight:700; background-color: rgba(46, 160, 67, 0.14);"
+        elif avg <= 5:
+            style = "background-color: rgba(255, 193, 7, 0.10);"
+        else:
+            style = "background-color: rgba(220, 53, 69, 0.08);"
+        return [style] * len(row)
+
+    styled = df.style.apply(form_row_style, axis=1)
+
     st.dataframe(
-        table_rows,
+        styled,
         use_container_width=True,
         hide_index=True,
         height=min(520, 44 + max(1, len(table_rows)) * 42),
         column_config={
             "No": st.column_config.TextColumn("No", width="small"),
             "At": st.column_config.TextColumn("At", width="medium"),
-            "Yaş": st.column_config.TextColumn("Yaş", width="small"),
+            "Yaş": st.column_config.TextColumn("Yaş", width="medium"),
             "Kilo": st.column_config.TextColumn("Kilo", width="small"),
             "Jokey": st.column_config.TextColumn("Jokey", width="medium"),
             "HP": st.column_config.TextColumn("HP", width="small"),
@@ -822,6 +865,10 @@ else:
             "Form": st.column_config.TextColumn("Form", width="medium"),
         },
     )
+
+    agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
+    if agf_values and all(v == "-" for v in agf_values):
+        st.caption("AGF: TJK program kaynağında bu koşu için henüz değer yok; '-' gösteriliyor. Değer uydurulmaz.")
 
 
 # ============================================================
