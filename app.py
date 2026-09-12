@@ -125,6 +125,21 @@ st.markdown(
         margin-bottom: 2px;
     }
 
+    /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 5 mm boşluk. */
+    section.main > div.block-container,
+    div[data-testid="stMainBlockContainer"] {
+        max-width: none !important;
+        width: 100% !important;
+        padding-top: 5mm !important;
+        padding-left: 6mm !important;
+        padding-right: 6mm !important;
+    }
+
+    .ri-header {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
+
     .sub-title {
         font-size: 15px;
         opacity: 0.75;
@@ -257,6 +272,7 @@ st.markdown(
     div[data-testid="stMainBlockContainer"] {
         max-width: none !important;
         width: 100% !important;
+        padding-top: 5mm !important;
         padding-left: 6mm !important;
         padding-right: 6mm !important;
     }
@@ -1219,11 +1235,6 @@ selected_city = st.sidebar.selectbox(
     index=default_city_index,
 )
 
-st.sidebar.caption(
-    f"{len(active_cities)} hipodromda yarış var • {selected_date.strftime('%d/%m/%Y')}"
-)
-
-
 # ============================================================
 # PROGRAMI GETİR
 # ============================================================
@@ -1231,6 +1242,12 @@ st.sidebar.caption(
 get_program_clicked = st.sidebar.button(
     "📥 PROGRAMI GETİR",
     use_container_width=True,
+)
+
+# Aktif hipodrom özeti doğrudan PROGRAMI GETİR butonunun altında.
+st.sidebar.caption(
+    f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
+    f"{len(active_cities)} koşu bulundu."
 )
 
 
@@ -1773,9 +1790,9 @@ else:
             "_horse_index": horse_index,
             "_horse_no": get_horse_number(horse, horse_index + 1),
             "_rank": int(r["rank"]) if str(r["rank"]).isdigit() else 999999,
-            "No": (_number(get_horse_number(horse, horse_index + 1))
-                   if _number(get_horse_number(horse, horse_index + 1)) is not None
-                   else get_horse_number(horse, horse_index + 1)),
+            # Görsel No her zaman tablo sırasıdır: 1,2,3,4...
+            # TJK'nın gerçek at numarası _horse_no içinde korunur.
+            "No": len(table_rows) + 1,
             "At İsmi / Orijin": get_horse_name(horse),
             "Yaş": get_horse_age(horse),
             "Sıklet": get_horse_weight(horse),
@@ -1816,8 +1833,8 @@ else:
     df_display = df[display_columns].copy()
 
     column_config = {
-        "No": st.column_config.NumberColumn("No", format="%d"),
-        "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin"),
+        "No": st.column_config.NumberColumn("No", format="%d", width="small"),
+        "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin", width="large"),
         "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f"),
         "SINIF / KALİTE": st.column_config.NumberColumn("SINIF / KALİTE", format="%.1f"),
         "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f"),
@@ -1864,10 +1881,12 @@ else:
             {
                 "selector": "th",
                 "props": [
-                    ("background-color", "#0868c9"),
+                    ("background-color", "#147EB3"),
                     ("color", "#ffffff"),
-                    ("font-weight", "900"),
-                    ("font-size", "12px"),
+                    ("font-weight", "950"),
+                    ("font-size", "15px"),
+                    ("min-height", "15mm"),
+                    ("height", "15mm"),
                     ("text-align", "center"),
                     ("border", "1px solid rgba(255,255,255,.22)"),
                 ],
@@ -1885,8 +1904,9 @@ else:
 
     # Dikey kaydırma çubuğu olmayacak şekilde tüm atları gösterecek dinamik yükseklik.
     # Satır yüksekliği önceki görünüme göre yaklaşık %30 azaltılmıştır.
-    table_row_height = 28
-    table_height = 48 + (len(df) * table_row_height) + 24
+    # Önceki 28 px satır yüksekliğinin %50 artırılmış hali.
+    table_row_height = 42
+    table_height = 56 + (len(df) * table_row_height) + 24
 
     st.markdown(
         """
@@ -1906,6 +1926,16 @@ else:
         }
         div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal {
             height: 16px !important;
+        }
+        div[data-testid="stDataFrame"] [role="gridcell"] {
+            min-height: 42px !important;
+            height: 42px !important;
+            line-height: 42px !important;
+        }
+        div[data-testid="stDataFrame"] [role="columnheader"] {
+            min-height: 15mm !important;
+            height: 15mm !important;
+            line-height: 15mm !important;
         }
         div[data-testid="stDataFrame"] [role="gridcell"],
         div[data-testid="stDataFrame"] [role="columnheader"] {
@@ -1942,7 +1972,7 @@ else:
 
     st.caption(
         "📊 Sütun başlığına tıklayarak artan/azalan sıralama yap. "
-        "Tablonun araç çubuğundaki arama ile filtrele. "
+        "Tablonun araç çubuğundaki arama ile filtrele. No sütunu filtreleme dışında 1,2,3... şeklindedir. "
         "Bir at satırına tıklayınca gerçek geçmiş ve galop bölümü açılır."
     )
 
