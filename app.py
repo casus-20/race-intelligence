@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 import re
-from urllib.parse import quote_plus
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import date
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from worker.tjk_fetch import get_program, get_horse_enrichment
-import streamlit.components.v1 as components
 
 
 # ============================================================
@@ -22,41 +23,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# UI RENKLERI — butonlar veri yuklenmeden once de ayni renkte kalir.
-st.markdown("""
-<style>
-/* Buton renkleri: Streamlit render sirasindan bagimsiz olarak erken uygulanir. */
-.st-key-program_get_button button,
-.st-key-program_get_button button[kind="secondary"] {
-    background:#1976d2 !important;
-    border:1px solid #1976d2 !important;
-    color:#fff !important;
-    font-size:14px !important;
-    font-weight:800 !important;
-    min-height:42px !important;
-    line-height:1.15 !important;
-    padding:8px 10px !important;
-    white-space:normal !important;
-}
-.st-key-program_get_button button:hover { background:#1565c0 !important; border-color:#1565c0 !important; }
-.st-key-reset_model_button_top button,
-.st-key-reset_model_button_top button[kind="secondary"] {
-    background:#c58a2b !important; border:1px solid #c58a2b !important; color:#fff !important;
-}
-.st-key-real_analysis_button_top button,
-.st-key-real_analysis_button_top button[kind="secondary"] {
-    background:#20a34a !important; border:1px solid #20a34a !important; color:#fff !important;
-}
-.st-key-manual_analysis_button_top button,
-.st-key-manual_analysis_button_top button[kind="secondary"] {
-    background:#ff4b4b !important; border:1px solid #ff4b4b !important; color:#fff !important;
-}
-.st-key-reset_model_button_top button:hover { background:#b77d24 !important; border-color:#b77d24 !important; }
-.st-key-real_analysis_button_top button:hover { background:#188a3e !important; border-color:#188a3e !important; }
-.st-key-manual_analysis_button_top button:hover { background:#e83f3f !important; border-color:#e83f3f !important; }
-</style>
-""", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -622,7 +588,7 @@ with btn2:
         key="real_analysis_button_top",
         use_container_width=True,
         on_click=_request_real_analysis,
-        type="secondary",
+        type="primary",
     )
 with btn3:
     st.markdown("<span class='ri-manual-marker'></span>", unsafe_allow_html=True)
@@ -964,7 +930,7 @@ def _weight_parts(value: Any) -> tuple[str, str]:
     # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
     fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
     if fm:
-        return base, fm.group(1).replace(",", ".").replace(" ", "")
+        return base, f"Fazla Kilo: {fm.group(1).replace(',', '.')}"
     return base, rest
 
 
@@ -994,7 +960,7 @@ def get_horse_jockey(
     # olarak gelir. İkisini de görselde ikinci satıra taşırız.
     m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
     if m:
-        label = "Ap" if m.group(2).strip().upper().startswith("AP") else m.group(2).strip()
+        label = "AP Apranti" if m.group(2).strip().upper() == "AP" else m.group(2).strip()
         return f"{m.group(1).strip()}\n{label}"
     return text
 
@@ -2342,7 +2308,12 @@ st.sidebar.title("🏇 Yarış Programı")
 # yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
 # farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
 # otomatik olarak bugüne geçilir.
-_today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+# Türkiye yerel tarihi: sunucu UTC olsa bile gün değişimini Europe/Istanbul
+# üzerinden belirle. Böylece 00:00 sonrası tarih otomatik 13/09 gibi yeni güne geçer.
+try:
+    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date() if ZoneInfo else date.today()
+except Exception:
+    _today = date.today()
 if st.session_state.get("_date_auto_sync_day") != _today:
     st.session_state["selected_date_widget"] = _today
     st.session_state["_date_auto_sync_day"] = _today
@@ -2917,7 +2888,7 @@ else:
 
     column_config = {
         "No": st.column_config.NumberColumn("No", format="%d", width=32, pinned=True),
-        "At İsmi": st.column_config.TextColumn("At İsmi", width=130, pinned=True),
+        "At İsmi": st.column_config.TextColumn("At İsmi", width=110, pinned=True),
         "Yaş": st.column_config.TextColumn("Yaş", width=40),
         "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=140),
         "Kilo": st.column_config.TextColumn("Kilo", width=38),
@@ -2940,203 +2911,145 @@ else:
         "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=90),
     }
 
-    # ANA PROGRAM TABLOSU — sabit HTML tablo.
-    # Native st.dataframe yerine kullanılır; böylece No + At İsmi gerçek
-    # CSS sticky ile yatay kaydırmada kesin olarak sabit kalır.
-    from html import escape as _html_escape
-
-    def _esc(v):
-        return _html_escape(str(v if v is not None else "")).replace("\n", "<br>")
-
-    def _split2(v):
-        return str(v or "-").split("\n", 1)
-
-    def _jockey_html(v):
-        p = _split2(v)
-        return (f"<span class='ri-blue'>{_esc(p[0])}</span> <span class='ri-red'>{_esc(p[1])}</span>"
-                if len(p) == 2 else _esc(v))
-
-    def _owner_html(v):
-        p = _split2(v)
-        return (f"<span class='ri-blue'>{_esc(p[0])}</span><br><span class='ri-red'>{_esc(p[1])}</span>"
-                if len(p) == 2 else _esc(v))
-
-    def _origin_html(v):
-        p = _split2(v)
-        return (f"<span class='ri-blue'>{_esc(p[0])}</span><br><span class='ri-black'>{_esc(p[1])}</span>"
-                if len(p) == 2 else _esc(v))
-
-    def _weight_html(v):
-        p = _split2(v)
-        return (f"<span>{_esc(p[0])}</span><span class='ri-red'>{_esc(p[1])}</span>"
-                if len(p) == 2 and p[1].strip() else _esc(v))
-
-    def _last_race_html(horse):
-        row = horse.get("_last_race") if isinstance(horse, dict) else None
-        if not isinstance(row, dict):
-            return "-"
-        value = display_value(_first_value(row, ["time", "derece", "Derece"]), "-")
-        surface = str(_first_value(row, ["surface", "pist", "Pist"]) or "").strip().lower()
-        # Son koşunun pisti: çim yeşil, kum/sentetik siyah.
-        cls = "ri-green" if ("çim" in surface or "cim" in surface) else "ri-black"
-        return f"<span class='{cls}'>{_esc(value)}</span>"
-
-    def _eid_html(hidx, value):
-        txt = str(value or "-")
-        if txt == "-": return "-"
-        h = horses[hidx] if 0 <= hidx < len(horses) else {}
-        info = []
-        for key, label in (("bestTime", "EİD"), ("bestTimeDistance", "Mesafe"), ("bestTimeTrack", "Pist"), ("bestTimeDate", "Tarih")):
-            vv = h.get(key)
-            if vv not in (None, "", "-"): info.append(f"<div><b>{_esc(label)}:</b> {_esc(vv)}</div>")
-        if not info: info = [f"<div><b>EİD:</b> {_esc(txt)}</div>"]
-        return f"<details class='ri-eid'><summary>{_esc(txt)}</summary>{''.join(info)}</details>"
-
-    # HTML tablodaki at seçimi query parametresiyle çalışır. Checkbox görünümü
-    # gerçek bir seçim bağlantısıdır; tıklanınca sayfa aynı atı seçerek yenilenir.
-    try:
-        _qno = st.query_params.get("horse_no")
-        _sort = st.query_params.get("sort")
-        _dir = str(st.query_params.get("dir") or "asc").lower()
-    except Exception:
-        _qno = None
-        _sort = None
-        _dir = "asc"
-    if _qno:
-        for _i, _h in enumerate(horses):
-            if str(get_horse_number(_h, _i + 1)) == str(_qno):
-                st.session_state.selected_horse_index = _i
-                st.session_state.selected_horse_no = get_horse_number(_h, _i + 1)
-                break
-
-    # Statik HTML tablonun başlıkları da gerçek sıralama düğmesidir.
-    # Her tıklamada aynı kolon asc/desc arasında geçer; seçim korunur.
-    _sort_keys = {
-        "No": "No", "At İsmi": "At İsmi", "Yaş": "Yaş",
-        "Orijin (Baba-Anne)": "Orijin (Baba-Anne)", "Kilo": "Kilo",
-        "Jokey": "Jokey", "Sahip / Antrenör": "Sahip / Antrenör",
-        "St": "St", "Hp": "HP", "Son 6": "Son 6 Y.", "KGS": "KGS",
-        "s20": "s20", "EİD": "EİD", "Gny": "Gny", "AGF": "AGF",
-        "BİZİM SKOR": "BİZİM SKOR", "ŞART UYUMU": "ŞART UYUMU",
-        "GÜNCEL SINIF": "GÜNCEL SINIF", "SON GALOP": "SON GALOP",
-        "SON KOŞU": "SON KOŞU", "BU YIL KAZANÇ": "BU YIL KAZANÇ",
-        "TOPLAM KAZANÇ": "TOPLAM KAZANÇ",
-    }
-    if _sort in _sort_keys:
-        _sk = _sort_keys[_sort]
-        def _sortable(v):
-            x = str(v if v is not None else "").strip()
-            if _sk in {"No", "St", "HP", "KGS", "s20", "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF"}:
-                try: return (0, float(x.replace(".", "").replace(",", ".")))
-                except Exception: return (1, x.lower())
-            return (1, x.lower())
-        df = df.sort_values(by=[_sk], key=lambda col: col.map(_sortable), ascending=(_dir != "desc"), kind="mergesort")
-
     selected_horse_index = st.session_state.get("selected_horse_index")
-    selected_rows = []
-    if selected_horse_index is not None:
-        for _ri, _row in df.iterrows():
-            if int(_row.get("_horse_index", _ri)) == int(selected_horse_index):
-                selected_rows = [_ri]
-                break
 
-    cols = [
-        ("", 38), ("No", 42), ("At İsmi", 155), ("Yaş", 55), ("Orijin (Baba-Anne)", 185),
-        ("Kilo", 70), ("Jokey", 105), ("Sahip / Antrenör", 155), ("St", 38), ("Hp", 42),
-        ("Son 6", 68), ("KGS", 48), ("s20", 45), ("EİD", 75), ("Gny", 58), ("AGF", 58),
-        ("BİZİM SKOR", 82), ("ŞART UYUMU", 78), ("GÜNCEL SINIF", 88), ("SON GALOP", 92),
-        ("SON KOŞU", 82), ("BU YIL KAZANÇ", 105), ("TOPLAM KAZANÇ", 110)
-    ]
-    def _sort_href(label):
-        if label not in _sort_keys:
-            return ""
-        next_dir = "desc" if (_sort == label and _dir != "desc") else "asc"
-        parts = [f"sort={quote_plus(label)}", f"dir={next_dir}"]
-        if selected_horse_index is not None:
-            try:
-                parts.append(f"horse_no={int(get_horse_number(horses[int(selected_horse_index)], int(selected_horse_index)+1))}")
-            except Exception:
-                pass
-        return "?" + "&".join(parts)
-
-    _th_parts = []
-    for i,(n,_) in enumerate(cols):
-        if n in _sort_keys:
-            arrow = " ↓" if (_sort == n and _dir == "desc") else (" ↑" if _sort == n else " ↕")
-            _th_parts.append(f"<th class='c{i}'><a class='ri-sort' target='_parent' href='{_sort_href(n)}'>{_esc(n)}{arrow}</a></th>")
+    def _row_style(row):
+        try:
+            pos = int(row.name)
+        except Exception:
+            pos = 0
+        if selected_horse_index is not None and int(df.iloc[int(row.name)]["_horse_index"]) == int(selected_horse_index):
+            bg, fg = "#dceeff", "#062b55"
         else:
-            _th_parts.append(f"<th class='c{i}'>{_esc(n)}</th>")
-    th = "".join(_th_parts)
-    trs = []
-    for ri, row in df.iterrows():
-        hidx = int(row.get("_horse_index", ri)); no = int(row.get("No", hidx + 1))
-        sel = selected_horse_index is not None and hidx == int(selected_horse_index)
-        rc = "selected" if sel else ("even" if ri % 2 == 0 else "odd")
-        check = f"<a class='ri-check checked' target='_parent' href='?horse_no={no}'>✓</a>" if sel else f"<a class='ri-check' target='_parent' href='?horse_no={no}'>□</a>"
-        td = [
-            check, _esc(no), f"<a class='ri-horse-link' target='_parent' href='?horse_no={no}'>{_esc(row.get('At İsmi', '-'))}</a>", _esc(row.get("Yaş", "-")),
-            _origin_html(row.get("Orijin (Baba-Anne)", "-")), _weight_html(row.get("Kilo", "-")),
-            _jockey_html(row.get("Jokey", "-")), _owner_html(row.get("Sahip / Antrenör", "-")),
-            _esc(row.get("St", "-")), _esc(row.get("HP", "-")), _esc(row.get("Son 6 Y.", "-")),
-            _esc(row.get("KGS", "-")), _esc(row.get("s20", "-")), _eid_html(hidx, row.get("EİD", "-")),
-            _esc(row.get("Gny", "-")), _esc(row.get("AGF", "-")), _esc(row.get("BİZİM SKOR", "-")),
-            _esc(row.get("ŞART UYUMU", "-")), _esc(row.get("GÜNCEL SINIF", "-")),
-            _esc(row.get("SON GALOP", "-")), _last_race_html(horses[hidx]),
-            _esc(row.get("BU YIL KAZANÇ", "-")), _esc(row.get("TOPLAM KAZANÇ", "-"))
-        ]
-        trs.append(f"<tr class='{rc}'>" + "".join(f"<td class='c{i}'>{v}</td>" for i,v in enumerate(td)) + "</tr>")
+            bg, fg = ("#ffffff", "#17212b") if pos % 2 == 0 else ("#f1f3f5", "#17212b")
+        return [f"background-color:{bg};color:{fg};font-weight:700;" for _ in row]
 
-    # Ana program tablosu: Streamlit markdown yerine gerçek HTML component.
-    # Böylece HTML/CSS kaynak kodu olarak görünmez; sticky kolonlar ve bağlantılar
-    # iframe içinde güvenilir şekilde çalışır. Başlık bağlantıları target=_parent
-    # ile ana Streamlit sayfasını yeniden yükleyerek gerçek sıralama yapar.
-    table_html = f"""
+    def _cell_style(data):
+        styles = pd.DataFrame("", index=data.index, columns=data.columns)
+        if "No" in data.columns:
+            styles["No"] = "font-weight:900;text-align:center;"
+        return styles
+
+    _style_source = df.copy()
+    styled_df = (
+        _style_source[display_columns]
+        .style
+        .apply(_row_style, axis=1)
+        .apply(_cell_style, axis=None)
+        .set_properties(**{
+            "font-size":"9px", "font-weight":"700",
+            "white-space":"pre-line", "vertical-align":"middle",
+            "color":"#17212b"
+        })
+        .set_table_styles([
+            {"selector":"th", "props":[
+                ("background-color","#d5dae2"),("color","#101820"),
+                ("font-weight","900"),("font-size","9px"),
+                ("height","42px"),("text-align","center"),
+                ("border","1px solid #c0c7d0")
+            ]},
+            {"selector":"td", "props":[
+                ("font-size","9px"),("font-weight","700"),
+                ("white-space","pre-line"),("border","1px solid #d2d7de")
+            ]},
+        ])
+    )
+
+    table_row_height = 44
+    table_height = 54 + (len(df) * table_row_height) + 28
+
+    st.markdown("""
     <style>
-      html,body{{margin:0;padding:0;background:transparent;font-family:Arial,sans-serif;}}
-      .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
-      table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
-      .ri-table th{{position:sticky;top:0;z-index:40;background:#d5dae2;color:#101820;height:38px;padding:5px 7px;border-right:1px solid #bcc4cf;border-bottom:1px solid #aab3bf;text-align:center;font-weight:900;white-space:nowrap;}}
-      .ri-table th .ri-sort{{color:#101820;text-decoration:none;display:block;width:100%;height:100%;line-height:28px;}}
-      .ri-table th .ri-sort:hover{{color:#1976d2;}}
-      .ri-table td{{height:46px;padding:5px 7px;border-right:1px solid #d4d9df;border-bottom:1px solid #d0d5dc;color:#17212b;font-weight:700;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
-      .ri-table tr.even td{{background:#fff;}}
-      .ri-table tr.odd td{{background:#eef1f4;}}
-      .ri-table tr.selected td{{background:#cfe6ff!important;color:#07345f!important;}}
-      .ri-table .c0,.ri-table .c1,.ri-table .c2{{position:sticky;z-index:30;}}
-      .ri-table th.c0{{left:0;width:38px;z-index:50;}}
-      .ri-table td.c0{{left:0;width:38px;z-index:31;}}
-      .ri-table th.c1{{left:38px;width:42px;z-index:50;}}
-      .ri-table td.c1{{left:38px;width:42px;z-index:31;}}
-      .ri-table th.c2{{left:80px;width:155px;text-align:left;z-index:50;}}
-      .ri-table td.c2{{left:80px;width:155px;font-weight:900;z-index:31;}}
-      .ri-table tr.even td.c0,.ri-table tr.even td.c1,.ri-table tr.even td.c2{{background:#fff;}}
-      .ri-table tr.odd td.c0,.ri-table tr.odd td.c1,.ri-table tr.odd td.c2{{background:#eef1f4;}}
-      .ri-table tr.selected td.c0,.ri-table tr.selected td.c1,.ri-table tr.selected td.c2{{background:#cfe6ff!important;}}
-      .ri-check{{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border:1px solid #1976d2;border-radius:3px;color:#1976d2!important;background:#fff;text-decoration:none!important;font-size:15px;font-weight:900;line-height:18px;}}
-      .ri-check.checked{{background:#1976d2;border-color:#1976d2;color:#fff!important;}}
-      .ri-horse-link{{color:#101820;text-decoration:none;font-weight:900;}}
-      .ri-horse-link:hover{{color:#1976d2;text-decoration:underline;}}
-      .ri-blue{{color:#1976d2;font-weight:900;}}
-      .ri-red{{color:#d62828;font-weight:900;}}
-      .ri-black{{color:#101820;font-weight:800;}}
-      .ri-green{{color:#169447;font-weight:900;}}
-      .ri-extra-weight{{color:#d62828;font-weight:900;}}
-      .ri-eid summary{{cursor:pointer;color:#d62828;font-weight:900;}}
-      .ri-eid div{{background:#fff3f3;color:#17212b;border:1px solid #efb2b2;padding:4px 6px;margin-top:3px;border-radius:3px;white-space:normal;min-width:150px;}}
-      .ri-table-wrap::-webkit-scrollbar{{height:12px;}}
-      .ri-table-wrap::-webkit-scrollbar-thumb{{background:#8b96a4;border-radius:7px;}}
-    </style>
-    <div class='ri-table-wrap'>
-      <table class='ri-table'>
-        <thead><tr>{th}</tr></thead>
-        <tbody>{''.join(trs)}</tbody>
-      </table>
-    </div>
-    """
-    # Component yüksekliği satır sayısına göre ayarlanır; dış sayfada gereksiz
-    # büyük boşluk oluşmaz. Yatay kaydırma yalnızca tablonun kendi alanındadır.
-    _table_height = min(900, max(180, 38 + 46 * len(df) + 8))
-    components.html(table_html, height=_table_height, scrolling=False)
+    .ri-mode-badge { text-align:center; font-size:9px; padding:9px 4px; color:#66717d; }
+    .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
+    .ri-model-summary { text-align:right; font-size:9px; color:#46515d; }
+    div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:hidden !important; }
+    div[data-testid="stDataFrame"] input[type="checkbox"] { opacity:0 !important; width:2px !important; margin:0 !important; }
+    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) { width:6px !important; min-width:6px !important; max-width:6px !important; padding:0 !important; }
+    div[data-testid="stDataFrame"] [role="columnheader"] {
+        background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
+        font-weight:900 !important; height:34px !important; min-height:34px !important;
+        line-height:34px !important; border-color:#c0c7d0 !important; text-transform:none !important;
+    }
+    div[data-testid="stDataFrame"] [role="columnheader"] * { color:#101820 !important; font-weight:900 !important; background:transparent !important; }
+    div[data-testid="stDataFrame"] [role="gridcell"],
+    div[data-testid="stDataFrame"] [role="gridcell"] > div {
+        min-height:44px !important; height:44px !important; line-height:1.18 !important;
+        white-space:pre-line !important; overflow:hidden !important; text-overflow:clip !important;
+        overflow-wrap:normal !important; word-break:normal !important; color:#17212b !important;
+    }
+    div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical { width:0 !important; }
+    div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal { height:12px !important; }
+    div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb { background:#aeb7c2 !important; border-radius:8px !important; }
+    /* Seçim kutusu görünür ve mavi */
+    div[data-testid="stDataFrame"] input[type="checkbox"] {
+        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
+        min-width:15px !important; margin:0 !important; accent-color:#1976d2 !important;
+        cursor:pointer !important;
+    }
+    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) {
+        width:30px !important; min-width:30px !important; max-width:30px !important;
+        padding:0 !important; background:#171b24 !important;
+    }
+    /* At İsmi Streamlit'in native pinned column özelliğiyle sabitlenir.
+       CSS ile nth-child/position:sticky uygulanmıyor; çünkü dataframe
+       sanal grid olarak çiziliyor ve bu yöntem yatay kaydırmada çalışmıyor. */
+    /* PROGRAMI GETİR: mavi, kompakt ve okunabilir yazı. */
+    .st-key-program_get_button button {
+        background:#1976d2 !important;
+        border-color:#1976d2 !important;
+        color:#ffffff !important;
+        font-size:14px !important;
+        font-weight:800 !important;
+        line-height:1.2 !important;
+        min-height:42px !important;
+        padding:7px 10px !important;
+        white-space:normal !important;
+    }
+    .st-key-program_get_button button:hover {
+        background:#1565c0 !important;
+        border-color:#1565c0 !important;
+    }
+
+    /* Ana işlem düğmeleri: ana buton tipinden bağımsız sabit renkler. */
+    .st-key-reset_model_button_top button {
+        background:#f2c230 !important; border-color:#d5a900 !important; color:#111 !important;
+        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
+    }
+    .st-key-real_analysis_button_top button {
+        background:#20a34a !important; border-color:#17843a !important; color:#fff !important;
+        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
+    }
+    .st-key-manual_analysis_button_top button {
+        background:#e53935 !important; border-color:#c62828 !important; color:#fff !important;
+        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
+    }
+    .st-key-reset_model_button_top button:hover { filter:brightness(1.06); }
+    .st-key-real_analysis_button_top button:hover { filter:brightness(1.06); }
+    .st-key-manual_analysis_button_top button:hover { filter:brightness(1.06); }
+    .st-key-reset_model_button_top button,
+    .st-key-real_analysis_button_top button,
+    .st-key-manual_analysis_button_top button { border-radius:5px !important; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    table_event = st.dataframe(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        key="horse_table",
+        on_select="rerun",
+        selection_mode="single-row",
+        height=table_height,
+        row_height=table_row_height,
+    )
+
+    selected_rows = []
+    try:
+        selected_rows = list(table_event.selection.rows)
+    except Exception:
+        selected_rows = []
 
     if selected_rows:
         selected_display_row = int(selected_rows[0])
