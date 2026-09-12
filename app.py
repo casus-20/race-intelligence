@@ -470,7 +470,33 @@ if st.session_state.pop("_reset_model_next_run", False):
     for criterion, value in DEFAULT_WEIGHTS.items():
         st.session_state[WEIGHT_KEYS[criterion]] = value
 
-# İSTENEN SIRALAMA: butonlar önce, CANLI MODEL AYARLARI hemen altında.
+# CANLI MODEL SAYFANIN EN ÜSTÜNDE
+current_mode = st.session_state.get("analysis_mode", "Gerçek veri")
+with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=False):
+    st.caption(
+        "Ağırlıkları değiştirdiğinde yeni TJK isteği yapılmaz; mevcut gerçek verilerle skor yeniden hesaplanır."
+    )
+    weight_items = list(DEFAULT_WEIGHTS.items())
+    cols = st.columns(4)
+    for idx, (criterion, default_value) in enumerate(weight_items):
+        key = WEIGHT_KEYS[criterion]
+        with cols[idx % 4]:
+            st.slider(criterion, min_value=0, max_value=40, key=key, step=1)
+
+    ANALYSIS_WEIGHTS = current_weights()
+    weight_total = sum(ANALYSIS_WEIGHTS.values())
+    normalized = {
+        k: (v * 100.0 / weight_total if weight_total else 0.0)
+        for k, v in ANALYSIS_WEIGHTS.items()
+    }
+    st.markdown(
+        f"<div class='ri-model-summary'><b>Ham toplam:</b> {weight_total} &nbsp;•&nbsp; <b>Normalize:</b> 100</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(" • ".join(f"{k} %{normalized[k]:.1f}" for k in ANALYSIS_WEIGHTS))
+    st.caption(f"Aktif analiz modu: **{current_mode}**")
+
+# Fonksiyonlar CANLI MODEL AYARLARININ DIŞINDA
 btn1, btn2, btn3, mode_col = st.columns([1.15, 1.15, 1.15, 0.65])
 with btn1:
     st.button(
@@ -502,62 +528,17 @@ with mode_col:
         unsafe_allow_html=True,
     )
 
-with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=False):
-    st.caption(
-        "Ağırlıkları değiştirdiğinde yeni TJK isteği yapılmaz; mevcut gerçek verilerle skor yeniden hesaplanır."
-    )
-    weight_items = list(DEFAULT_WEIGHTS.items())
-    cols = st.columns(4)
-    for idx, (criterion, default_value) in enumerate(weight_items):
-        key = WEIGHT_KEYS[criterion]
-        with cols[idx % 4]:
-            st.slider(criterion, min_value=0, max_value=40, key=key, step=1)
-
-    ANALYSIS_WEIGHTS = current_weights()
-    weight_total = sum(ANALYSIS_WEIGHTS.values())
-    normalized = {
-        k: (v * 100.0 / weight_total if weight_total else 0.0)
-        for k, v in ANALYSIS_WEIGHTS.items()
-    }
-    st.markdown(
-        f"<div class='ri-model-summary'><b>Ham toplam:</b> {weight_total} &nbsp;•&nbsp; <b>Normalize:</b> 100</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(" • ".join(f"{k} %{normalized[k]:.1f}" for k in ANALYSIS_WEIGHTS))
-    st.caption(f"Aktif analiz modu: **{current_mode}**")
-
 
 # ============================================================
 # TJK VERİ DURUMU
 # ============================================================
 
 def fetch_program_with_status(selected_date, selected_city, label):
-    box = st.status(
-        f"📡 {label}: {selected_city} için TJK verisi çekiliyor...",
-        expanded=True,
-    )
-    box.write("TJK Günlük Yarış Programı isteği gönderiliyor...")
+    """Programı alır; eski status/expander panelini ekrana basmaz."""
     try:
-        result = load_program(selected_date, selected_city)
-        races_count = len(result.get("races", [])) if isinstance(result, dict) else 0
-        horse_count = (
-            sum(len(r.get("horses", [])) for r in result.get("races", []))
-            if isinstance(result, dict) else 0
-        )
-        box.write(f"✓ {races_count} koşu • {horse_count} at verisi alındı.")
-        box.update(
-            label=f"✅ {selected_city} TJK programı hazır",
-            state="complete",
-            expanded=False,
-        )
-        return result
+        return load_program(selected_date, selected_city)
     except Exception as exc:
-        box.update(
-            label=f"❌ {selected_city} TJK verisi alınamadı",
-            state="error",
-            expanded=True,
-        )
-        raise exc
+        raise RuntimeError(f"{label}: {exc}") from exc
 
 # ============================================================
 # PROGRAM GETİRME
@@ -946,9 +927,25 @@ def get_horse_form(
 # ============================================================
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_horse_enrichment(at_id: str, horse_name: str) -> Dict[str, Any]:
+def load_horse_enrichment(
+    at_id: str,
+    horse_name: str,
+    target_date: str = "",
+    target_city: str = "",
+    target_distance: str = "",
+    target_surface: str = "",
+    target_class: str = "",
+) -> Dict[str, Any]:
     try:
-        return get_horse_enrichment(at_id, horse_name)
+        return get_horse_enrichment(
+            at_id,
+            horse_name,
+            target_date=target_date,
+            target_city=target_city,
+            target_distance=target_distance,
+            target_surface=target_surface,
+            target_class=target_class,
+        )
     except Exception as exc:
         return {
             "ok": False,
@@ -958,7 +955,14 @@ def load_horse_enrichment(at_id: str, horse_name: str) -> Dict[str, Any]:
         }
 
 
-def enrich_race_horses(horses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def enrich_race_horses(
+    horses: List[Dict[str, Any]],
+    target_date: Any = None,
+    target_city: str = "",
+    target_distance: Any = None,
+    target_surface: str = "",
+    target_class: str = "",
+) -> List[Dict[str, Any]]:
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
 
     def one(item):
@@ -982,7 +986,15 @@ def enrich_race_horses(horses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             item["_workouts"] = []
             item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
             return item
-        data = load_horse_enrichment(str(at_id), name)
+        data = load_horse_enrichment(
+            str(at_id),
+            name,
+            str(target_date or ""),
+            str(target_city or ""),
+            str(target_distance or ""),
+            str(target_surface or ""),
+            str(target_class or ""),
+        )
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
 
@@ -2490,18 +2502,12 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
-analysis_badge = (
-    "SKORLAMA AKTİF"
-    if st.session_state.get("real_analysis_done")
-    else "ANALİZ BEKLENİYOR"
-)
-
 st.markdown(
     f"""<div class='race-info-compact'>
         <div class='race-title-panel'>
-            <span class='race-title-main'>{race_number}. KOŞU {race_time if race_time != '-' else ''}</span>
+            <span class='race-title-main'>{race_time if race_time != '-' else ''}</span>
             <span class='race-condition'>{condition}</span>
-            <span class='analysis-inline'>{analysis_badge}</span>
+            <span class='race-distance'>{distance} {surface}</span>
         </div>
     </div>""",
     unsafe_allow_html=True,
@@ -2530,14 +2536,6 @@ if not isinstance(
     horses = []
 
 
-st.markdown(
-    '<div class="horse-title">'
-    f"🐎 Atlar ({len(horses)})"
-    "</div>",
-    unsafe_allow_html=True,
-)
-
-
 if not horses:
 
     st.warning(
@@ -2549,41 +2547,17 @@ else:
     # GERÇEK VERİYLE ANALİZ: Worker V1'in mevcut /api/tjk/horsedata
     # endpointi üzerinden her koşan atın geçmiş + galop verisini al.
     if st.session_state.get("real_analysis_requested"):
-        analysis_status = st.status(
-            "🔎 GERÇEK VERİYLE ANALİZ: TJK geçmiş koşu + galop verileri çekiliyor...",
-            expanded=True,
-        )
-        analysis_status.write(
-            f"{len(horses)} koşan at için gerçek geçmiş ve galop verileri sorgulanıyor..."
-        )
         try:
-            horses = enrich_race_horses(horses)
-            ok_count = sum(
-                1 for h in horses
-                if h.get("_history") or h.get("_workouts")
-            )
-            id_count = sum(1 for h in horses if h.get("_at_id"))
-            error_count = sum(1 for h in horses if h.get("_enrichment_error"))
-            analysis_status.write(
-                f"✓ {ok_count}/{len(horses)} at için gerçek geçmiş/galop verisi alındı "
-                f"• ID bulunan: {id_count}/{len(horses)}"
-            )
-            if error_count:
-                analysis_status.write(
-                    f"⚠️ {error_count} at için veri alınamadı; hata ayrıntısı at kaydında tutuldu."
-                )
-            analysis_status.update(
-                label="✅ GERÇEK VERİ ANALİZİ TAMAMLANDI",
-                state="complete",
-                expanded=False,
+            horses = enrich_race_horses(
+                horses,
+                target_date=selected_date,
+                target_city=selected_city,
+                target_distance=distance,
+                target_surface=surface,
+                target_class=condition,
             )
             st.session_state.real_analysis_done = True
         except Exception as exc:
-            analysis_status.update(
-                label="❌ GERÇEK VERİ ANALİZİ HATASI",
-                state="error",
-                expanded=True,
-            )
             st.error(f"Gerçek veri analizi sırasında hata: {exc}")
         selected_race["horses"] = horses
         st.session_state.real_analysis_requested = False
@@ -2759,6 +2733,8 @@ else:
     .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
     .ri-model-summary { text-align:right; font-size:12px; color:#46515d; }
     div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:hidden !important; }
+    div[data-testid="stDataFrame"] input[type="checkbox"] { opacity:0 !important; width:2px !important; margin:0 !important; }
+    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) { width:6px !important; min-width:6px !important; max-width:6px !important; padding:0 !important; }
     div[data-testid="stDataFrame"] [role="columnheader"] {
         background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
         font-weight:900 !important; height:42px !important; min-height:42px !important;
@@ -2813,7 +2789,14 @@ else:
                 )
                 horse_status.write("Worker V1 /api/tjk/horsedata sorgulanıyor...")
                 try:
-                    enriched_one = enrich_race_horses([selected_horse])
+                    enriched_one = enrich_race_horses(
+                        [selected_horse],
+                        target_date=selected_date,
+                        target_city=selected_city,
+                        target_distance=distance,
+                        target_surface=surface,
+                        target_class=condition,
+                    )
                     if enriched_one:
                         horses[selected_horse_index] = enriched_one[0]
                         selected_race["horses"] = horses
