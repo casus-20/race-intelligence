@@ -5,7 +5,7 @@ from datetime import date
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from worker.tjk_fetch import get_program
+from worker.tjk_fetch import get_program, get_horse_enrichment
 
 
 # ============================================================
@@ -95,6 +95,15 @@ if "loaded_city" not in st.session_state:
 
 if "selected_race" not in st.session_state:
     st.session_state.selected_race = 1
+
+if "analysis_mode" not in st.session_state:
+    st.session_state.analysis_mode = "Gerçek veri"
+
+if "real_analysis_requested" not in st.session_state:
+    st.session_state.real_analysis_requested = False
+
+if "selected_horse_no" not in st.session_state:
+    st.session_state.selected_horse_no = None
 
 
 # ============================================================
@@ -224,6 +233,18 @@ st.markdown(
     .ri-table tr.rank2 { background:rgba(255,193,7,.12); }
     .ri-table tr.rank3 { background:rgba(255,152,0,.10); }
     .ri-table tr:hover { background:rgba(80,130,190,.10); }
+
+    .ri-table tr.selected-row td {
+        background:#dff3ff !important;
+        box-shadow:inset 3px 0 0 #0878d1;
+        color:#16324d !important;
+        font-weight:700;
+    }
+
+    .ri-table tr.rank1 td { background:rgba(46,160,67,.14); }
+    .ri-table tr.rank2 td { background:rgba(255,193,7,.12); }
+    .ri-table tr.rank3 td { background:rgba(255,152,0,.10); }
+
 
     .score-strong { font-weight:900; font-size:13px; }
 
@@ -481,6 +502,131 @@ def get_horse_form(
 
 
 
+
+# ============================================================
+# GERÇEK VERİ ZENGİNLEŞTİRME
+# ============================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_horse_enrichment(at_id: str, horse_name: str) -> Dict[str, Any]:
+    try:
+        return get_horse_enrichment(at_id, horse_name)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "history": [],
+            "workouts": [],
+            "error": str(exc),
+        }
+
+
+def enrich_race_horses(horses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    enriched = [dict(h) for h in horses if isinstance(h, dict)]
+
+    def one(item):
+        at_id = item.get("atId") or item.get("at_id") or ""
+        name = get_horse_name(item)
+        if not at_id:
+            return item
+        data = load_horse_enrichment(str(at_id), name)
+        history = data.get("history", []) if isinstance(data, dict) else []
+        workouts = data.get("workouts", []) if isinstance(data, dict) else []
+
+        item["_history"] = history if isinstance(history, list) else []
+        item["_workouts"] = workouts if isinstance(workouts, list) else []
+
+        # V34: sahip / antrenör / bu yıl kazanç geçmiş gerçek yarışlardan.
+        if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
+            for row in item["_history"]:
+                if not isinstance(row, dict):
+                    continue
+                if not item.get("owner") and row.get("owner"):
+                    item["owner"] = row.get("owner")
+                if not item.get("trainer") and row.get("trainer"):
+                    item["trainer"] = row.get("trainer")
+                if item.get("owner") and item.get("trainer"):
+                    break
+
+        # Son gerçek yarış: hedef tarihten önceki ilk geçerli kayıt.
+        item["_last_race"] = None
+        for row in item["_history"]:
+            if isinstance(row, dict) and row.get("date") and row.get("time"):
+                item["_last_race"] = row
+                break
+
+        # Bu yılki kazanç: gerçek geçmişteki prize alanlarının toplamı.
+        # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
+        return item
+
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(enriched)))) as executor:
+        futures = [executor.submit(one, h) for h in enriched]
+        return [f.result() for f in futures]
+
+
+def _history_year(date_text: Any) -> int | None:
+    m = re.search(r"(20\d{2})", str(date_text or ""))
+    return int(m.group(1)) if m else None
+
+
+def _money_number(value: Any) -> float:
+    if value is None:
+        return 0.0
+    text = str(value).replace(".", "").replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", text)
+    return float(m.group(0)) if m else 0.0
+
+
+def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
+    total = 0.0
+    for row in horse.get("_history", []):
+        if not isinstance(row, dict):
+            continue
+        if _history_year(row.get("date")) != target_year:
+            continue
+        total += _money_number(row.get("prize"))
+    return total
+
+
+def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
+    workouts = horse.get("_workouts", [])
+    if not isinstance(workouts, list):
+        return None
+    for w in workouts:
+        if not isinstance(w, dict):
+            continue
+        if any(str(w.get(k) or "").strip() for k in ("m800", "m1000", "m1200", "m400")):
+            return w
+    return None
+
+
+def workout_display(horse: Dict[str, Any]) -> str:
+    w = latest_workout(horse)
+    if not w:
+        return "-"
+    for key, label in (
+        ("m800", "800"),
+        ("m1000", "1000"),
+        ("m1200", "1200"),
+        ("m400", "400"),
+    ):
+        value = display_value(w.get(key), "")
+        if value:
+            return f"{value} ({label}m)"
+    return "-"
+
+
+def last_race_display(horse: Dict[str, Any]) -> str:
+    row = horse.get("_last_race")
+    if not isinstance(row, dict):
+        return "-"
+    time = display_value(row.get("time"), "")
+    distance = display_value(row.get("distance"), "")
+    surface = display_value(row.get("surface"), "")
+    if time:
+        return " • ".join(x for x in (time, f"{distance}m" if distance else "", surface) if x)
+    return "-"
+
+
 # ============================================================
 # RANKING / ANALİZ MOTORU
 # ============================================================
@@ -545,56 +691,121 @@ def _form_score(value: Any) -> float:
 def _pist_mesafe_score(horse: Dict[str, Any], race: Dict[str, Any], city: str) -> float:
     meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
     target_distance = _number(race.get("distance") or meta.get("distance"))
-    best_distance = _number(horse.get("bestDistance"))
-    best_city = str(horse.get("bestCity") or "").strip().lower()
     target_surface = str(race.get("surface") or meta.get("surface") or "").strip().lower()
 
-    if best_distance is None:
-        return 50.0
+    history = horse.get("_history", [])
+    matching = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        d = _number(row.get("distance"))
+        s = str(row.get("surface") or "").strip().lower()
+        if target_distance is not None and d == target_distance and target_surface:
+            if target_surface.split()[0] in s:
+                matching.append(row)
 
-    distance_delta = abs(best_distance - target_distance) if target_distance is not None else 9999
-    city_match = bool(best_city and city.strip().lower() in best_city)
+    places = [_number(x.get("place")) for x in matching]
+    places = [x for x in places if x is not None and x > 0]
+    if places:
+        return sum(max(0.0, 100.0 - (p - 1.0) * 10.0) for p in places) / len(places)
 
-    if distance_delta <= 1:
-        return 100.0 if city_match else 85.0
-    if distance_delta <= 100:
-        return 75.0
-    if distance_delta <= 200:
-        return 65.0
+    # Aynı pistte yakın mesafe varsa ikinci seviye.
+    nearby = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        d = _number(row.get("distance"))
+        s = str(row.get("surface") or "").strip().lower()
+        if d is None or target_distance is None:
+            continue
+        if abs(d - target_distance) <= 100 and target_surface and target_surface.split()[0] in s:
+            p = _number(row.get("place"))
+            if p is not None and p > 0:
+                nearby.append(p)
+    if nearby:
+        return sum(max(0.0, 90.0 - (p - 1.0) * 10.0) for p in nearby) / len(nearby)
+
     return 50.0
 
 
-def calculate_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any], city: str) -> List[Dict[str, Any]]:
+def calculate_ranking(
+    horses: List[Dict[str, Any]],
+    race: Dict[str, Any],
+    city: str,
+) -> List[Dict[str, Any]]:
     if not horses:
         return []
 
     hp_values = [_number(h.get("hp")) for h in horses]
     weight_values = [_number(h.get("weight") or h.get("siklet")) for h in horses]
-    best_times = [_time_seconds(h.get("bestTime")) for h in horses]
-    s20_values = [_number(h.get("s20")) for h in horses]
 
     hp_scores = _relative_scores(hp_values, True)
     weight_scores = _relative_scores(weight_values, False)
-    degree_scores = _relative_scores(best_times, False)
-    speed_scores = _relative_scores(s20_values, False)
 
     results = []
     for i, horse in enumerate(horses):
         pist = _pist_mesafe_score(horse, race, city)
-        ortak = 50.0  # Ortak rakip geçmişi günlük program payload'ında bulunmuyor; nötr tutulur.
+
+        # Gerçek ortak rakip: aynı tarih + şehir + mesafe üzerinden geçmiş yarış kayıtları.
+        common_scores = []
+        for other in horses:
+            if other is horse:
+                continue
+            for a in horse.get("_history", []):
+                if not isinstance(a, dict):
+                    continue
+                for b in other.get("_history", []):
+                    if not isinstance(b, dict):
+                        continue
+                    if (
+                        str(a.get("date")) == str(b.get("date"))
+                        and str(a.get("city")).lower() == str(b.get("city")).lower()
+                        and str(a.get("distance")) == str(b.get("distance"))
+                    ):
+                        pa = _number(a.get("place"))
+                        pb = _number(b.get("place"))
+                        if pa is not None and pb is not None:
+                            common_scores.append(100.0 if pa < pb else 0.0 if pa > pb else 50.0)
+        ortak = sum(common_scores) / len(common_scores) if common_scores else 50.0
+
         sinif = hp_scores[i]
         form = _form_score(horse.get("form") or horse.get("last6"))
         kilo = weight_scores[i]
-        derece = degree_scores[i]
 
-        workout_time = _time_seconds(horse.get("workout"))
-        # Galop zamanı okunabilir bir süre olarak gelirse karşılaştır; aksi halde nötr.
-        workout_scores = _relative_scores(
-            [_time_seconds(h.get("workout")) for h in horses],
-            False,
-        )
-        galop = workout_scores[i] if workout_time is not None else 50.0
-        hiz = speed_scores[i] if s20_values[i] is not None else 50.0
+        # Gerçek geçmişteki derece / aynı pist normalize.
+        times = []
+        meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
+        target_surface = str(race.get("surface") or meta.get("surface") or "").lower()
+        for row in horse.get("_history", []):
+            if not isinstance(row, dict):
+                continue
+            sec = _time_seconds(row.get("time"))
+            dist = _number(row.get("distance"))
+            surf = str(row.get("surface") or "").lower()
+            if sec and dist and target_surface and target_surface.split()[0] in surf:
+                times.append(sec / (dist / 1000.0))
+        derece = 50.0
+        if times:
+            avg = sum(times) / len(times)
+            derece = max(0.0, min(100.0, 100.0 - (avg - min(times)) / max(0.001, max(times) - min(times)) * 100.0)) if len(times) > 1 else 70.0
+
+        w = latest_workout(horse)
+        workout_values = []
+        if w:
+            for key in ("m1200", "m1000", "m800", "m600", "m400", "m200"):
+                sec = _time_seconds(w.get(key))
+                if sec is not None:
+                    workout_values.append(sec)
+        galop_raw = min(workout_values) if workout_values else None
+        galop = 50.0 if galop_raw is None else max(0.0, min(100.0, 100.0 - galop_raw))
+
+        last = horse.get("_last_race")
+        hiz = 50.0
+        if isinstance(last, dict):
+            sec = _time_seconds(last.get("time"))
+            dist = _number(last.get("distance"))
+            if sec and dist:
+                hiz = dist / sec * 3.6
 
         components = {
             "Pist / Mesafe": pist,
@@ -608,13 +819,16 @@ def calculate_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any], city: 
         }
 
         weights = current_weights()
+        total_w = sum(weights.values())
         ham = sum(components[k] * weights[k] for k in weights)
-        final_score = ham / sum(weights.values()) if sum(weights.values()) else 0.0
+        final_score = ham / total_w if total_w else 0.0
 
         results.append({
             "horse_index": i,
             "score": round(final_score, 2),
             "components": components,
+            "son_hiz": hiz,
+            "galop": workout_display(horse),
         })
 
     results.sort(key=lambda x: (-x["score"], x["horse_index"]))
@@ -629,6 +843,7 @@ def calculate_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any], city: 
             "Zayıf"
         )
     return results
+
 
 # ============================================================
 # SIDEBAR
@@ -991,10 +1206,32 @@ if selected_race is None:
 # CANLI MODEL AYARLARI
 # ============================================================
 
+def _reset_model_weights():
+    for criterion, value in DEFAULT_WEIGHTS.items():
+        st.session_state[WEIGHT_KEYS[criterion]] = value
+    st.session_state["analysis_mode"] = "Gerçek veri"
+    st.session_state["real_analysis_requested"] = True
+
+
+def _request_real_analysis():
+    st.session_state["analysis_mode"] = "Gerçek veri"
+    st.session_state["real_analysis_requested"] = True
+
+
+def _request_manual_analysis():
+    st.session_state["analysis_mode"] = "Manuel"
+    st.session_state["real_analysis_requested"] = True
+
+
+# Widget state'leri widget'lar oluşturulmadan önce güvenli şekilde sıfırlanır.
+if st.session_state.pop("_reset_model_next_run", False):
+    for criterion, value in DEFAULT_WEIGHTS.items():
+        st.session_state[WEIGHT_KEYS[criterion]] = value
+
 with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
     st.caption(
-        "Kaydırıcıları değiştirdiğinde puan ve sıralama anında yeniden hesaplanır. "
-        "TJK'ya yeniden istek gönderilmez."
+        "Kaydırıcıları değiştirdiğinde TJK'ya yeniden istek gönderilmez. "
+        "Elde edilen gerçek veriler üzerinden puan ve sıralama yeniden hesaplanır."
     )
 
     weight_items = list(DEFAULT_WEIGHTS.items())
@@ -1009,7 +1246,6 @@ with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
                 max_value=40,
                 key=key,
                 step=1,
-                help=f"{criterion} kriterinin model içindeki ham ağırlığı.",
             )
 
     ANALYSIS_WEIGHTS = current_weights()
@@ -1019,35 +1255,43 @@ with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
         for k, v in ANALYSIS_WEIGHTS.items()
     }
 
-    c1, c2, c3 = st.columns([1, 1, 2])
+    c1, c2, c3 = st.columns([1.15, 1.0, 1.0])
     with c1:
-        if st.button("🔄 GERÇEK VERİYLE ANALİZ", use_container_width=True):
-            for criterion, value in DEFAULT_WEIGHTS.items():
-                st.session_state[WEIGHT_KEYS[criterion]] = value
-            st.session_state["analysis_mode"] = "Gerçek veri"
-            st.rerun()
-    with c2:
-        if st.button(
-            "🧠 MANUEL ANALİZİ UYGULA",
+        st.button(
+            "🔄 GERÇEK VERİYLE ANALİZ",
+            key="real_analysis_button",
             use_container_width=True,
+            on_click=_request_real_analysis,
+        )
+    with c2:
+        st.button(
+            "🧠 MANUEL ANALİZİ UYGULA",
+            key="manual_analysis_button",
+            use_container_width=True,
+            on_click=_request_manual_analysis,
             type="primary",
-        ):
-            st.session_state["analysis_mode"] = "Manuel"
-            st.rerun()
+        )
     with c3:
-        st.markdown(
-            f"<div style='text-align:right;padding-top:8px;font-size:13px;'>"
-            f"<b>Ham: {weight_total}</b> • <b>Normalize: 100</b>"
-            f"</div>",
-            unsafe_allow_html=True,
+        st.button(
+            "↩️ VARSAYILANLARA DÖN",
+            key="reset_model_button",
+            use_container_width=True,
+            on_click=_reset_model_weights,
         )
 
+    st.markdown(
+        f"<div style='text-align:right;font-size:13px;margin-top:5px'>"
+        f"<b>Ham: {weight_total}</b> • <b>Normalize: 100</b>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
     st.caption(
-        "Normalize edilmiş ağırlıklar: "
+        "Normalize edilmiş: "
         + " • ".join(f"{k} %{normalized[k]:.1f}" for k in ANALYSIS_WEIGHTS)
     )
-    st.caption(f"Analiz modu: **{st.session_state.get('analysis_mode', 'Gerçek veri')}**")
-
+    st.caption(
+        f"Analiz modu: **{st.session_state.get('analysis_mode', 'Gerçek veri')}**"
+    )
 
 # ============================================================
 # KOŞU BİLGİLERİ
@@ -1118,18 +1362,64 @@ if not horses:
 
 else:
 
+    # GERÇEK VERİYLE ANALİZ: Worker V1'in mevcut /api/tjk/horsedata
+    # endpointi üzerinden her koşan atın geçmiş + galop verisini al.
+    if st.session_state.get("real_analysis_requested"):
+        with st.spinner("Gerçek geçmiş ve galop verileri alınıyor..."):
+            horses = enrich_race_horses(horses)
+        selected_race["horses"] = horses
+        st.session_state.real_analysis_requested = False
+
     ranking = calculate_ranking(horses, selected_race, selected_city)
     by_index = {item["horse_index"]: item for item in ranking}
 
-    table_rows = []
+    # V34 analiz tablosu için sıralama indeksleri.
+    by_index = {item["horse_index"]: item for item in ranking}
 
+    # Sıralama kontrolü: başlık filtrelerinin Streamlit karşılığı.
+    sort_options = [
+        "Sıra", "No", "At", "Yaş", "Kilo", "HP", "AGF",
+        "St", "KGS", "Form", "Puan", "Bu Yıl Kazanç"
+    ]
+    sort1, sort2 = st.columns([2, 1])
+    with sort1:
+        sort_field = st.selectbox(
+            "Sıralama",
+            sort_options,
+            index=0,
+            key="table_sort_field",
+        )
+    with sort2:
+        sort_direction = st.selectbox(
+            "Yön",
+            ["Azalan", "Artan"],
+            index=0,
+            key="table_sort_direction",
+        )
+
+    target_year = selected_date.year
+    table_rows = []
     for horse_index, horse in enumerate(horses):
         if not isinstance(horse, dict):
             continue
 
         form = get_horse_form(horse)
         form_digits = " ".join(re.findall(r"[0-9Xx-]", form)) if form != "-" else "-"
-        r = by_index.get(horse_index, {"rank": "-", "score": 0, "label": "-"})
+        r = by_index.get(
+            horse_index,
+            {"rank": "-", "score": 0, "label": "-","components": {}},
+        )
+        history = horse.get("_history", [])
+        owner = horse.get("owner") or ""
+        trainer = horse.get("trainer") or ""
+        for hist in history:
+            if isinstance(hist, dict):
+                if not owner and hist.get("owner"):
+                    owner = hist.get("owner")
+                if not trainer and hist.get("trainer"):
+                    trainer = hist.get("trainer")
+                if owner and trainer:
+                    break
 
         table_rows.append({
             "Sıra": r["rank"],
@@ -1144,35 +1434,69 @@ else:
             "KGS": get_horse_kgs(horse),
             "Form": form_digits,
             "Puan": r["score"],
+            "Sahip": owner or "-",
+            "Antrenör": trainer or "-",
+            "Bu Yıl Kazanç": year_earnings(horse, target_year),
+            "Son Galop": workout_display(horse),
+            "Son Koşu": last_race_display(horse),
+            "_horse_index": horse_index,
         })
 
-    df = pd.DataFrame(table_rows)
+    def _sort_value(row, field):
+        value = row.get(field)
+        if field in {"Sıra", "HP", "St", "KGS", "Puan", "Bu Yıl Kazanç", "Kilo", "AGF"}:
+            return _number(value)
+        if field == "Form":
+            return _form_score(value)
+        return str(value or "").lower()
 
-    def ranking_row_style(row):
-        styles = [""] * len(row)
-        try:
-            rank = int(row.get("Sıra", 999))
-        except Exception:
-            rank = 999
-        if rank == 1:
-            style = "font-weight:800; background-color: rgba(46, 160, 67, 0.18);"
-        elif rank == 2:
-            style = "font-weight:700; background-color: rgba(255, 193, 7, 0.12);"
-        elif rank == 3:
-            style = "font-weight:700; background-color: rgba(255, 152, 0, 0.10);"
-        else:
-            style = ""
-        return [style] * len(row)
+    table_rows.sort(
+        key=lambda row: _sort_value(row, sort_field),
+        reverse=(sort_direction == "Azalan"),
+    )
 
-    # V34 tarzı: renkli başlık + tüm analiz kolonları tek tabloda.
+    # At seçimi: Streamlit 1.35'te HTML tablo hücresini tıklanabilir
+    # state kontrolüne bağlamak güvenilir değil; bu nedenle aynı tabloyla
+    # senkron çalışan seçim kutusu kullanılır.
+    horse_options = [
+        (str(get_horse_number(h, i + 1)), get_horse_name(h))
+        for i, h in enumerate(horses)
+        if isinstance(h, dict)
+    ]
+    option_labels = ["At seçilmedi"] + [f"{no} - {name}" for no, name in horse_options]
+    current_no = st.session_state.get("selected_horse_no")
+    current_idx = 0
+    if current_no is not None:
+        for i, (no, _) in enumerate(horse_options, start=1):
+            if no == str(current_no):
+                current_idx = i
+                break
+    selected_label = st.selectbox(
+        "🐎 At seç",
+        option_labels,
+        index=current_idx,
+        key="selected_horse_selector",
+    )
+    if selected_label != "At seçilmedi":
+        selected_no = selected_label.split(" - ", 1)[0]
+        st.session_state.selected_horse_no = selected_no
+    else:
+        st.session_state.selected_horse_no = None
+
     def _cell(v):
-        return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return (
+            str(v)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
 
     headers = [
         "Sıra", "No", "At İsmi / Orijin", "Yaş", "Siklet", "Jokey",
-        "St", "HP", "Son 6 Y.", "KGS", "S20", "En İyi D.", "Gny", "AGF",
+        "St", "HP", "Son 6 Y.", "KGS", "s20", "En İyi D.", "Gny", "AGF",
         "BİZİM SKOR", "SINIF / KALİTE", "GÜNCEL SINIF", "SINIF AVANTAJI",
-        "SON GALOP", "SON KOŞU", "SON HIZ", "HIZ PUANI"
+        "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "Sahip", "Antrenör"
     ]
 
     html = ['<div class="ri-table-wrap"><table class="ri-table"><thead><tr>']
@@ -1180,24 +1504,34 @@ else:
     html.append('</tr></thead><tbody>')
 
     for row in table_rows:
+        horse_index = row["_horse_index"]
         rank = int(row["Sıra"]) if str(row["Sıra"]).isdigit() else 999
-        cls = "rank1" if rank == 1 else "rank2" if rank == 2 else "rank3" if rank == 3 else ""
-        # Eski V34'teki ana sınıf/kalite ve güncel sınıf kolonlarını mevcut Worker verisinden hesaplanan HP skorundan üret.
-        item = by_index.get(table_rows.index(row), {})
+        selected_row = (
+            st.session_state.get("selected_horse_no") is not None
+            and str(row["No"]) == str(st.session_state.get("selected_horse_no"))
+        )
+        cls = (
+            "selected-row"
+            if selected_row
+            else ("rank1" if rank == 1 else "rank2" if rank == 2 else "rank3" if rank == 3 else "")
+        )
+        item = by_index.get(horse_index, {})
         comps = item.get("components", {}) if isinstance(item, dict) else {}
         sinif = comps.get("Sınıf / HP", 50.0)
         form_score = comps.get("Güncel Form", 50.0)
-        best_time = display_value(horses[table_rows.index(row)].get("bestTime")) if table_rows.index(row) < len(horses) else "-"
+        horse = horses[horse_index]
         cells = [
             row["Sıra"], row["No"], row["At"], row["Yaş"], row["Kilo"], row["Jokey"],
             row["St"], row["HP"], row["Form"].replace(" ", ""), row["KGS"],
-            display_value(horses[table_rows.index(row)].get("s20")) if table_rows.index(row) < len(horses) else "-",
-            best_time, display_value(horses[table_rows.index(row)].get("odds")) if table_rows.index(row) < len(horses) else "-",
-            row["AGF"], f'<span class="score-strong">{float(row["Puan"]):.2f}</span>',
+            display_value(horse.get("s20")),
+            display_value(horse.get("bestTime")),
+            display_value(horse.get("odds")),
+            row["AGF"],
+            f'<span class="score-strong">{float(row["Puan"]):.2f}</span>',
             f"{sinif:.1f}", f"{form_score:.1f}", f"{sinif - form_score:+.1f}",
-            display_value(horses[table_rows.index(row)].get("workout")) if table_rows.index(row) < len(horses) else "-",
-            display_value(horses[table_rows.index(row)].get("lastRace")) if table_rows.index(row) < len(horses) else "-",
-            "-", "-"
+            row["Son Galop"], row["Son Koşu"],
+            f"{row['Bu Yıl Kazanç']:,.0f} ₺" if row["Bu Yıl Kazanç"] else "-",
+            row["Sahip"], row["Antrenör"],
         ]
         html.append(f'<tr class="{cls}">')
         for ci, value in enumerate(cells):
@@ -1246,6 +1580,51 @@ else:
                 "Ortak Rakip kriteri şu aşamada nötr (%50) tutulur. Eksik veriye puan uydurulmaz. "
                 "Ağırlık değişiklikleri üstteki canlı model ayarlarından uygulanır."
             )
+
+    if st.session_state.get("selected_horse_no") is not None:
+        selected_horse = next(
+            (
+                h for h in horses
+                if str(get_horse_number(h, 0)) == str(st.session_state.get("selected_horse_no"))
+            ),
+            None,
+        )
+        if selected_horse:
+            st.markdown("---")
+            st.subheader(
+                f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
+            )
+            d1, d2, d3, d4 = st.columns(4)
+            with d1:
+                st.metric("Son Galop", workout_display(selected_horse))
+            with d2:
+                st.metric("Bu Yıl Kazanç", f"{year_earnings(selected_horse, selected_date.year):,.0f} ₺")
+            with d3:
+                st.metric("Sahip", display_value(selected_horse.get("owner")))
+            with d4:
+                st.metric("Antrenör", display_value(selected_horse.get("trainer")))
+
+            with st.expander("📋 Gerçek geçmiş koşular", expanded=False):
+                hist = selected_horse.get("_history", [])
+                if hist:
+                    st.dataframe(
+                        pd.DataFrame(hist),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("Bu at için Worker V1 geçmiş koşu endpointinden veri gelmedi.")
+
+            with st.expander("🏇 Gerçek galop kayıtları", expanded=False):
+                workouts = selected_horse.get("_workouts", [])
+                if workouts:
+                    st.dataframe(
+                        pd.DataFrame(workouts),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("Bu at için Worker V1 galop endpointinden veri gelmedi.")
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
     if agf_values and all(v == "-" for v in agf_values):
