@@ -102,6 +102,9 @@ if "analysis_mode" not in st.session_state:
 if "real_analysis_requested" not in st.session_state:
     st.session_state.real_analysis_requested = False
 
+if "real_analysis_done" not in st.session_state:
+    st.session_state.real_analysis_done = False
+
 if "selected_horse_no" not in st.session_state:
     st.session_state.selected_horse_no = None
 
@@ -247,6 +250,18 @@ st.markdown(
 
 
     .score-strong { font-weight:900; font-size:13px; }
+    .analysis-badge {
+        display:inline-block;
+        padding:5px 10px;
+        border-radius:5px;
+        font-size:11px;
+        font-weight:900;
+        margin:2px 0 10px 0;
+        border:1px solid rgba(20,80,130,.35);
+    }
+    .analysis-waiting { background:#eaf3fb; color:#075b9f; }
+    .analysis-active { background:#e7f6ec; color:#147a35; }
+
 
     </style>
     """,
@@ -273,6 +288,38 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+# ============================================================
+# TJK VERİ DURUMU
+# ============================================================
+
+def fetch_program_with_status(selected_date, selected_city, label):
+    box = st.status(
+        f"📡 {label}: {selected_city} için TJK verisi çekiliyor...",
+        expanded=True,
+    )
+    box.write("TJK Günlük Yarış Programı isteği gönderiliyor...")
+    try:
+        result = load_program(selected_date, selected_city)
+        races_count = len(result.get("races", [])) if isinstance(result, dict) else 0
+        horse_count = (
+            sum(len(r.get("horses", [])) for r in result.get("races", []))
+            if isinstance(result, dict) else 0
+        )
+        box.write(f"✓ {races_count} koşu • {horse_count} at verisi alındı.")
+        box.update(
+            label=f"✅ {selected_city} TJK programı hazır",
+            state="complete",
+            expanded=False,
+        )
+        return result
+    except Exception as exc:
+        box.update(
+            label=f"❌ {selected_city} TJK verisi alınamadı",
+            state="error",
+            expanded=True,
+        )
+        raise exc
 
 # ============================================================
 # PROGRAM GETİRME
@@ -913,14 +960,11 @@ if get_program_clicked:
 
     try:
 
-        with st.spinner(
-            f"{selected_city} programı TJK'dan alınıyor..."
-        ):
-
-            result = load_program(
-                selected_date,
-                selected_city,
-            )
+        result = fetch_program_with_status(
+            selected_date,
+            selected_city,
+            "PROGRAM GETİR",
+        )
 
         st.session_state.program_data = result
         st.session_state.loaded_date = selected_date
@@ -951,14 +995,11 @@ if program_data is None:
 
     try:
 
-        with st.spinner(
-            f"{selected_city} programı hazırlanıyor..."
-        ):
-
-            program_data = load_program(
-                selected_date,
-                selected_city,
-            )
+        program_data = fetch_program_with_status(
+            selected_date,
+            selected_city,
+            "PROGRAM HAZIRLANIYOR",
+        )
 
         st.session_state.program_data = program_data
         st.session_state.loaded_date = selected_date
@@ -1009,14 +1050,11 @@ if (
 
     try:
 
-        with st.spinner(
-            f"{selected_city} programı yenileniyor..."
-        ):
-
-            program_data = load_program(
-                selected_date,
-                selected_city,
-            )
+        program_data = fetch_program_with_status(
+            selected_date,
+            selected_city,
+            "PROGRAM YENİLENİYOR",
+        )
 
         st.session_state.program_data = program_data
         st.session_state.loaded_date = selected_date
@@ -1202,6 +1240,18 @@ if selected_race is None:
     )
 
 
+# Koşu değiştiğinde eski at seçimini ve eski analiz durumunu temizle.
+_current_race_signature = (
+    str(st.session_state.get("loaded_date")),
+    str(st.session_state.get("loaded_city")),
+    int(st.session_state.get("selected_race", 1)),
+)
+if st.session_state.get("_last_race_signature") != _current_race_signature:
+    st.session_state.selected_horse_no = None
+    st.session_state.real_analysis_requested = False
+    st.session_state.real_analysis_done = False
+    st.session_state["_last_race_signature"] = _current_race_signature
+
 # ============================================================
 # CANLI MODEL AYARLARI
 # ============================================================
@@ -1216,11 +1266,13 @@ def _reset_model_weights():
 def _request_real_analysis():
     st.session_state["analysis_mode"] = "Gerçek veri"
     st.session_state["real_analysis_requested"] = True
+    st.session_state["real_analysis_done"] = False
 
 
 def _request_manual_analysis():
     st.session_state["analysis_mode"] = "Manuel"
-    st.session_state["real_analysis_requested"] = True
+    st.session_state["real_analysis_requested"] = False
+    st.session_state["real_analysis_done"] = True
 
 
 # Widget state'leri widget'lar oluşturulmadan önce güvenli şekilde sıfırlanır.
@@ -1310,6 +1362,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+analysis_badge = (
+    "SKORLAMA AKTİF"
+    if st.session_state.get("real_analysis_done")
+    else "ANALİZ BEKLENİYOR"
+)
+st.markdown(
+    f"<div class='analysis-badge {'analysis-active' if analysis_badge == 'SKORLAMA AKTİF' else 'analysis-waiting'}'>{analysis_badge}</div>",
+    unsafe_allow_html=True,
+)
+
 st.markdown(
     f"<div class='condition-box'><b>{condition}</b></div>",
     unsafe_allow_html=True,
@@ -1365,8 +1427,35 @@ else:
     # GERÇEK VERİYLE ANALİZ: Worker V1'in mevcut /api/tjk/horsedata
     # endpointi üzerinden her koşan atın geçmiş + galop verisini al.
     if st.session_state.get("real_analysis_requested"):
-        with st.spinner("Gerçek geçmiş ve galop verileri alınıyor..."):
+        analysis_status = st.status(
+            "🔎 GERÇEK VERİYLE ANALİZ: TJK geçmiş koşu + galop verileri çekiliyor...",
+            expanded=True,
+        )
+        analysis_status.write(
+            f"{len(horses)} koşan at için gerçek geçmiş ve galop verileri sorgulanıyor..."
+        )
+        try:
             horses = enrich_race_horses(horses)
+            ok_count = sum(
+                1 for h in horses
+                if h.get("_history") or h.get("_workouts")
+            )
+            analysis_status.write(
+                f"✓ {ok_count}/{len(horses)} at için gerçek veri alındı."
+            )
+            analysis_status.update(
+                label="✅ GERÇEK VERİ ANALİZİ TAMAMLANDI",
+                state="complete",
+                expanded=False,
+            )
+            st.session_state.real_analysis_done = True
+        except Exception as exc:
+            analysis_status.update(
+                label="❌ GERÇEK VERİ ANALİZİ HATASI",
+                state="error",
+                expanded=True,
+            )
+            st.error(f"Gerçek veri analizi sırasında hata: {exc}")
         selected_race["horses"] = horses
         st.session_state.real_analysis_requested = False
 
@@ -1376,171 +1465,237 @@ else:
     # V34 analiz tablosu için sıralama indeksleri.
     by_index = {item["horse_index"]: item for item in ranking}
 
-    # Sıralama kontrolü: başlık filtrelerinin Streamlit karşılığı.
-    sort_options = [
-        "Sıra", "No", "At", "Yaş", "Kilo", "HP", "AGF",
-        "St", "KGS", "Form", "Puan", "Bu Yıl Kazanç"
-    ]
-    sort1, sort2 = st.columns([2, 1])
-    with sort1:
-        sort_field = st.selectbox(
-            "Sıralama",
-            sort_options,
-            index=0,
-            key="table_sort_field",
-        )
-    with sort2:
-        sort_direction = st.selectbox(
-            "Yön",
-            ["Azalan", "Artan"],
-            index=0,
-            key="table_sort_direction",
-        )
-
+    # ========================================================
+    # V34 TABLOSU — TIKLANABİLİR SATIR + BAŞLIK SIRALAMA/FİLTRE
+    # ========================================================
     target_year = selected_date.year
     table_rows = []
+
     for horse_index, horse in enumerate(horses):
         if not isinstance(horse, dict):
             continue
 
         form = get_horse_form(horse)
-        form_digits = " ".join(re.findall(r"[0-9Xx-]", form)) if form != "-" else "-"
+        form_digits = "".join(re.findall(r"[0-9Xx-]", form)) if form != "-" else "-"
         r = by_index.get(
             horse_index,
-            {"rank": "-", "score": 0, "label": "-","components": {}},
+            {"rank": "-", "score": 0.0, "label": "-", "components": {}},
         )
-        history = horse.get("_history", [])
+
         owner = horse.get("owner") or ""
         trainer = horse.get("trainer") or ""
-        for hist in history:
-            if isinstance(hist, dict):
-                if not owner and hist.get("owner"):
-                    owner = hist.get("owner")
-                if not trainer and hist.get("trainer"):
-                    trainer = hist.get("trainer")
-                if owner and trainer:
-                    break
+        for hist in horse.get("_history", []):
+            if not isinstance(hist, dict):
+                continue
+            if not owner and hist.get("owner"):
+                owner = hist.get("owner")
+            if not trainer and hist.get("trainer"):
+                trainer = hist.get("trainer")
+            if owner and trainer:
+                break
+
+        comps = r.get("components", {})
+        class_quality = float(comps.get("Sınıf / HP", 50.0))
+        current_form = float(comps.get("Güncel Form", 50.0))
 
         table_rows.append({
+            "_horse_index": horse_index,
             "Sıra": r["rank"],
             "No": get_horse_number(horse, horse_index + 1),
-            "At": get_horse_name(horse),
+            "At İsmi / Orijin": get_horse_name(horse),
             "Yaş": get_horse_age(horse),
-            "Kilo": get_horse_weight(horse),
+            "Sıklet": get_horse_weight(horse),
             "Jokey": get_horse_jockey(horse),
-            "HP": get_horse_hp(horse),
-            "AGF": get_horse_agf(horse),
             "St": get_horse_start(horse),
+            "HP": get_horse_hp(horse),
+            "Son 6 Y.": form_digits,
             "KGS": get_horse_kgs(horse),
-            "Form": form_digits,
-            "Puan": r["score"],
+            "s20": display_value(horse.get("s20")),
+            "En İyi D.": display_value(horse.get("bestTime")),
+            "Gny": display_value(horse.get("odds")),
+            "AGF": get_horse_agf(horse),
+            "BİZİM SKOR": r["score"],
+            "SINIF / KALİTE": round(class_quality, 1),
+            "GÜNCEL SINIF": round(current_form, 1),
+            "SINIF AVANTAJI": round(class_quality - current_form, 1),
+            "SON GALOP": workout_display(horse),
+            "SON KOŞU": last_race_display(horse),
+            "BU YIL KAZANÇ": year_earnings(horse, target_year),
             "Sahip": owner or "-",
             "Antrenör": trainer or "-",
-            "Bu Yıl Kazanç": year_earnings(horse, target_year),
-            "Son Galop": workout_display(horse),
-            "Son Koşu": last_race_display(horse),
-            "_horse_index": horse_index,
         })
 
-    def _sort_value(row, field):
-        value = row.get(field)
-        if field in {"Sıra", "HP", "St", "KGS", "Puan", "Bu Yıl Kazanç", "Kilo", "AGF"}:
-            return _number(value)
-        if field == "Form":
-            return _form_score(value)
-        return str(value or "").lower()
-
-    table_rows.sort(
-        key=lambda row: _sort_value(row, sort_field),
-        reverse=(sort_direction == "Azalan"),
-    )
-
-    # At seçimi: Streamlit 1.35'te HTML tablo hücresini tıklanabilir
-    # state kontrolüne bağlamak güvenilir değil; bu nedenle aynı tabloyla
-    # senkron çalışan seçim kutusu kullanılır.
-    horse_options = [
-        (str(get_horse_number(h, i + 1)), get_horse_name(h))
-        for i, h in enumerate(horses)
-        if isinstance(h, dict)
-    ]
-    option_labels = ["At seçilmedi"] + [f"{no} - {name}" for no, name in horse_options]
-    current_no = st.session_state.get("selected_horse_no")
-    current_idx = 0
-    if current_no is not None:
-        for i, (no, _) in enumerate(horse_options, start=1):
-            if no == str(current_no):
-                current_idx = i
-                break
-    selected_label = st.selectbox(
-        "🐎 At seç",
-        option_labels,
-        index=current_idx,
-        key="selected_horse_selector",
-    )
-    if selected_label != "At seçilmedi":
-        selected_no = selected_label.split(" - ", 1)[0]
-        st.session_state.selected_horse_no = selected_no
-    else:
-        st.session_state.selected_horse_no = None
-
-    def _cell(v):
-        return (
-            str(v)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-        )
-
-    headers = [
-        "Sıra", "No", "At İsmi / Orijin", "Yaş", "Siklet", "Jokey",
+    df = pd.DataFrame(table_rows)
+    display_columns = [
+        "Sıra", "No", "At İsmi / Orijin", "Yaş", "Sıklet", "Jokey",
         "St", "HP", "Son 6 Y.", "KGS", "s20", "En İyi D.", "Gny", "AGF",
         "BİZİM SKOR", "SINIF / KALİTE", "GÜNCEL SINIF", "SINIF AVANTAJI",
-        "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "Sahip", "Antrenör"
+        "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "Sahip", "Antrenör",
     ]
+    df_display = df[display_columns].copy()
 
-    html = ['<div class="ri-table-wrap"><table class="ri-table"><thead><tr>']
-    html += [f'<th>{_cell(h)}</th>' for h in headers]
-    html.append('</tr></thead><tbody>')
+    column_config = {
+        "Sıra": st.column_config.NumberColumn("Sıra", format="%d"),
+        "No": st.column_config.TextColumn("No"),
+        "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin"),
+        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f"),
+        "SINIF / KALİTE": st.column_config.NumberColumn("SINIF / KALİTE", format="%.1f"),
+        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f"),
+        "SINIF AVANTAJI": st.column_config.NumberColumn("SINIF AVANTAJI", format="%.1f"),
+        "BU YIL KAZANÇ": st.column_config.NumberColumn("BU YIL KAZANÇ", format="%,.0f ₺"),
+    }
 
-    for row in table_rows:
-        horse_index = row["_horse_index"]
-        rank = int(row["Sıra"]) if str(row["Sıra"]).isdigit() else 999
-        selected_row = (
-            st.session_state.get("selected_horse_no") is not None
-            and str(row["No"]) == str(st.session_state.get("selected_horse_no"))
+    def _row_style(row):
+        rank = row.get("Sıra")
+        if rank == 1:
+            return ["background-color: rgba(46,160,67,.18); font-weight:700"] * len(row)
+        if rank == 2:
+            return ["background-color: rgba(255,193,7,.15); font-weight:700"] * len(row)
+        if rank == 3:
+            return ["background-color: rgba(255,152,0,.13); font-weight:700"] * len(row)
+        return ["background-color: rgba(238,247,255,.85)"] * len(row)
+
+    styled_df = (
+        df_display.style
+        .apply(_row_style, axis=1)
+        .set_table_styles([
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#0b66b3"),
+                    ("color", "white"),
+                    ("font-weight", "800"),
+                    ("font-size", "11px"),
+                    ("text-align", "center"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("font-size", "10px"),
+                    ("white-space", "nowrap"),
+                ],
+            },
+        ])
+    )
+
+    st.caption(
+        "📊 Sütun başlığına tıklayarak artan/azalan sıralama yap. "
+        "Tablonun araç çubuğundaki arama ile filtrele. "
+        "Bir at satırına tıklayınca gerçek geçmiş ve galop bölümü açılır."
+    )
+
+    table_event = st.dataframe(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        key="horse_table",
+        on_select="rerun",
+        selection_mode="single-row",
+        height=430,
+    )
+
+    selected_rows = []
+    try:
+        selected_rows = list(table_event.selection.rows)
+    except Exception:
+        selected_rows = []
+
+    if selected_rows:
+        selected_display_row = int(selected_rows[0])
+        if 0 <= selected_display_row < len(df):
+            selected_horse_index = int(df.iloc[selected_display_row]["_horse_index"])
+            selected_horse = horses[selected_horse_index]
+            st.session_state.selected_horse_no = get_horse_number(
+                selected_horse,
+                selected_horse_index + 1,
+            )
+
+            if not selected_horse.get("_history") and not selected_horse.get("_workouts"):
+                horse_status = st.status(
+                    f"🐎 {get_horse_name(selected_horse)} için gerçek koşu ve galop verileri çekiliyor...",
+                    expanded=True,
+                )
+                horse_status.write("Worker V1 /api/tjk/horsedata sorgulanıyor...")
+                try:
+                    enriched_one = enrich_race_horses([selected_horse])
+                    if enriched_one:
+                        horses[selected_horse_index] = enriched_one[0]
+                        selected_race["horses"] = horses
+                        selected_horse = horses[selected_horse_index]
+                    if selected_horse.get("_history") or selected_horse.get("_workouts"):
+                        horse_status.update(
+                            label="✅ Atın gerçek koşu ve galop verileri hazır",
+                            state="complete",
+                            expanded=False,
+                        )
+                    else:
+                        horse_status.update(
+                            label="⚠️ TJK bu at için geçmiş/galop verisi döndürmedi",
+                            state="complete",
+                            expanded=True,
+                        )
+                except Exception as exc:
+                    horse_status.update(
+                        label="❌ At geçmişi/galop sorgusu başarısız",
+                        state="error",
+                        expanded=True,
+                    )
+                    st.error(str(exc))
+
+    selected_no = st.session_state.get("selected_horse_no")
+    if selected_no is not None:
+        selected_horse = next(
+            (
+                h for h in horses
+                if str(get_horse_number(h, 0)) == str(selected_no)
+            ),
+            None,
         )
-        cls = (
-            "selected-row"
-            if selected_row
-            else ("rank1" if rank == 1 else "rank2" if rank == 2 else "rank3" if rank == 3 else "")
-        )
-        item = by_index.get(horse_index, {})
-        comps = item.get("components", {}) if isinstance(item, dict) else {}
-        sinif = comps.get("Sınıf / HP", 50.0)
-        form_score = comps.get("Güncel Form", 50.0)
-        horse = horses[horse_index]
-        cells = [
-            row["Sıra"], row["No"], row["At"], row["Yaş"], row["Kilo"], row["Jokey"],
-            row["St"], row["HP"], row["Form"].replace(" ", ""), row["KGS"],
-            display_value(horse.get("s20")),
-            display_value(horse.get("bestTime")),
-            display_value(horse.get("odds")),
-            row["AGF"],
-            f'<span class="score-strong">{float(row["Puan"]):.2f}</span>',
-            f"{sinif:.1f}", f"{form_score:.1f}", f"{sinif - form_score:+.1f}",
-            row["Son Galop"], row["Son Koşu"],
-            f"{row['Bu Yıl Kazanç']:,.0f} ₺" if row["Bu Yıl Kazanç"] else "-",
-            row["Sahip"], row["Antrenör"],
-        ]
-        html.append(f'<tr class="{cls}">')
-        for ci, value in enumerate(cells):
-            extra = ' class="horse-name"' if ci == 2 else ''
-            html.append(f'<td{extra}>{value if ci == 14 else _cell(value)}</td>')
-        html.append('</tr>')
 
-    html.append('</tbody></table></div>')
-    st.markdown("".join(html), unsafe_allow_html=True)
+        if selected_horse:
+            st.markdown("---")
+            st.subheader(
+                f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
+            )
+
+            d1, d2, d3, d4 = st.columns(4)
+            with d1:
+                st.metric("Son Galop", workout_display(selected_horse))
+            with d2:
+                st.metric(
+                    "Bu Yıl Kazanç",
+                    f"{year_earnings(selected_horse, selected_date.year):,.0f} ₺",
+                )
+            with d3:
+                st.metric("Sahip", display_value(selected_horse.get("owner")))
+            with d4:
+                st.metric("Antrenör", display_value(selected_horse.get("trainer")))
+
+            with st.expander("📋 GERÇEK KOŞU GEÇMİŞİ", expanded=True):
+                hist = selected_horse.get("_history", [])
+                if hist:
+                    st.dataframe(
+                        pd.DataFrame(hist),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=330,
+                    )
+                else:
+                    st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
+
+            with st.expander("🏇 GERÇEK GALOP KAYITLARI", expanded=True):
+                workouts = selected_horse.get("_workouts", [])
+                if workouts:
+                    st.dataframe(
+                        pd.DataFrame(workouts),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=260,
+                    )
+                else:
+                    st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
 
     # Analiz özeti
     if ranking:
@@ -1580,51 +1735,6 @@ else:
                 "Ortak Rakip kriteri şu aşamada nötr (%50) tutulur. Eksik veriye puan uydurulmaz. "
                 "Ağırlık değişiklikleri üstteki canlı model ayarlarından uygulanır."
             )
-
-    if st.session_state.get("selected_horse_no") is not None:
-        selected_horse = next(
-            (
-                h for h in horses
-                if str(get_horse_number(h, 0)) == str(st.session_state.get("selected_horse_no"))
-            ),
-            None,
-        )
-        if selected_horse:
-            st.markdown("---")
-            st.subheader(
-                f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
-            )
-            d1, d2, d3, d4 = st.columns(4)
-            with d1:
-                st.metric("Son Galop", workout_display(selected_horse))
-            with d2:
-                st.metric("Bu Yıl Kazanç", f"{year_earnings(selected_horse, selected_date.year):,.0f} ₺")
-            with d3:
-                st.metric("Sahip", display_value(selected_horse.get("owner")))
-            with d4:
-                st.metric("Antrenör", display_value(selected_horse.get("trainer")))
-
-            with st.expander("📋 Gerçek geçmiş koşular", expanded=False):
-                hist = selected_horse.get("_history", [])
-                if hist:
-                    st.dataframe(
-                        pd.DataFrame(hist),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.info("Bu at için Worker V1 geçmiş koşu endpointinden veri gelmedi.")
-
-            with st.expander("🏇 Gerçek galop kayıtları", expanded=False):
-                workouts = selected_horse.get("_workouts", [])
-                if workouts:
-                    st.dataframe(
-                        pd.DataFrame(workouts),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.info("Bu at için Worker V1 galop endpointinden veri gelmedi.")
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
     if agf_values and all(v == "-" for v in agf_values):
