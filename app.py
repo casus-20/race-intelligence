@@ -423,7 +423,7 @@ st.markdown(
 
 
 # ============================================================
-# BAŞLIK — V34 GÖRÜNÜMÜ
+# BAŞLIK — TJK YENİ YAPI
 # ============================================================
 
 st.markdown(
@@ -432,10 +432,10 @@ st.markdown(
         <div>
             <div class="ri-title">🏇 RACE INTELLIGENCE</div>
             <div class="ri-subtitle">
-                Gerçek TJK geçmişi + galop + karşılaştırma motoru • V54 Worker uyumlu • kesin koşanlar
+                Gerçek TJK geçmişi + galop + analiz motoru
             </div>
         </div>
-        <div class="ri-clock">CANLI MODEL</div>
+        <div class="ri-clock">TJK YENİ YAPI</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -2594,7 +2594,7 @@ else:
     by_index = {item["horse_index"]: item for item in ranking}
 
     # ========================================================
-    # V34 TABLOSU — TIKLANABİLİR SATIR + BAŞLIK SIRALAMA/FİLTRE
+    # TJK YENİ ANA TABLO — TIKLANABİLİR SATIR + SIRALAMA/FİLTRE
     # ========================================================
     target_year = selected_date.year
     table_rows = []
@@ -2714,9 +2714,9 @@ else:
         except Exception:
             pos = 0
         if selected_horse_index is not None and int(df.iloc[int(row.name)]["_horse_index"]) == int(selected_horse_index):
-            bg, fg = "#bfe3ff", "#062b55"
+            bg, fg = "#dceeff", "#062b55"
         else:
-            bg, fg = ("#f4f5f7", "#17212b") if pos % 2 == 0 else ("#e7ebf0", "#17212b")
+            bg, fg = ("#ffffff", "#17212b") if pos % 2 == 0 else ("#f1f3f5", "#17212b")
         return [f"background-color:{bg};color:{fg};font-weight:700;" for _ in row]
 
     def _cell_style(data):
