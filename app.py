@@ -147,18 +147,36 @@ st.markdown(
         padding-right: 6mm !important;
     }
 
-    /* Tarayıcı %100 iken %67 görünümü:
-       CSS zoom tek başına iframe tabanlı Streamlit tablolarını daraltıyordu.
-       Root alanını ters oranda genişleterek hem görsel ölçeği %67'ye indiriyor
-       hem de ana içerik/tablo alanının tüm ekranı doldurmasını sağlıyoruz. */
-    #root {
-        zoom: 0.67 !important;
-        width: 149.253731% !important;
-        min-width: 149.253731% !important;
-    }
-    html, body {
+    /* EKRAN ÖLÇEĞİ: Chrome %100 iken uygulama yaklaşık %67 yoğunlukta
+       görünür; ancak Streamlit'in tablo/iframe genişliği küçülmez.
+       Önceki #root zoom yaklaşımı dataframe alanını ~%67 genişliğe düşürüyordu.
+       Bu nedenle artık root'a zoom uygulanmıyor; içerik ölçüleri doğrudan
+       kompaktlaştırılıyor ve ana alan tam genişlikte bırakılıyor. */
+    html, body, #root {
         width: 100% !important;
+        max-width: none !important;
         overflow-x: hidden !important;
+    }
+
+    /* Sidebar, %67 tarayıcı görünümüne yakın kompakt ölçüde. */
+    section[data-testid="stSidebar"] {
+        width: 212px !important;
+        min-width: 212px !important;
+        max-width: 212px !important;
+    }
+    section[data-testid="stSidebar"] > div {
+        width: 212px !important;
+    }
+
+    /* Ana içerik tam kalan genişliği kullansın. */
+    [data-testid="stAppViewContainer"] > .main {
+        width: calc(100% - 212px) !important;
+        max-width: none !important;
+    }
+    section.main > div.block-container,
+    div[data-testid="stMainBlockContainer"] {
+        max-width: none !important;
+        width: 100% !important;
     }
 
     .ri-header {
