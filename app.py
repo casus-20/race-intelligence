@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import date
 from typing import Any, Dict, List
 
-from worker.tjk_fetch import get_program, get_active_cities, get_supported_cities
+from worker.tjk_fetch import get_program
 
 
 # ============================================================
@@ -21,9 +21,20 @@ st.set_page_config(
 # HİPODROMLAR
 # ============================================================
 
-# Sabit liste yerine TJK Worker V1'in seçilen tarihte
-# gerçekten yarış bulunan hipodromlarını kullan.
-ALL_CITIES = get_supported_cities()
+# TJK şehirleri.
+# Hipodrom seçimi başlangıçta sabit kalır; böylece
+# tarih/şehir keşfi yüzünden arayüz kilitlenmez.
+ALL_CITIES = [
+    "Adana",
+    "İzmir",
+    "İstanbul",
+    "Bursa",
+    "Ankara",
+    "Şanlıurfa",
+    "Elazığ",
+    "Diyarbakır",
+    "Kocaeli",
+]
 
 
 # ============================================================
@@ -126,25 +137,6 @@ def load_program(
         selected_date,
         city,
     )
-
-
-@st.cache_data(
-    ttl=300,
-    show_spinner=False,
-)
-def load_active_cities(
-    selected_date: date,
-) -> List[str]:
-    """
-    Seçilen tarihte TJK'da programı bulunan hipodromları getirir.
-    """
-    cities = get_active_cities(selected_date)
-
-    if cities:
-        return cities
-
-    # Veri kaynağı geçici olarak boş dönerse tüm şehirleri göster.
-    return get_supported_cities()
 
 
 # ============================================================
@@ -306,28 +298,20 @@ selected_date = st.sidebar.date_input(
 # HİPODROM
 # ============================================================
 
-active_cities = load_active_cities(selected_date)
-
-if (
-    st.session_state.loaded_city
-    in active_cities
-):
-    default_city_index = active_cities.index(
+if st.session_state.loaded_city in ALL_CITIES:
+    default_city_index = ALL_CITIES.index(
         st.session_state.loaded_city
     )
 else:
-    default_city_index = 0
+    # 12/09/2026 programı bulunan şehirlerden biri olan
+    # Ankara ile başla; kullanıcı diğer hipodromları seçebilir.
+    default_city_index = ALL_CITIES.index("Ankara")
 
 
 selected_city = st.sidebar.selectbox(
     "Hipodrom",
-    active_cities,
+    ALL_CITIES,
     index=default_city_index,
-)
-
-st.sidebar.caption(
-    f"TJK'da {selected_date.strftime('%d/%m/%Y')} için "
-    f"{len(active_cities)} aktif hipodrom bulundu."
 )
 
 
