@@ -694,7 +694,7 @@ def get_horse_enrichment(
             "error": "atId yok",
         }
 
-    return _worker_json(
+    data = _worker_json(
         API_HORSEDATA,
         {
             "atId": str(at_id),
@@ -702,6 +702,31 @@ def get_horse_enrichment(
         },
         timeout=timeout,
     )
+
+    # Worker V1 bazı durumlarda /horsedata içinde geçmişi döndürüp galopu boş bırakabilir.
+    # Worker değiştirilmeden, mevcut /horse ve /workouts uçlarıyla eksik alanı tamamla.
+    history = data.get("history") if isinstance(data.get("history"), list) else []
+    workouts = data.get("workouts") if isinstance(data.get("workouts"), list) else []
+
+    if not history:
+        try:
+            h = get_horse_history(at_id, timeout=timeout)
+            if isinstance(h.get("history"), list):
+                history = h.get("history")
+        except Exception:
+            pass
+
+    if not workouts:
+        try:
+            w = get_horse_workouts(horse, timeout=timeout)
+            if isinstance(w.get("workouts"), list):
+                workouts = w.get("workouts")
+        except Exception:
+            pass
+
+    data["history"] = history
+    data["workouts"] = workouts
+    return data
 
 # =========================================================
 # GERİYE DÖNÜK UYUMLULUK
