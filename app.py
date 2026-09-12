@@ -256,21 +256,14 @@ def get_horse_age(
     if text == "-":
         return "-"
 
-    compact = re.sub(r"\s+", "", text.lower())
-    match = re.match(r"^(\d+)y([dk])([ea])$", compact)
-    if match:
-        age, sex_code, breed_code = match.groups()
-        sex = {"d": "Dişi", "k": "Erkek"}.get(sex_code, sex_code)
-        breed = {"e": "İngiliz", "a": "Arap"}.get(breed_code, breed_code)
-        return f"{age}y {sex} {breed}"
-
-    # Bazı kaynaklarda boşluklu/uzun yazım gelebilir.
-    match = re.match(r"^(\d+)y?([dk])([ea])?$", compact)
-    if match:
-        age, sex_code, breed_code = match.groups()
-        sex = {"d": "Dişi", "k": "Erkek"}.get(sex_code, sex_code)
-        breed = {"e": "İngiliz", "a": "Arap"}.get(breed_code, breed_code or "")
-        return f"{age}y {sex}" + (f" {breed}" if breed else "")
+    # Worker/TJK bazı satırlarda kodları boşluklu verir (ör. "3y k d").
+    # Kodu yorumlayıp yanlış cinsiyet/ırk üretmek yerine yaş kısmını normalize ediyor,
+    # TJK'nın geri kalan kodlarını aynen koruyoruz. Böylece veri uydurulmuyor.
+    m = re.match(r"^(\d+)\s*y(?:\s+(.*))?$", text, flags=re.I)
+    if m:
+        age = m.group(1)
+        rest = (m.group(2) or "").strip()
+        return f"{age}y" + (f" {rest}" if rest else "")
 
     return text
 
@@ -357,6 +350,155 @@ def get_horse_form(
         or horse.get("Forma")
     )
 
+
+
+# ============================================================
+# RANKING / ANALİZ MOTORU
+# ============================================================
+
+def _number(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(',', '.')
+    if not text:
+        return None
+    m = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except Exception:
+        return None
+
+
+def _time_seconds(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(',', '.')
+    m = re.search(r"(\d+):(\d+(?:\.\d+)?)", text)
+    if m:
+        try:
+            return float(m.group(1)) * 60.0 + float(m.group(2))
+        except Exception:
+            return None
+    n = _number(text)
+    return n
+
+
+def _relative_scores(values: List[float | None], higher_is_better: bool = True) -> List[float]:
+    usable = [v for v in values if v is not None]
+    if len(usable) < 2 or max(usable) == min(usable):
+        return [50.0 if v is None else 100.0 for v in values]
+    lo, hi = min(usable), max(usable)
+    out = []
+    for v in values:
+        if v is None:
+            out.append(50.0)
+        elif higher_is_better:
+            out.append(100.0 * (v - lo) / (hi - lo))
+        else:
+            out.append(100.0 * (hi - v) / (hi - lo))
+    return out
+
+
+def _form_score(value: Any) -> float:
+    digits = [int(x) for x in re.findall(r"[1-9]", str(value or ""))]
+    if not digits:
+        return 50.0
+    # TJK formunda soldaki sonuç daha günceldir; güncele biraz daha fazla ağırlık ver.
+    weights = [1.50, 1.30, 1.15, 1.00, 0.90, 0.80]
+    used = digits[:6]
+    w = weights[:len(used)]
+    avg = sum(a * b for a, b in zip(used, w)) / sum(w)
+    return max(0.0, min(100.0, 100.0 * (9.0 - avg) / 8.0))
+
+
+def _pist_mesafe_score(horse: Dict[str, Any], race: Dict[str, Any], city: str) -> float:
+    meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
+    target_distance = _number(race.get("distance") or meta.get("distance"))
+    best_distance = _number(horse.get("bestDistance"))
+    best_city = str(horse.get("bestCity") or "").strip().lower()
+    target_surface = str(race.get("surface") or meta.get("surface") or "").strip().lower()
+
+    if best_distance is None:
+        return 50.0
+
+    distance_delta = abs(best_distance - target_distance) if target_distance is not None else 9999
+    city_match = bool(best_city and city.strip().lower() in best_city)
+
+    if distance_delta <= 1:
+        return 100.0 if city_match else 85.0
+    if distance_delta <= 100:
+        return 75.0
+    if distance_delta <= 200:
+        return 65.0
+    return 50.0
+
+
+def calculate_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any], city: str) -> List[Dict[str, Any]]:
+    if not horses:
+        return []
+
+    hp_values = [_number(h.get("hp")) for h in horses]
+    weight_values = [_number(h.get("weight") or h.get("siklet")) for h in horses]
+    best_times = [_time_seconds(h.get("bestTime")) for h in horses]
+    s20_values = [_number(h.get("s20")) for h in horses]
+
+    hp_scores = _relative_scores(hp_values, True)
+    weight_scores = _relative_scores(weight_values, False)
+    degree_scores = _relative_scores(best_times, False)
+    speed_scores = _relative_scores(s20_values, False)
+
+    results = []
+    for i, horse in enumerate(horses):
+        pist = _pist_mesafe_score(horse, race, city)
+        ortak = 50.0  # Ortak rakip geçmişi günlük program payload'ında bulunmuyor; nötr tutulur.
+        sinif = hp_scores[i]
+        form = _form_score(horse.get("form") or horse.get("last6"))
+        kilo = weight_scores[i]
+        derece = degree_scores[i]
+
+        workout_time = _time_seconds(horse.get("workout"))
+        # Galop zamanı okunabilir bir süre olarak gelirse karşılaştır; aksi halde nötr.
+        workout_scores = _relative_scores(
+            [_time_seconds(h.get("workout")) for h in horses],
+            False,
+        )
+        galop = workout_scores[i] if workout_time is not None else 50.0
+        hiz = speed_scores[i] if s20_values[i] is not None else 50.0
+
+        components = {
+            "Pist / Mesafe": pist,
+            "Ortak Rakip": ortak,
+            "Sınıf / HP": sinif,
+            "Güncel Form": form,
+            "Kilo": kilo,
+            "Derece": derece,
+            "Galop / Tempo": galop,
+            "Ham Hız": hiz,
+        }
+
+        ham = sum(components[k] * ANALYSIS_WEIGHTS[k] for k in ANALYSIS_WEIGHTS)
+        final_score = ham / sum(ANALYSIS_WEIGHTS.values())
+
+        results.append({
+            "horse_index": i,
+            "score": round(final_score, 2),
+            "components": components,
+        })
+
+    results.sort(key=lambda x: (-x["score"], x["horse_index"]))
+    for rank, item in enumerate(results, 1):
+        item["rank"] = rank
+        score = item["score"]
+        item["label"] = (
+            "Çok Güçlü" if score >= 75 else
+            "Güçlü" if score >= 65 else
+            "Şanslı" if score >= 55 else
+            "Sürpriz" if score >= 45 else
+            "Zayıf"
+        )
+    return results
 
 # ============================================================
 # SIDEBAR
@@ -806,6 +948,9 @@ if not horses:
 
 else:
 
+    ranking = calculate_ranking(horses, selected_race, selected_city)
+    by_index = {item["horse_index"]: item for item in ranking}
+
     table_rows = []
 
     for horse_index, horse in enumerate(horses):
@@ -814,8 +959,10 @@ else:
 
         form = get_horse_form(horse)
         form_digits = " ".join(re.findall(r"[0-9Xx-]", form)) if form != "-" else "-"
+        r = by_index.get(horse_index, {"rank": "-", "score": 0, "label": "-"})
 
         table_rows.append({
+            "Sıra": r["rank"],
             "No": get_horse_number(horse, horse_index + 1),
             "At": get_horse_name(horse),
             "Yaş": get_horse_age(horse),
@@ -826,33 +973,36 @@ else:
             "St": get_horse_start(horse),
             "KGS": get_horse_kgs(horse),
             "Form": form_digits,
+            "Puan": r["score"],
         })
 
     df = pd.DataFrame(table_rows)
 
-    def form_row_style(row):
+    def ranking_row_style(row):
         styles = [""] * len(row)
-        form_value = str(row.get("Form", ""))
-        digits = [int(x) for x in re.findall(r"[1-9]", form_value)]
-        if not digits:
-            return styles
-        avg = sum(digits) / len(digits)
-        if avg <= 3:
-            style = "font-weight:700; background-color: rgba(46, 160, 67, 0.14);"
-        elif avg <= 5:
-            style = "background-color: rgba(255, 193, 7, 0.10);"
+        try:
+            rank = int(row.get("Sıra", 999))
+        except Exception:
+            rank = 999
+        if rank == 1:
+            style = "font-weight:800; background-color: rgba(46, 160, 67, 0.18);"
+        elif rank == 2:
+            style = "font-weight:700; background-color: rgba(255, 193, 7, 0.12);"
+        elif rank == 3:
+            style = "font-weight:700; background-color: rgba(255, 152, 0, 0.10);"
         else:
-            style = "background-color: rgba(220, 53, 69, 0.08);"
+            style = ""
         return [style] * len(row)
 
-    styled = df.style.apply(form_row_style, axis=1)
+    styled = df.style.apply(ranking_row_style, axis=1)
 
     st.dataframe(
         styled,
         use_container_width=True,
         hide_index=True,
-        height=min(520, 44 + max(1, len(table_rows)) * 42),
+        height=min(600, 44 + max(1, len(table_rows)) * 42),
         column_config={
+            "Sıra": st.column_config.NumberColumn("Sıra", width="small", format="%d"),
             "No": st.column_config.TextColumn("No", width="small"),
             "At": st.column_config.TextColumn("At", width="medium"),
             "Yaş": st.column_config.TextColumn("Yaş", width="medium"),
@@ -863,8 +1013,47 @@ else:
             "St": st.column_config.TextColumn("St", width="small"),
             "KGS": st.column_config.TextColumn("KGS", width="small"),
             "Form": st.column_config.TextColumn("Form", width="medium"),
+            "Puan": st.column_config.NumberColumn("Puan", width="small", format="%.2f"),
         },
     )
+
+    # Analiz özeti
+    if ranking:
+        top = ranking[0]
+        top_horse = horses[top["horse_index"]]
+        st.success(
+            f"🏆 1. Sıra: {get_horse_number(top_horse, top['horse_index'] + 1)} "
+            f"- {get_horse_name(top_horse)} • {top['score']:.2f} puan • {top['label']}"
+        )
+        if len(ranking) >= 3:
+            summary = "  |  ".join(
+                f"{x['rank']}. {get_horse_name(horses[x['horse_index']])} ({x['score']:.2f})"
+                for x in ranking[:3]
+            )
+            st.caption(summary)
+
+        with st.expander("📊 Puan kırılımını göster"):
+            breakdown_rows = []
+            for item in ranking:
+                horse = horses[item["horse_index"]]
+                row = {
+                    "Sıra": item["rank"],
+                    "No": get_horse_number(horse, item["horse_index"] + 1),
+                    "At": get_horse_name(horse),
+                    "Puan": item["score"],
+                }
+                row.update({k: round(v, 1) for k, v in item["components"].items()})
+                breakdown_rows.append(row)
+            st.dataframe(
+                pd.DataFrame(breakdown_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
+            )
+            st.caption(
+                "Not: Günlük Worker verisinde ortak rakip geçmişi ayrı bir veri kümesi olarak gelmediği için "
+                "%18 Ortak Rakip kriteri şu aşamada nötr (%50) tutulur. Eksik veriye puan uydurulmaz."
+            )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
     if agf_values and all(v == "-" for v in agf_values):
