@@ -133,7 +133,7 @@ st.markdown(
         width: 100% !important;
     }
 
-    /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 5 mm boşluk. */
+    /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 15 mm boşluk. */
     section.main > div.block-container,
     div[data-testid="stMainBlockContainer"] {
         max-width: none !important;
