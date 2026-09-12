@@ -121,8 +121,14 @@ st.markdown(
 
     .main-title {
         font-size: 32px;
-        font-weight: 700;
+        font-weight: 900;
+        margin-top: 0 !important;
         margin-bottom: 2px;
+        line-height: 1.15;
+        padding-top: 0 !important;
+        overflow: visible !important;
+        position: relative;
+        z-index: 5;
     }
 
     /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 5 mm boşluk. */
@@ -136,8 +142,7 @@ st.markdown(
     }
 
     .ri-header {
-        margin-top: 0 !important;
-        padding-top: 0 !important;
+        display: none !important;
     }
 
     .sub-title {
@@ -1951,6 +1956,24 @@ else:
             border-radius: 10px !important;
         }
 
+
+
+    /* ANA TABLO BAŞLIĞI */
+    div[data-testid="stDataFrame"] [role="columnheader"] {
+        background: #147EB3 !important;
+        color: #FFFFFF !important;
+        font-size: 15px !important;
+        font-weight: 950 !important;
+        text-transform: uppercase !important;
+        min-height: 15mm !important;
+        height: 15mm !important;
+        line-height: 15mm !important;
+        border-color: rgba(255,255,255,.28) !important;
+    }
+    div[data-testid="stDataFrame"] [role="columnheader"] * {
+        color: #FFFFFF !important;
+        font-weight: 950 !important;
+    }
 
         /* Kullanıcının istediği kompakt dikey yerleşim. */
         div[data-testid="stExpander"] {
