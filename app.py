@@ -110,6 +110,9 @@ if "selected_horse_no" not in st.session_state:
     st.session_state.selected_horse_no = None
 if "selected_horse_index" not in st.session_state:
     st.session_state.selected_horse_index = None
+    st.session_state["_selected_detail_fetch_key"] = None
+if "_selected_detail_fetch_key" not in st.session_state:
+    st.session_state["_selected_detail_fetch_key"] = None
 
 
 # ============================================================
@@ -390,6 +393,41 @@ st.markdown(
         background: #f1f3f5;
         color: #17212b;
     }
+    .tjk-detail-table-wrap {
+        width:100%; overflow-x:auto; border:0; border-radius:0; background:#0b1320;
+        margin:0 !important; padding:0 !important;
+    }
+    table.tjk-detail-table {
+        width:100%; min-width:1450px; border-collapse:collapse; table-layout:auto;
+        font-size:14px; background:#0b1320; color:#f4f7fb;
+    }
+    table.tjk-detail-table thead th {
+        height:44px; padding:0 10px; background:#aeb5c2; color:#0a1423;
+        border-right:1px solid #8f98a8; border-bottom:1px solid #687486;
+        font-weight:900; text-align:center; white-space:nowrap;
+    }
+    table.tjk-detail-table tbody td {
+        height:42px; padding:5px 10px; background:#0d1727; color:#f5f7fa;
+        border-right:1px solid #263346; border-bottom:1px solid #2a3749;
+        text-align:center; vertical-align:middle; white-space:nowrap; font-weight:600;
+    }
+    table.tjk-detail-table tbody tr:nth-child(even) td { background:#202b3b; }
+    table.tjk-detail-table tbody tr:hover td { background:#26364a; }
+    table.tjk-detail-table td:nth-child(1), table.tjk-detail-table td:nth-child(2) { color:#eef3fb; }
+    table.tjk-detail-table td:nth-child(8), table.tjk-detail-table td:nth-child(9) { color:#f2f6ff; }
+    table.tjk-detail-table td:nth-child(14) { text-align:left; line-height:1.05; }
+    table.tjk-detail-table .row-action {
+        width:28px; min-width:28px; padding:0 !important; color:#8994a5 !important;
+        font-size:13px; font-weight:900;
+    }
+    table.workout-detail { min-width:1100px; }
+    table.workout-detail tbody td:nth-child(3) { color:#9fc8ff; }
+    table.workout-detail tbody td:nth-child(4),
+    table.workout-detail tbody td:nth-child(5),
+    table.workout-detail tbody td:nth-child(6),
+    table.workout-detail tbody td:nth-child(7),
+    table.workout-detail tbody td:nth-child(8) { font-variant-numeric:tabular-nums; }
+
     .real-section-title {
         margin-top: 5px !important;
         margin-bottom: 4px !important;
@@ -1247,63 +1285,98 @@ def _html_real_table(df: pd.DataFrame, widths=None) -> None:
 
 
 def _history_tables(history: List[Dict[str, Any]]) -> None:
-    """TJK geçmişini referans görseldeki kolon sırası ve açık tema ile gösterir."""
+    """TJK resmi At Koşu Bilgileri tablosunu görseldeki kolon düzeninde gösterir.
+
+    Veri yalnızca Worker'ın TJK geçmiş koşu kaydından gelir; alanlar uydurulmaz.
+    """
     if not history:
         st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
         return
 
-    rows = []
+    headers = ["Tarih", "Şehir", "Msf", "Pist", "Sonuç", "K Cinsi", "Grup",
+               "Derece", "Jokey", "Kilo", "Takı", "St", "HP", "Sahip / Antr.",
+               "AGF", "Gny", "İkramiye", ""]
+    rows_html = []
     for row in history:
         if not isinstance(row, dict):
             continue
-        owner = _first_value(row, ["owner", "sahip"])
-        trainer = _first_value(row, ["trainer", "antrenor"])
-        owner_trainer = " / ".join([x for x in (owner, trainer) if x])
-        rows.append({
-            "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
-            "Şehir": _first_value(row, ["city", "şehir", "Sehir"]),
-            "Msf": _first_value(row, ["distance", "msf", "mesafe"]),
-            "Pist": _first_value(row, ["surface", "pist"]),
-            "Sonuç": _first_value(row, ["place", "sira", "S"]),
-            "K Cinsi": _first_value(row, ["breed", "kind", "k_cinsi", "raceType", "race_type"]),
-            "Grup": _first_value(row, ["group", "grup"]),
-            "Derece": _first_value(row, ["time", "derece", "Derece"]),
-            "Jokey": _first_value(row, ["jockey", "jokey"]),
-            "Kilo": _first_value(row, ["weight", "kilo", "siklet"]),
-            "Takı": _first_value(row, ["equipment", "taki", "takı"]),
-            "St": _first_value(row, ["post", "st", "start"]),
-            "HP": _first_value(row, ["hp", "HP"]),
-            "Sahip / Antr.": owner_trainer,
-            "AGF": _first_value(row, ["agf", "AGF"]),
-            "Gny": _first_value(row, ["odds", "gny"]),
-            "İkramiye": _format_tl(_money_number(_first_value(row, ["prize", "ikramiye"]))) if _first_value(row, ["prize", "ikramiye"]) not in ("", None) else "-",
-        })
-    _html_real_table(pd.DataFrame(rows), widths=[75,75,55,75,55,65,70,75,100,55,65,40,45,150,55,55,90])
+        owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
+        trainer = display_value(_first_value(row, ["trainer", "antrenor"]), "-")
+        owner_trainer = f"{owner}<br>{trainer}" if trainer != "-" else owner
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye"])
+        prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
+        values = [
+            display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+            display_value(_first_value(row, ["city", "şehir", "Sehir"])),
+            display_value(_first_value(row, ["distance", "msf", "mesafe", "Msf"])),
+            display_value(_first_value(row, ["surface", "pist", "Pist"])),
+            display_value(_first_value(row, ["place", "sira", "Sıra", "S"])),
+            display_value(_first_value(row, ["className", "class", "kcins", "K Cinsi", "raceType"])),
+            display_value(_first_value(row, ["group", "grup", "Grup"])),
+            display_value(_first_value(row, ["time", "derece", "Derece"])),
+            display_value(_first_value(row, ["jockey", "jokey", "Jokey"])),
+            display_value(_first_value(row, ["weight", "kilo", "siklet", "Sıklet"])),
+            display_value(_first_value(row, ["equipment", "taki", "takı", "Takı"])),
+            display_value(_first_value(row, ["post", "st", "start", "St"])),
+            display_value(_first_value(row, ["hp", "HP"])),
+            owner_trainer,
+            display_value(_first_value(row, ["agf", "AGF"])),
+            display_value(_first_value(row, ["odds", "gny", "Gny"])),
+            prize,
+        ]
+        cells_html = "".join(f"<td>{str(v).replace('&','&amp;').replace('<br>','<br>')}</td>" for v in values)
+        rows_html.append(f"<tr>{cells_html}<td class='row-action'>▶</td></tr>")
+
+    head = "".join(f"<th>{h}{' ↕' if h else ''}</th>" for h in headers)
+    html = f"""
+    <div class='tjk-detail-table-wrap'>
+      <table class='tjk-detail-table history-detail'>
+        <thead><tr>{head}</tr></thead>
+        <tbody>{''.join(rows_html)}</tbody>
+      </table>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
-    """TJK galoplarını referans görseldeki kolon sırası ve açık tema ile gösterir."""
+    """TJK gerçek İdman/Galop tablosunu referans görseldeki kolonlarla gösterir."""
     if not workouts:
         st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
         return
 
-    rows = []
+    headers = ["Tarih", "Şehir", "İ.Jokey", "1200", "1000", "800", "600", "400",
+               "Çalışma", "Pist", ""]
+    rows_html = []
     for row in workouts:
         if not isinstance(row, dict):
             continue
-        rows.append({
-            "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
-            "Şehir": _first_value(row, ["city", "şehir", "Sehir"]),
-            "İ.Jokey": _first_value(row, ["jockey", "jokey", "rider", "binici"]),
-            "1200": _first_value(row, ["m1200", "1200", "time1200"]),
-            "1000": _first_value(row, ["m1000", "1000", "time1000"]),
-            "800": _first_value(row, ["m800", "800", "time800"]),
-            "600": _first_value(row, ["m600", "600", "time600"]),
-            "400": _first_value(row, ["m400", "400", "time400"]),
-            "Çalışma": _first_value(row, ["type", "tur", "Tür", "note", "not"]),
-            "Pist": _first_value(row, ["surface", "pist"]),
-        })
-    _html_real_table(pd.DataFrame(rows), widths=[80,80,90,65,65,65,65,65,75,85])
+        vals = [
+            display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+            display_value(_first_value(row, ["city", "track", "hipodrom", "şehir", "Sehir"])),
+            display_value(_first_value(row, ["jockey", "jokey", "rider", "binici"])),
+            display_value(_first_value(row, ["m1200", "1200", "time1200"])),
+            display_value(_first_value(row, ["m1000", "1000", "time1000"])),
+            display_value(_first_value(row, ["m800", "800", "time800"])),
+            display_value(_first_value(row, ["m600", "600", "time600"])),
+            display_value(_first_value(row, ["m400", "400", "time400"])),
+            display_value(_first_value(row, ["type", "tur", "Tür", "note", "not"])),
+            display_value(_first_value(row, ["surface", "pist"])),
+        ]
+        cells_html = "".join(f"<td>{str(v).replace('&','&amp;').replace('<br>','<br>')}</td>" for v in vals)
+        rows_html.append(f"<tr>{cells_html}<td class='row-action'>▶</td></tr>")
+
+    head = "".join(f"<th>{h}{' ↕' if h else ''}</th>" for h in headers)
+    html = f"""
+    <div class='tjk-detail-table-wrap'>
+      <table class='tjk-detail-table workout-detail'>
+        <thead><tr>{head}</tr></thead>
+        <tbody>{''.join(rows_html)}</tbody>
+      </table>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
 
 def _number(value: Any) -> float | None:
     if value is None:
@@ -2824,8 +2897,9 @@ else:
                 selected_horse_index + 1,
             )
             st.session_state.selected_horse_index = selected_horse_index
+            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if not selected_horse.get("_history") and not selected_horse.get("_workouts"):
+            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 try:
@@ -2866,6 +2940,7 @@ else:
                             state="complete",
                             expanded=True,
                         )
+                    st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
                 except Exception as exc:
                     horse_status.update(
                         label="❌ At geçmişi/galop sorgusu başarısız",
@@ -2873,6 +2948,7 @@ else:
                         expanded=True,
                     )
                     st.error(str(exc))
+                    st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
 
     selected_no = st.session_state.get("selected_horse_no")
     if selected_no is not None:
