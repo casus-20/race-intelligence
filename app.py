@@ -1460,9 +1460,8 @@ else:
         st.session_state.real_analysis_requested = False
 
     ranking = calculate_ranking(horses, selected_race, selected_city)
-    by_index = {item["horse_index"]: item for item in ranking}
-
-    # V34 analiz tablosu için sıralama indeksleri.
+    # Analiz sonucu horse_index üzerinden eşlenir.
+    # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
 
     # ========================================================
@@ -1500,8 +1499,11 @@ else:
 
         table_rows.append({
             "_horse_index": horse_index,
-            "Sıra": r["rank"],
-            "No": get_horse_number(horse, horse_index + 1),
+            "_horse_no": get_horse_number(horse, horse_index + 1),
+            "Sıra": int(r["rank"]) if str(r["rank"]).isdigit() else r["rank"],
+            "No": (_number(get_horse_number(horse, horse_index + 1))
+                   if _number(get_horse_number(horse, horse_index + 1)) is not None
+                   else get_horse_number(horse, horse_index + 1)),
             "At İsmi / Orijin": get_horse_name(horse),
             "Yaş": get_horse_age(horse),
             "Sıklet": get_horse_weight(horse),
@@ -1525,6 +1527,13 @@ else:
             "Antrenör": trainer or "-",
         })
 
+    # Ekran sırası HER ZAMAN analiz sırasıdır.
+    # TJK "No" ise atın gerçek program numarasıdır; satır sıralaması bunu değiştirmez.
+    table_rows.sort(key=lambda row: (
+        row["Sıra"] if isinstance(row["Sıra"], (int, float)) else 999999,
+        str(row.get("_horse_no", "")),
+    ))
+
     df = pd.DataFrame(table_rows)
     display_columns = [
         "Sıra", "No", "At İsmi / Orijin", "Yaş", "Sıklet", "Jokey",
@@ -1536,7 +1545,7 @@ else:
 
     column_config = {
         "Sıra": st.column_config.NumberColumn("Sıra", format="%d"),
-        "No": st.column_config.TextColumn("No"),
+        "No": st.column_config.NumberColumn("No", format="%d"),
         "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin"),
         "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f"),
         "SINIF / KALİTE": st.column_config.NumberColumn("SINIF / KALİTE", format="%.1f"),
