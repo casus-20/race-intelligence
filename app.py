@@ -107,6 +107,8 @@ if "real_analysis_done" not in st.session_state:
 
 if "selected_horse_no" not in st.session_state:
     st.session_state.selected_horse_no = None
+if "selected_horse_index" not in st.session_state:
+    st.session_state.selected_horse_index = None
 
 
 # ============================================================
@@ -616,11 +618,40 @@ def _history_year(date_text: Any) -> int | None:
 
 
 def _money_number(value: Any) -> float:
+    """TJK para alanını hem sayı hem TR/EN metin biçimlerinde doğru parse eder."""
     if value is None:
         return 0.0
-    text = str(value).replace(".", "").replace(",", ".")
-    m = re.search(r"-?\d+(?:\.\d+)?", text)
-    return float(m.group(0)) if m else 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+
+    text = str(value).strip()
+    if not text or text == "-":
+        return 0.0
+
+    # Para birimi, boşluk ve sembolleri temizle; eksi işaretini koru.
+    text = re.sub(r"[^0-9,.-]", "", text)
+    if not text:
+        return 0.0
+
+    # 1.234.567,89 -> 1234567.89
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        parts = text.split(",")
+        if len(parts[-1]) in (1, 2):
+            text = "".join(parts[:-1]) + "." + parts[-1]
+        else:
+            text = "".join(parts)
+    elif text.count(".") > 1:
+        text = text.replace(".", "")
+
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
@@ -1248,6 +1279,7 @@ _current_race_signature = (
 )
 if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state.selected_horse_no = None
+    st.session_state.selected_horse_index = None
     st.session_state.real_analysis_requested = False
     st.session_state.real_analysis_done = False
     st.session_state["_last_race_signature"] = _current_race_signature
@@ -1554,38 +1586,100 @@ else:
         "BU YIL KAZANÇ": st.column_config.NumberColumn("BU YIL KAZANÇ", format="%,.0f ₺"),
     }
 
-    def _row_style(row):
-        rank = row.get("Sıra")
-        if rank == 1:
-            return ["background-color: rgba(46,160,67,.18); font-weight:700"] * len(row)
-        if rank == 2:
-            return ["background-color: rgba(255,193,7,.15); font-weight:700"] * len(row)
-        if rank == 3:
-            return ["background-color: rgba(255,152,0,.13); font-weight:700"] * len(row)
-        return ["background-color: rgba(238,247,255,.85)"] * len(row)
+    selected_horse_index = st.session_state.get("selected_horse_index")
 
+    def _row_style(row):
+        """V34 görünümü: yeşil/açık mavi dönüşümlü satırlar; seçilen satır mavi."""
+        horse_idx = row.name
+        if selected_horse_index is not None and int(horse_idx) == int(selected_horse_index):
+            return [
+                "background-color: #0878f9; color: #ffffff; font-weight: 800;"
+            ] * len(row)
+
+        # Görsel satır sırasına göre iki renkli döngü.
+        try:
+            row_pos = int(row.name)
+        except Exception:
+            row_pos = 0
+        bg = "#063f2b" if row_pos % 2 == 0 else "#cfe8f8"
+        fg = "#ffffff" if row_pos % 2 == 0 else "#062b55"
+        return [f"background-color: {bg}; color: {fg}; font-weight: 750;"] * len(row)
+
+    def _cell_style(data):
+        styles = pd.DataFrame("", index=data.index, columns=data.columns)
+        # Sıra ve TJK gerçek No hücreleri sarı vurgulu.
+        for col in ("Sıra", "No"):
+            if col in data.columns:
+                styles[col] = "background-color: #ffc928; color: #101010; font-weight: 900; text-align: center;"
+        return styles
+
+    # Yardımcı indeksler tablo görünümünde kullanılmaz; seçim eşleştirmesi için korunur.
+    _style_source = df.copy()
     styled_df = (
-        df_display.style
+        _style_source[display_columns]
+        .style
+        .apply(_cell_style, axis=None)
         .apply(_row_style, axis=1)
+        .set_properties(**{"font-size": "12px", "font-weight": "750", "white-space": "nowrap"})
         .set_table_styles([
             {
                 "selector": "th",
                 "props": [
-                    ("background-color", "#0b66b3"),
-                    ("color", "white"),
-                    ("font-weight", "800"),
-                    ("font-size", "11px"),
+                    ("background-color", "#0868c9"),
+                    ("color", "#ffffff"),
+                    ("font-weight", "900"),
+                    ("font-size", "12px"),
                     ("text-align", "center"),
+                    ("border", "1px solid rgba(255,255,255,.22)"),
                 ],
             },
             {
                 "selector": "td",
                 "props": [
-                    ("font-size", "10px"),
+                    ("font-size", "12px"),
+                    ("font-weight", "750"),
                     ("white-space", "nowrap"),
                 ],
             },
         ])
+    )
+
+    # Dikey kaydırma çubuğu olmayacak şekilde tüm atları gösterecek dinamik yükseklik.
+    # Satır yüksekliği önceki görünüme göre yaklaşık %30 azaltılmıştır.
+    table_row_height = 28
+    table_height = 48 + (len(df) * table_row_height) + 24
+
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataFrame"] {
+            border: 2px solid #0878f9 !important;
+            border-radius: 14px !important;
+            box-shadow: 0 0 18px rgba(8,120,249,.34), inset 0 0 10px rgba(8,120,249,.10) !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="stDataFrame"] ::-webkit-scrollbar {
+            width: 0px !important;
+            height: 16px !important;
+        }
+        div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical {
+            width: 0px !important;
+        }
+        div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal {
+            height: 16px !important;
+        }
+        div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb {
+            background: #0878f9 !important;
+            border-radius: 10px !important;
+            border: 3px solid #d8ebff !important;
+        }
+        div[data-testid="stDataFrame"] ::-webkit-scrollbar-track {
+            background: #d8ebff !important;
+            border-radius: 10px !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     st.caption(
@@ -1602,7 +1696,8 @@ else:
         key="horse_table",
         on_select="rerun",
         selection_mode="single-row",
-        height=430,
+        height=table_height,
+        row_height=table_row_height,
     )
 
     selected_rows = []
@@ -1620,6 +1715,7 @@ else:
                 selected_horse,
                 selected_horse_index + 1,
             )
+            st.session_state.selected_horse_index = selected_horse_index
 
             if not selected_horse.get("_history") and not selected_horse.get("_workouts"):
                 horse_status = st.status(
