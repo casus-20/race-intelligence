@@ -168,6 +168,65 @@ st.markdown(
         margin-top: -4px;
     }
 
+    .race-condition-label {
+        display:inline-block;
+        margin-left:6px;
+        padding:1px 6px;
+        border-radius:5px;
+        font-size:10px;
+        font-weight:800;
+        color:#fff;
+    }
+
+    .analysis-action {
+        margin-top:4px;
+    }
+
+    .ri-table-wrap {
+        width:100%;
+        overflow-x:auto;
+        border:1px solid rgba(80,100,130,.25);
+        border-radius:7px;
+    }
+
+    .ri-table {
+        border-collapse:collapse;
+        width:100%;
+        min-width:1180px;
+        font-size:12px;
+    }
+
+    .ri-table th {
+        background:#1268b3;
+        color:#fff;
+        font-weight:800;
+        text-align:center;
+        padding:8px 7px;
+        border-right:1px solid rgba(255,255,255,.28);
+        white-space:nowrap;
+    }
+
+    .ri-table td {
+        padding:8px 7px;
+        border-bottom:1px solid rgba(100,120,140,.18);
+        border-right:1px solid rgba(100,120,140,.12);
+        white-space:nowrap;
+        text-align:center;
+    }
+
+    .ri-table td.horse-name {
+        text-align:left;
+        font-weight:800;
+        min-width:150px;
+    }
+
+    .ri-table tr.rank1 { background:rgba(46,160,67,.16); }
+    .ri-table tr.rank2 { background:rgba(255,193,7,.12); }
+    .ri-table tr.rank3 { background:rgba(255,152,0,.10); }
+    .ri-table tr:hover { background:rgba(80,130,190,.10); }
+
+    .score-strong { font-weight:900; font-size:13px; }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -823,6 +882,23 @@ st.success(
 st.subheader("Koşular")
 
 
+# Koşu butonları pist türüne göre V34 renk düzeninde boyanır.
+_race_css = ["<style>"]
+for _idx, _race in enumerate(races):
+    _surface = str(_race.get("surface") or (_race.get("meta") or {}).get("surface") or "").lower()
+    _is_dirt = "kum" in _surface
+    _bg = "#b77a2b" if _is_dirt else "#239447"
+    _race_css.append(
+        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button'
+        f'{{background:{_bg};border-color:{_bg};color:#fff;font-weight:800;}}'
+    )
+    _race_css.append(
+        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button:hover'
+        f'{{filter:brightness(1.08);color:#fff;}}'
+    )
+_race_css.append("</style>")
+st.markdown("\n".join(_race_css), unsafe_allow_html=True)
+
 race_columns = st.columns(
     len(races)
 )
@@ -842,15 +918,12 @@ for index, race in enumerate(races):
     if race_time != "-":
 
         label = (
-            f"{race_number}\n"
-            f"{race_time}"
+            f"{race_number} {race_time}"
         )
 
     else:
 
-        label = str(
-            race_number
-        )
+        label = str(race_number)
 
     selected = (
         st.session_state.selected_race
@@ -948,16 +1021,19 @@ with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
 
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
-        if st.button("↩️ GERÇEK VERİYLE VARSAYILANLARA DÖN", use_container_width=True):
+        if st.button("🔄 GERÇEK VERİYLE ANALİZ", use_container_width=True):
             for criterion, value in DEFAULT_WEIGHTS.items():
                 st.session_state[WEIGHT_KEYS[criterion]] = value
+            st.session_state["analysis_mode"] = "Gerçek veri"
             st.rerun()
     with c2:
-        st.button(
+        if st.button(
             "🧠 MANUEL ANALİZİ UYGULA",
             use_container_width=True,
             type="primary",
-        )
+        ):
+            st.session_state["analysis_mode"] = "Manuel"
+            st.rerun()
     with c3:
         st.markdown(
             f"<div style='text-align:right;padding-top:8px;font-size:13px;'>"
@@ -970,6 +1046,7 @@ with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=True):
         "Normalize edilmiş ağırlıklar: "
         + " • ".join(f"{k} %{normalized[k]:.1f}" for k in ANALYSIS_WEIGHTS)
     )
+    st.caption(f"Analiz modu: **{st.session_state.get('analysis_mode', 'Gerçek veri')}**")
 
 
 # ============================================================
@@ -1087,28 +1164,49 @@ else:
             style = ""
         return [style] * len(row)
 
-    styled = df.style.apply(ranking_row_style, axis=1)
+    # V34 tarzı: renkli başlık + tüm analiz kolonları tek tabloda.
+    def _cell(v):
+        return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        hide_index=True,
-        height=min(600, 44 + max(1, len(table_rows)) * 42),
-        column_config={
-            "Sıra": st.column_config.NumberColumn("Sıra", width="small", format="%d"),
-            "No": st.column_config.TextColumn("No", width="small"),
-            "At": st.column_config.TextColumn("At", width="medium"),
-            "Yaş": st.column_config.TextColumn("Yaş", width="medium"),
-            "Kilo": st.column_config.TextColumn("Kilo", width="small"),
-            "Jokey": st.column_config.TextColumn("Jokey", width="medium"),
-            "HP": st.column_config.TextColumn("HP", width="small"),
-            "AGF": st.column_config.TextColumn("AGF", width="small"),
-            "St": st.column_config.TextColumn("St", width="small"),
-            "KGS": st.column_config.TextColumn("KGS", width="small"),
-            "Form": st.column_config.TextColumn("Form", width="medium"),
-            "Puan": st.column_config.NumberColumn("Puan", width="small", format="%.2f"),
-        },
-    )
+    headers = [
+        "Sıra", "No", "At İsmi / Orijin", "Yaş", "Siklet", "Jokey",
+        "St", "HP", "Son 6 Y.", "KGS", "S20", "En İyi D.", "Gny", "AGF",
+        "BİZİM SKOR", "SINIF / KALİTE", "GÜNCEL SINIF", "SINIF AVANTAJI",
+        "SON GALOP", "SON KOŞU", "SON HIZ", "HIZ PUANI"
+    ]
+
+    html = ['<div class="ri-table-wrap"><table class="ri-table"><thead><tr>']
+    html += [f'<th>{_cell(h)}</th>' for h in headers]
+    html.append('</tr></thead><tbody>')
+
+    for row in table_rows:
+        rank = int(row["Sıra"]) if str(row["Sıra"]).isdigit() else 999
+        cls = "rank1" if rank == 1 else "rank2" if rank == 2 else "rank3" if rank == 3 else ""
+        # Eski V34'teki ana sınıf/kalite ve güncel sınıf kolonlarını mevcut Worker verisinden hesaplanan HP skorundan üret.
+        item = by_index.get(table_rows.index(row), {})
+        comps = item.get("components", {}) if isinstance(item, dict) else {}
+        sinif = comps.get("Sınıf / HP", 50.0)
+        form_score = comps.get("Güncel Form", 50.0)
+        best_time = display_value(horses[table_rows.index(row)].get("bestTime")) if table_rows.index(row) < len(horses) else "-"
+        cells = [
+            row["Sıra"], row["No"], row["At"], row["Yaş"], row["Kilo"], row["Jokey"],
+            row["St"], row["HP"], row["Form"].replace(" ", ""), row["KGS"],
+            display_value(horses[table_rows.index(row)].get("s20")) if table_rows.index(row) < len(horses) else "-",
+            best_time, display_value(horses[table_rows.index(row)].get("odds")) if table_rows.index(row) < len(horses) else "-",
+            row["AGF"], f'<span class="score-strong">{float(row["Puan"]):.2f}</span>',
+            f"{sinif:.1f}", f"{form_score:.1f}", f"{sinif - form_score:+.1f}",
+            display_value(horses[table_rows.index(row)].get("workout")) if table_rows.index(row) < len(horses) else "-",
+            display_value(horses[table_rows.index(row)].get("lastRace")) if table_rows.index(row) < len(horses) else "-",
+            "-", "-"
+        ]
+        html.append(f'<tr class="{cls}">')
+        for ci, value in enumerate(cells):
+            extra = ' class="horse-name"' if ci == 2 else ''
+            html.append(f'<td{extra}>{value if ci == 14 else _cell(value)}</td>')
+        html.append('</tr>')
+
+    html.append('</tbody></table></div>')
+    st.markdown("".join(html), unsafe_allow_html=True)
 
     # Analiz özeti
     if ranking:
