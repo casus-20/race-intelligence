@@ -120,17 +120,15 @@ st.markdown(
     <style>
 
     .main-title {
-        font-size: 40px;
-        font-weight: 950;
-        margin-top: 5mm !important;
-        margin-bottom: 8px;
+        font-size: 32px;
+        font-weight: 900;
+        margin-top: 0 !important;
+        margin-bottom: 2px;
         line-height: 1.15;
         padding-top: 0 !important;
         overflow: visible !important;
         position: relative;
         z-index: 5;
-        text-align: center !important;
-        width: 100% !important;
     }
 
     /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 5 mm boşluk. */
@@ -144,7 +142,7 @@ st.markdown(
     }
 
     .ri-header {
-        display: flex !important;
+        display: none !important;
     }
 
     .sub-title {
@@ -161,15 +159,13 @@ st.markdown(
     }
 
     .ri-header {
-        border: 0 !important;
-        border-radius: 0 !important;
-        padding: 0 !important;
-        margin: 0 0 8px 0 !important;
-        display: flex !important;
+        border: 1px solid rgba(128,128,128,.25);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 12px;
+        display: flex;
         align-items: center;
         justify-content: space-between;
-        overflow: visible !important;
-        min-height: 0 !important;
     }
 
     .ri-title {
@@ -1254,13 +1250,9 @@ get_program_clicked = st.sidebar.button(
 )
 
 # Aktif hipodrom özeti doğrudan PROGRAMI GETİR butonunun altında.
-_sidebar_race_count = int(active_city_race_counts.get(selected_city, 0))
-st.sidebar.markdown(
-    f"<div class='sidebar-program-status'>"
+st.sidebar.caption(
     f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-    f"{_sidebar_race_count} koşu bulundu."
-    f"</div>",
-    unsafe_allow_html=True,
+    f"{len(active_cities)} koşu bulundu."
 )
 
 
@@ -1388,19 +1380,6 @@ if (
         st.stop()
 
 
-# Program getirildikten sonra gerçek veri özeti sol panelde
-# PROGRAMI GETİR butonunun altında güncellenir.
-if races:
-    st.sidebar.markdown(
-        f"<div class='sidebar-program-status'>"
-        f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-        f"{len(races)} koşu bulundu.<br>"
-        f"<b>✓ {len(races)} koşu • "
-        f"{sum(len(r.get('horses', [])) for r in races)} at verisi alındı</b>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
 # ============================================================
 # KOŞULAR
 # ============================================================
@@ -1448,8 +1427,11 @@ if not races:
 # PROGRAM BİLGİSİ
 # ============================================================
 
-# Üstteki yeşil program bilgi bandı bilinçli olarak kaldırıldı.
-# Program bilgisi yalnızca sol panelde, PROGRAMI GETİR butonunun altında gösterilir.
+st.success(
+    f"{selected_city} — "
+    f"{selected_date.strftime('%d/%m/%Y')} — "
+    f"{len(races)} koşu bulundu."
+)
 
 
 # ============================================================
@@ -1976,21 +1958,6 @@ else:
 
 
 
-
-    .sidebar-program-status {
-        margin-top: 5px !important;
-        padding: 7px 2px !important;
-        color: #FFFFFF !important;
-        font-size: 13px !important;
-        line-height: 1.45 !important;
-        font-weight: 700 !important;
-    }
-    .sidebar-program-status b {
-        font-size: 13px !important;
-        font-weight: 950 !important;
-        color: #FFFFFF !important;
-    }
-
     /* ANA TABLO BAŞLIĞI */
     div[data-testid="stDataFrame"] [role="columnheader"] {
         background: #147EB3 !important;
@@ -2363,39 +2330,3 @@ if show_raw_horses:
     st.json(
         horses
     )
-
-
-# V7 son güvenlik CSS'i: başlık alanı hiçbir üst konteyner tarafından kırpılmasın.
-st.markdown("""
-<style>
-section.main,
-section.main > div,
-section.main [data-testid="stMainBlockContainer"] {
-    overflow: visible !important;
-}
-div.ri-header {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: visible !important;
-}
-div.ri-title {
-    display: block !important;
-    visibility: visible !important;
-    color: #FFFFFF !important;
-    font-size: 40px !important;
-    font-weight: 950 !important;
-    line-height: 1.15 !important;
-    white-space: nowrap !important;
-    text-align: center !important;
-    width: 100% !important;
-    margin-top: 5mm !important;
-}
-div.ri-subtitle {
-    display: block !important;
-    visibility: visible !important;
-}
-</style>
-""", unsafe_allow_html=True)
