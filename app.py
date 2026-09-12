@@ -3108,7 +3108,7 @@ else:
     .ri-table-wrap::-webkit-scrollbar{{height:12px;}} .ri-table-wrap::-webkit-scrollbar-thumb{{background:#8b96a4;border-radius:7px;}}
     </style>
     <div class='ri-table-wrap'><table class='ri-table'><thead><tr>{th}</tr></thead><tbody>{''.join(trs)}</tbody></table></div>
-    """)
+    """, unsafe_allow_html=True)
 
     if selected_rows:
         selected_display_row = int(selected_rows[0])
