@@ -9,9 +9,11 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+AGGRID_IMPORT_ERROR = None
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
-except Exception:
+except Exception as _aggrid_exc:
+    AGGRID_IMPORT_ERROR = repr(_aggrid_exc)
     AgGrid = GridOptionsBuilder = JsCode = GridUpdateMode = DataReturnMode = None
 
 from worker.tjk_fetch import get_program, get_horse_enrichment
@@ -2970,6 +2972,8 @@ else:
     # hesapları aynıdır; yalnızca tablo render katmanı değişmiştir.
     if AgGrid is None:
         st.error("Tablo bileşeni yüklenemedi. requirements.txt içinde streamlit-aggrid-v2==0.3.4 bulunmalıdır.")
+        if AGGRID_IMPORT_ERROR:
+            st.caption(f"AgGrid import hatası: {AGGRID_IMPORT_ERROR}")
         st.stop()
 
     selected_horse_index = st.session_state.get("selected_horse_index")
