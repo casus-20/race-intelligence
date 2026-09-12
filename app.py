@@ -147,10 +147,18 @@ st.markdown(
         padding-right: 6mm !important;
     }
 
-    /* Tarayıcı %100 iken uygulamanın görünümü %67 tarayıcı ölçeği ile aynı olsun.
-       CSS zoom tüm Streamlit arayüzünü (sidebar + ana içerik) birlikte küçültür. */
-    html, body {
+    /* Tarayıcı %100 iken %67 görünümü:
+       CSS zoom tek başına iframe tabanlı Streamlit tablolarını daraltıyordu.
+       Root alanını ters oranda genişleterek hem görsel ölçeği %67'ye indiriyor
+       hem de ana içerik/tablo alanının tüm ekranı doldurmasını sağlıyoruz. */
+    #root {
         zoom: 0.67 !important;
+        width: 149.253731% !important;
+        min-width: 149.253731% !important;
+    }
+    html, body {
+        width: 100% !important;
+        overflow-x: hidden !important;
     }
 
     .ri-header {
