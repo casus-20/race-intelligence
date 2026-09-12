@@ -567,12 +567,33 @@ def get_horse_name(
     horse: Dict[str, Any],
 ) -> str:
 
-    return display_value(
+    raw = display_value(
         horse.get("at_ismi")
         or horse.get("At İsmi")
         or horse.get("name")
         or horse.get("horseName")
     )
+    equipment = _extract_equipment_from_text(raw)
+    if equipment:
+        raw = re.sub(r"\s+" + re.escape(equipment) + r"$", "", raw, flags=re.I).strip()
+    return raw
+
+
+def _split_origin(origin: Any) -> tuple[str, str]:
+    """TJK Orijin alanını görseldeki Baba / Anne formatına ayırır.
+
+    Örn: AUTHORIZED (IRE) - ROYAL CHICK / KANEKO
+      -> AUTHORIZED (IRE)
+      -> ROYAL CHICK / KANEKO
+    """
+    text = display_value(origin, "")
+    if not text:
+        return "", ""
+    text = re.sub(r"\s+", " ", text).strip()
+    parts = re.split(r"\s+-\s+", text, maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return text, ""
 
 
 def get_horse_origin(
@@ -585,6 +606,36 @@ def get_horse_origin(
         or horse.get("pedigree")
         or horse.get("baba_anne")
     , "")
+
+
+def _extract_equipment_from_text(text: Any) -> str:
+    """TJK takı kodlarını, isim hücresine gömülmüşse de yakalar."""
+    value = display_value(text, "")
+    if not value:
+        return ""
+    # Takı kodları TJK'da boşlukla ayrılabilir: DB SK, KG SK, KG K GKR vb.
+    m = re.search(
+        r"(?:^|\s)((?:DB|KG|K|SKG|SK|GKR|G|D|B|H|TT|M|SGK)(?:\s+(?:DB|KG|K|SKG|SK|GKR|G|D|B|H|TT|M|SGK)){0,5})$",
+        value,
+        flags=re.I,
+    )
+    return m.group(1).upper().strip() if m else ""
+
+
+def get_horse_equipment(horse: Dict[str, Any]) -> str:
+    """Bugünkü programdaki gerçek Takı bilgisini alır."""
+    direct = (
+        horse.get("equipment")
+        or horse.get("taki")
+        or horse.get("Takı")
+        or horse.get("takı")
+    )
+    if direct:
+        return display_value(direct, "")
+    # Bazı TJK sürümlerinde takı, At İsmi hücresinin içinde gelir.
+    return _extract_equipment_from_text(
+        horse.get("name") or horse.get("at_ismi") or horse.get("At İsmi")
+    )
 
 
 def get_horse_number(
@@ -695,10 +746,12 @@ def get_horse_jockey(
     if not text:
         return "-"
 
-    # "E.ATLAMAZ AP Apranti" gibi kayıtları iki satır yap.
-    m = re.match(r"^(.*?)(?:\s+)(AP\s+Apranti|Apranti)$", text, flags=re.I)
+    # TJK'da AP bazı sayfalarda yalnız "AP", bazılarında "AP Apranti"
+    # olarak gelir. İkisini de görselde ikinci satıra taşırız.
+    m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
     if m:
-        return f"{m.group(1).strip()}\n{m.group(2).strip()}"
+        label = "AP Apranti" if m.group(2).strip().upper() == "AP" else m.group(2).strip()
+        return f"{m.group(1).strip()}\n{label}"
     return text
 
 
@@ -879,28 +932,21 @@ def _money_number(value: Any) -> float:
         return 0.0
 
 
-def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK gerçek koşu geçmişindeki tüm ikramiyelerin toplamı."""
+def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
+    """TJK geçmişindeki İkramiye toplamını hesaplar.
+
+    TJK At Bilgileri ekranındaki "Kazanç" değeri yalnızca koşu
+    ikramiyelerinin toplamı değildir; At Sahibi Primi de eklenir.
+    Verilen FRANKI CHA CHA örneğinde 3.046.000 TL ikramiye + %20
+    At Sahibi Primi = 3.655.200 TL olduğundan uygulamada resmi
+    "Kazanç" karşılığı olarak ikramiye toplamı x 1,20 kullanılır.
+    """
     total = 0.0
     for row in horse.get("_history", []):
         if not isinstance(row, dict):
             continue
-        total += _money_number(
-            row.get("prize")
-            or row.get("ikramiye")
-            or row.get("Ikramiye")
-        )
-    return total
-
-
-def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    total = 0.0
-    for row in horse.get("_history", []):
-        if not isinstance(row, dict):
-            continue
-        if _history_year(
-            row.get("date")
-            or row.get("tarih")
+        if target_year is not None and _history_year(
+            row.get("date") or row.get("tarih")
         ) != target_year:
             continue
         total += _money_number(
@@ -909,6 +955,16 @@ def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
             or row.get("Ikramiye")
         )
     return total
+
+
+def total_earnings(horse: Dict[str, Any]) -> float:
+    """TJK "Kazanç": ikramiye + At Sahibi Primi (%20)."""
+    return round(_race_prize_total(horse) * 1.20, 2)
+
+
+def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
+    """TJK yıllık "Kazanç": o yılın ikramiyesi + %20 At Sahibi Primi."""
+    return round(_race_prize_total(horse, target_year) * 1.20, 2)
 
 
 def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -961,6 +1017,20 @@ def last_race_display(horse: Dict[str, Any]) -> str:
         _first_value(row, ["time", "derece", "Derece"]),
         "-",
     )
+
+
+def best_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
+    """TJK günlük programındaki En İyi D. tooltip bilgilerinin görünür karşılığı."""
+    best = display_value(horse.get("bestTime"), "")
+    if not best:
+        return {}
+    return {
+        "Derece": best,
+        "Hipodrom": display_value(horse.get("bestCity"), "-"),
+        "Tarih": display_value(horse.get("bestDate"), "-"),
+        "Mesafe": display_value(horse.get("bestDistance"), "-"),
+        "Bilgi": display_value(horse.get("bestInfo"), "-"),
+    }
 
 
 def last_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
@@ -2521,8 +2591,14 @@ else:
             # TJK'nın gerçek at numarası _horse_no içinde korunur.
             "No": len(table_rows) + 1,
             "At İsmi / Orijin": (
-                f"{get_horse_name(horse)}\n{get_horse_origin(horse)}"
-                if get_horse_origin(horse) else get_horse_name(horse)
+                "\n".join(
+                    [x for x in (
+                        get_horse_name(horse),
+                        get_horse_equipment(horse),
+                        _split_origin(get_horse_origin(horse))[0],
+                        _split_origin(get_horse_origin(horse))[1],
+                    ) if x]
+                )
             ),
             "Yaş": get_horse_age(horse),
             "Sıklet": get_horse_weight(horse),
@@ -2809,9 +2885,9 @@ else:
     )
 
     st.caption(
-        "📊 Sütun başlığına tıklayarak artan/azalan sıralama yap. "
-        "Tablonun araç çubuğundaki arama ile filtrele. No sütunu filtreleme dışında 1,2,3... şeklindedir. "
-        "Bir at satırına tıklayınca gerçek geçmiş ve galop bölümü açılır."
+        "📊 Analiz, puanlama ve filtreleme motoru korunmuştur. Sütun başlığıyla sıralama, "
+        "araç çubuğuyla filtreleme yapabilirsin. At adı altında takı; orijin altında Baba ve Anne/anne hattı gösterilir. "
+        "Jokeyde AP bilgisi ikinci satırdadır. Satıra tıklayınca gerçek geçmiş ve galop açılır."
     )
 
     table_event = st.dataframe(
@@ -2908,6 +2984,17 @@ else:
                             st.markdown(
                                 f"**{label}**\n\n{value}",
                             )
+
+            best_detail = best_race_detail(selected_horse)
+            if best_detail:
+                with st.expander(
+                    f"En iyi derece: {best_detail.get('Derece', '-')} — ayrıntıları göster / gizle",
+                    expanded=False,
+                ):
+                    best_cols = st.columns(5)
+                    for i, (label, value) in enumerate(best_detail.items()):
+                        with best_cols[i % 5]:
+                            st.markdown(f"**{label}**\n\n{value}")
             with st.expander("GERÇEK KOŞU GEÇMİŞİ", expanded=False):
                 _history_tables(selected_horse.get("_history", []))
 
