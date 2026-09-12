@@ -120,15 +120,17 @@ st.markdown(
     <style>
 
     .main-title {
-        font-size: 32px;
-        font-weight: 900;
-        margin-top: 0 !important;
-        margin-bottom: 2px;
+        font-size: 40px;
+        font-weight: 950;
+        margin-top: 5mm !important;
+        margin-bottom: 8px;
         line-height: 1.15;
         padding-top: 0 !important;
         overflow: visible !important;
         position: relative;
         z-index: 5;
+        text-align: center !important;
+        width: 100% !important;
     }
 
     /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 5 mm boşluk. */
@@ -1252,9 +1254,13 @@ get_program_clicked = st.sidebar.button(
 )
 
 # Aktif hipodrom özeti doğrudan PROGRAMI GETİR butonunun altında.
-st.sidebar.caption(
+st.sidebar.markdown(
+    f"<div class='sidebar-program-status'>"
     f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-    f"{len(active_cities)} koşu bulundu."
+    f"{len(races)} koşu bulundu.<br>"
+    f"<b>✓ {len(races)} koşu • {sum(len(r.get('horses', [])) for r in races)} at verisi alındı</b>"
+    f"</div>",
+    unsafe_allow_html=True,
 )
 
 
@@ -1957,6 +1963,21 @@ else:
 
 
 
+
+    .sidebar-program-status {
+        margin-top: 5px !important;
+        padding: 7px 2px !important;
+        color: #FFFFFF !important;
+        font-size: 13px !important;
+        line-height: 1.45 !important;
+        font-weight: 700 !important;
+    }
+    .sidebar-program-status b {
+        font-size: 13px !important;
+        font-weight: 950 !important;
+        color: #FFFFFF !important;
+    }
+
     /* ANA TABLO BAŞLIĞI */
     div[data-testid="stDataFrame"] [role="columnheader"] {
         background: #147EB3 !important;
@@ -2351,10 +2372,13 @@ div.ri-title {
     display: block !important;
     visibility: visible !important;
     color: #FFFFFF !important;
-    font-size: 32px !important;
+    font-size: 40px !important;
     font-weight: 950 !important;
     line-height: 1.15 !important;
     white-space: nowrap !important;
+    text-align: center !important;
+    width: 100% !important;
+    margin-top: 5mm !important;
 }
 div.ri-subtitle {
     display: block !important;
