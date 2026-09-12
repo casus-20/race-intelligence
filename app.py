@@ -795,17 +795,33 @@ def get_horse_equipment(horse: Dict[str, Any]) -> str:
 def get_horse_number(
     horse: Dict[str, Any],
     fallback: int,
-) -> str:
+) -> int:
+    """TJK'nın gerçek at numarasını sayısal olarak döndürür.
 
+    No sütununun Streamlit tarafından METİN olarak değil SAYI olarak
+    sıralanabilmesi için burada daima int döndürülür. Böylece örneğin
+    1, 2, 3 ... 14 sıralaması lexicographic (1, 10, 11...) olmaz.
+    """
     value = (
         horse.get("numara")
+        or horse.get("no")
+        or horse.get("number")
         or horse.get("N")
+        or horse.get("No")
+        or horse.get("horseNo")
+        or horse.get("horse_number")
     )
 
-    return display_value(
-        value,
-        str(fallback),
-    )
+    if value is not None:
+        # "9", "9.0", "9 -" gibi TJK/Worker varyasyonlarını güvenli biçimde çöz.
+        m = re.search(r"\d+", str(value))
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+
+    return int(fallback)
 
 
 def get_horse_age(
@@ -2765,11 +2781,11 @@ else:
 
         table_rows.append({
             "_horse_index": horse_index,
-            "_horse_no": get_horse_number(horse, horse_index + 1),
+            "_horse_no": int(get_horse_number(horse, horse_index + 1)),
             "_rank": int(r["rank"]) if str(r["rank"]).isdigit() else 999999,
-            # Görsel No her zaman tablo sırasıdır: 1,2,3,4...
-            # TJK'nın gerçek at numarası _horse_no içinde korunur.
-            "No": len(table_rows) + 1,
+            # No = TJK'nın gerçek programdaki AT NUMARASI.
+            # Analiz sırası ile at numarasını birbirine karıştırma.
+            "No": int(get_horse_number(horse, horse_index + 1)),
             "At İsmi": "\n".join([x for x in (get_horse_name(horse), get_horse_equipment(horse)) if x]),
             "Yaş": get_horse_age(horse),
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
@@ -2802,10 +2818,6 @@ else:
         str(row.get("_horse_no", "")),
     ))
 
-    # Filtre yokken görünür No her zaman 1,2,3... şeklinde devam eder.
-    for display_no, row in enumerate(table_rows, start=1):
-        row["No"] = display_no
-
     df = pd.DataFrame(table_rows)
     display_columns = [
         "No", "At İsmi", "Yaş", "Orijin (Baba-Anne)", "Kilo", "Jokey",
@@ -2814,6 +2826,9 @@ else:
         "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "TOPLAM KAZANÇ",
     ]
     df_display = df[display_columns].copy()
+    # Kritik: No kesinlikle numeric dtype olmalı. Böylece başlığa tıklanınca
+    # Streamlit gerçek sayısal sıralama yapar: 1,2,3...14 / 14,13,12...1.
+    df_display["No"] = pd.to_numeric(df_display["No"], errors="coerce").fillna(0).astype(int)
 
     column_config = {
         "No": st.column_config.NumberColumn("No", format="%d", width=48),
