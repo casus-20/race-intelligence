@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import re
 from datetime import date
@@ -146,6 +145,12 @@ st.markdown(
         padding-top: 5mm !important;
         padding-left: 6mm !important;
         padding-right: 6mm !important;
+    }
+
+    /* Tarayıcı %100 iken uygulamanın görünümü %67 tarayıcı ölçeği ile aynı olsun.
+       CSS zoom tüm Streamlit arayüzünü (sidebar + ana içerik) birlikte küçültür. */
+    html, body {
+        zoom: 0.67 !important;
     }
 
     .ri-header {
@@ -1313,131 +1318,131 @@ def _safe_video_url(row: Dict[str, Any]) -> str:
     return ""
 
 
-def _html_escape(value: Any) -> str:
-    import html as _html
-    return _html.escape(str(value if value is not None else ""), quote=True).replace("\n", "<br>")
-
-
-def _sortable_detail_html(headers: List[str], rows: List[List[Any]], min_width: int, numeric_cols: List[int], date_col: int = 0, time_col: int | None = None) -> str:
-    """TJK detay tabloları için referans görünüme yakın HTML + gerçek JS sıralaması."""
-    body = []
-    last = len(headers) - 1
-    for vals in rows:
-        cells = []
-        for i, v in enumerate(vals):
-            if i == last:
-                if v:
-                    cells.append(f"<td class='row-action'><a href='{_html_escape(v)}' target='_blank' rel='noopener noreferrer' title='TJK videosunu aç'>▶</a></td>")
-                else:
-                    cells.append("<td class='row-action'>▶</td>")
-            else:
-                cells.append(f"<td data-sort='{_html_escape(v)}'>{_html_escape(v)}</td>")
-        body.append("<tr>" + "".join(cells) + "</tr>")
-
-    numeric_js = ",".join(str(x) for x in numeric_cols)
-    time_js = "null" if time_col is None else str(time_col)
-    head = "".join(f"<th data-col='{i}'>{_html_escape(h)}<span class='sort'>↕</span></th>" for i, h in enumerate(headers))
-    html = """<!doctype html><html><head><meta charset='utf-8'><style>
-*{box-sizing:border-box}
-html,body{margin:0;padding:0;background:#0b1320;font-family:Arial,Helvetica,sans-serif;color:#f4f7fb}
-.wrap{width:100%;overflow-x:auto;background:#0b1320}
-table{width:100%;min-width:%dpx;border-collapse:collapse;table-layout:auto;font-size:14px;background:#0b1320;color:#f4f7fb}
-thead th{height:44px;padding:0 10px;background:#aeb5c2;color:#0a1423;border-right:1px solid #8f98a8;border-bottom:1px solid #687486;font-weight:900;text-align:center;white-space:nowrap;cursor:pointer;user-select:none}
-thead th:last-child{cursor:default;width:34px;padding:0}
-thead th .sort{font-size:13px;margin-left:5px;color:#5c6675}
-thead th.active .sort{color:#172334}
-tbody td{height:42px;padding:5px 10px;background:#0d1727;color:#f5f7fa;border-right:1px solid #263346;border-bottom:1px solid #2a3749;text-align:center;vertical-align:middle;white-space:nowrap;font-weight:600}
-tbody tr:nth-child(even) td{background:#202b3b}
-tbody tr:hover td{background:#26364a}
-tbody td:nth-child(1),tbody td:nth-child(2){color:#eef3fb}
-tbody td:nth-child(14){text-align:left;line-height:1.05;white-space:normal}
-.row-action{width:34px;min-width:34px;padding:0!important;color:#8994a5!important;font-size:15px;font-weight:900}
-.row-action a{color:#8994a5;text-decoration:none;display:block;width:100%;height:100%;line-height:42px}
-.row-action a:hover{color:#dbe5f2}
-</style></head><body><div class='wrap'><table id='detailTable'><thead><tr>""" % min_width
-    html += head + """</tr></thead><tbody>""" + "".join(body) + """</tbody></table></div>
-<script>
-(function(){
- const tbody=document.getElementById('detailTable').querySelector('tbody');
- const ths=document.querySelectorAll('#detailTable thead th');
- const numericCols=[%s]; const dateCol=%s; const timeCol=%s;
- let sortCol=-1,dir=1;
- function parseValue(td,col){
-   let x=(td.getAttribute('data-sort')||td.textContent||'').trim();
-   if(col===dateCol){let m=x.match(/(\d{1,2})[.\\/-](\d{1,2})[.\\/-](\d{2,4})/);if(m){let y=m[3].length===2?2000+Number(m[3]):Number(m[3]);return new Date(y,Number(m[2])-1,Number(m[1])).getTime();}}
-   if(numericCols.includes(col)){let n=x.replace(/[^0-9.,-]/g,'').replace(/\\.(?=\\d{3}(?:\\D|$))/g,'').replace(',','.');let f=parseFloat(n);if(!Number.isNaN(f))return f;}
-   if(timeCol===col){let m=x.match(/(\d+):([0-5]?\d)(?:[.:]([0-9]+))?/);if(m)return Number(m[1])*60+Number(m[2])+Number(m[3]||0)/100;}
-   return x.toLocaleLowerCase('tr-TR');
- }
- ths.forEach(function(th){
-   if(th===ths[ths.length-1])return;
-   th.addEventListener('click',function(){
-     const col=Number(th.dataset.col);
-     if(sortCol===col)dir*=-1;else{sortCol=col;dir=1;}
-     ths.forEach(function(t){t.classList.remove('active');const s=t.querySelector('.sort');if(s)s.textContent='↕';});
-     th.classList.add('active');th.querySelector('.sort').textContent=dir===1?'↑':'↓';
-     Array.from(tbody.querySelectorAll('tr')).sort(function(a,b){
-       const av=parseValue(a.children[col],col),bv=parseValue(b.children[col],col);
-       if(av===bv)return 0;
-       if(typeof av==='number'&&typeof bv==='number')return(av-bv)*dir;
-       return String(av).localeCompare(String(bv),'tr')*dir;
-     }).forEach(function(r){tbody.appendChild(r);});
-   });
- });
-})();
-</script></body></html>""" % (numeric_js, date_col, time_js)
-    return html
-
-
 def _history_tables(history: List[Dict[str, Any]]) -> None:
-    """TJK gerçek koşu geçmişi: referans görünüme yakın koyu tablo + çalışan başlık sıralaması + gerçek video linki."""
+    """TJK gerçek koşu geçmişi: sıralanabilir başlıklar + gerçek video bağlantısı."""
     if not history:
         st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
         return
-    rows=[]
+
+    rows = []
     for row in history:
-        if not isinstance(row,dict): continue
-        owner=display_value(_first_value(row,["owner","sahip"]),"-")
-        trainer=display_value(_first_value(row,["trainer","antrenor","antrenör"]),"-")
-        owner_trainer=f"{owner}\n{trainer}" if trainer!="-" else owner
-        prize_raw=_first_value(row,["prize","ikramiye","Ikramiye","İkramiye"])
-        prize=_format_tl(_money_number(prize_raw)) if prize_raw not in ("",None) else "₺0"
-        rows.append([
-            display_value(_first_value(row,["date","tarih","Tarih"])),display_value(_first_value(row,["city","şehir","Sehir"])),
-            display_value(_first_value(row,["distance","msf","mesafe","Msf"])),display_value(_first_value(row,["surface","pist","Pist"])),
-            display_value(_first_value(row,["place","sira","Sıra","S"])),display_value(_first_value(row,["className","class","kcins","K Cinsi","raceType"])),
-            display_value(_first_value(row,["group","grup","Grup"])),display_value(_first_value(row,["time","derece","Derece"])),
-            display_value(_first_value(row,["jockey","jokey","Jokey"])),display_value(_first_value(row,["weight","kilo","siklet","Sıklet"])),
-            display_value(_first_value(row,["equipment","taki","takı","Takı"])),display_value(_first_value(row,["post","st","start","St"])),
-            display_value(_first_value(row,["hp","HP"])),owner_trainer,display_value(_first_value(row,["agf","AGF"])),
-            display_value(_first_value(row,["odds","gny","Gny"])),prize,_safe_video_url(row)
-        ])
-    if not rows:
-        st.warning("TJK geçmişinde gösterilecek kayıt bulunamadı."); return
-    headers=["Tarih","Şehir","Msf","Pist","Sonuç","K Cinsi","Grup","Derece","Jokey","Kilo","Takı","St","HP","Sahip / Antr.","AGF","Gny","İkramiye",""]
-    html=_sortable_detail_html(headers,rows,1450,[2,4,6,9,11,12,14,15,16],0,7)
-    components.html(html,height=min(760,54+len(rows)*43),scrolling=True)
+        if not isinstance(row, dict):
+            continue
+        owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
+        trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
+        owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
+        prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
+        rows.append({
+            "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+            "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
+            "Msf": display_value(_first_value(row, ["distance", "msf", "mesafe", "Msf"])),
+            "Pist": display_value(_first_value(row, ["surface", "pist", "Pist"])),
+            "Sonuç": display_value(_first_value(row, ["place", "sira", "Sıra", "S"])),
+            "K Cinsi": display_value(_first_value(row, ["className", "class", "kcins", "K Cinsi", "raceType"])),
+            "Grup": display_value(_first_value(row, ["group", "grup", "Grup"])),
+            "Derece": display_value(_first_value(row, ["time", "derece", "Derece"])),
+            "Jokey": display_value(_first_value(row, ["jockey", "jokey", "Jokey"])),
+            "Kilo": display_value(_first_value(row, ["weight", "kilo", "siklet", "Sıklet"])),
+            "Takı": display_value(_first_value(row, ["equipment", "taki", "takı", "Takı"])),
+            "St": display_value(_first_value(row, ["post", "st", "start", "St"])),
+            "HP": display_value(_first_value(row, ["hp", "HP"])),
+            "Sahip / Antr.": owner_trainer,
+            "AGF": display_value(_first_value(row, ["agf", "AGF"])),
+            "Gny": display_value(_first_value(row, ["odds", "gny", "Gny"])),
+            "İkramiye": prize,
+            "Video": _safe_video_url(row),
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning("TJK geçmişinde gösterilecek kayıt bulunamadı.")
+        return
+
+    # Native Streamlit DataFrame kullanılır: sütun başlıklarına tıklayınca
+    # artan/azalan sıralama çalışır. Video sütunu gerçek URL'yi yeni sekmede açar.
+    column_config = {
+        "Tarih": st.column_config.TextColumn("Tarih", width=90),
+        "Şehir": st.column_config.TextColumn("Şehir", width=95),
+        "Msf": st.column_config.TextColumn("Msf", width=65),
+        "Pist": st.column_config.TextColumn("Pist", width=90),
+        "Sonuç": st.column_config.TextColumn("Sonuç", width=65),
+        "K Cinsi": st.column_config.TextColumn("K Cinsi", width=110),
+        "Grup": st.column_config.TextColumn("Grup", width=65),
+        "Derece": st.column_config.TextColumn("Derece", width=80),
+        "Jokey": st.column_config.TextColumn("Jokey", width=105),
+        "Kilo": st.column_config.TextColumn("Kilo", width=65),
+        "Takı": st.column_config.TextColumn("Takı", width=70),
+        "St": st.column_config.TextColumn("St", width=45),
+        "HP": st.column_config.TextColumn("HP", width=50),
+        "Sahip / Antr.": st.column_config.TextColumn("Sahip / Antr.", width=155),
+        "AGF": st.column_config.TextColumn("AGF", width=65),
+        "Gny": st.column_config.TextColumn("Gny", width=65),
+        "İkramiye": st.column_config.TextColumn("İkramiye", width=100),
+        "Video": st.column_config.LinkColumn("Video", width=55, display_text="▶"),
+    }
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        height=min(760, 54 + len(df) * 43),
+        row_height=42,
+        key="history_detail_table",
+    )
 
 
 def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
-    """TJK gerçek galopları: referans görünüme yakın koyu tablo + çalışan başlık sıralaması + gerçek video linki."""
+    """TJK gerçek galopları: sıralanabilir başlıklar + varsa gerçek video bağlantısı."""
     if not workouts:
-        st.warning("Bu at için TJK gerçek galop kaydı gelmedi."); return
-    rows=[]
+        st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
+        return
+
+    rows = []
     for row in workouts:
-        if not isinstance(row,dict): continue
-        rows.append([
-            display_value(_first_value(row,["date","tarih","Tarih"])),display_value(_first_value(row,["city","track","hipodrom","şehir","Sehir"])),
-            display_value(_first_value(row,["jockey","jokey","rider","binici"])),display_value(_first_value(row,["m1200","1200","time1200"])),
-            display_value(_first_value(row,["m1000","1000","time1000"])),display_value(_first_value(row,["m800","800","time800"])),
-            display_value(_first_value(row,["m600","600","time600"])),display_value(_first_value(row,["m400","400","time400"])),
-            display_value(_first_value(row,["type","tur","Tür","note","not"])),display_value(_first_value(row,["surface","pist"])),_safe_video_url(row)
-        ])
-    if not rows:
-        st.warning("TJK galop verisinde gösterilecek kayıt bulunamadı."); return
-    headers=["Tarih","Şehir","İ.Jokey","1200","1000","800","600","400","Çalışma","Pist",""]
-    html=_sortable_detail_html(headers,rows,1100,[3,4,5,6,7],0,None)
-    components.html(html,height=min(760,54+len(rows)*43),scrolling=True)
+        if not isinstance(row, dict):
+            continue
+        rows.append({
+            "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+            "Şehir": display_value(_first_value(row, ["city", "track", "hipodrom", "şehir", "Sehir"])),
+            "İ.Jokey": display_value(_first_value(row, ["jockey", "jokey", "rider", "binici"])),
+            "1200": display_value(_first_value(row, ["m1200", "1200", "time1200"])),
+            "1000": display_value(_first_value(row, ["m1000", "1000", "time1000"])),
+            "800": display_value(_first_value(row, ["m800", "800", "time800"])),
+            "600": display_value(_first_value(row, ["m600", "600", "time600"])),
+            "400": display_value(_first_value(row, ["m400", "400", "time400"])),
+            "Çalışma": display_value(_first_value(row, ["type", "tur", "Tür", "note", "not"])),
+            "Pist": display_value(_first_value(row, ["surface", "pist"])),
+            "Video": _safe_video_url(row),
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning("TJK galop verisinde gösterilecek kayıt bulunamadı.")
+        return
+
+    column_config = {
+        "Tarih": st.column_config.TextColumn("Tarih", width=90),
+        "Şehir": st.column_config.TextColumn("Şehir", width=95),
+        "İ.Jokey": st.column_config.TextColumn("İ.Jokey", width=100),
+        "1200": st.column_config.TextColumn("1200", width=65),
+        "1000": st.column_config.TextColumn("1000", width=65),
+        "800": st.column_config.TextColumn("800", width=65),
+        "600": st.column_config.TextColumn("600", width=65),
+        "400": st.column_config.TextColumn("400", width=65),
+        "Çalışma": st.column_config.TextColumn("Çalışma", width=90),
+        "Pist": st.column_config.TextColumn("Pist", width=90),
+        "Video": st.column_config.LinkColumn("Video", width=55, display_text="▶"),
+    }
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        height=min(760, 54 + len(df) * 43),
+        row_height=42,
+        key="workout_detail_table",
+    )
 
 def _number(value: Any) -> float | None:
     if value is None:
@@ -2812,11 +2817,13 @@ else:
             "Antrenör": trainer or "-",
         })
 
-    # Ekran sırası HER ZAMAN analiz sırasıdır.
-    # TJK "No" ise atın gerçek program numarasıdır; satır sıralaması bunu değiştirmez.
+    # Ekran sırası TJK programındaki gerçek AT NUMARASIDIR.
+    # Analiz sırası (_rank) yalnızca BİZİM SKOR / analiz özetinde kullanılır.
+    # Böylece program 1,2,3,4... şeklinde gelir; 3,2,4,9 gibi skor sıralaması
+    # ana program tablosunun düzenini bozmaz.
     table_rows.sort(key=lambda row: (
-        row.get("_rank", 999999),
-        str(row.get("_horse_no", "")),
+        int(row.get("_horse_no", 999999)),
+        int(row.get("_horse_index", 999999)),
     ))
 
     df = pd.DataFrame(table_rows)
