@@ -120,15 +120,17 @@ st.markdown(
     <style>
 
     .main-title {
-        font-size: 32px;
-        font-weight: 900;
-        margin-top: 0 !important;
-        margin-bottom: 2px;
+        font-size: 40px;
+        font-weight: 950;
+        margin-top: 5mm !important;
+        margin-bottom: 8px;
         line-height: 1.15;
         padding-top: 0 !important;
         overflow: visible !important;
         position: relative;
         z-index: 5;
+        text-align: center !important;
+        width: 100% !important;
     }
 
     /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 5 mm boşluk. */
@@ -142,7 +144,7 @@ st.markdown(
     }
 
     .ri-header {
-        display: none !important;
+        display: flex !important;
     }
 
     .sub-title {
@@ -159,13 +161,15 @@ st.markdown(
     }
 
     .ri-header {
-        border: 1px solid rgba(128,128,128,.25);
-        border-radius: 12px;
-        padding: 14px 18px;
-        margin-bottom: 12px;
-        display: flex;
+        border: 0 !important;
+        border-radius: 0 !important;
+        padding: 0 !important;
+        margin: 0 0 8px 0 !important;
+        display: flex !important;
         align-items: center;
         justify-content: space-between;
+        overflow: visible !important;
+        min-height: 0 !important;
     }
 
     .ri-title {
@@ -1250,9 +1254,13 @@ get_program_clicked = st.sidebar.button(
 )
 
 # Aktif hipodrom özeti doğrudan PROGRAMI GETİR butonunun altında.
-st.sidebar.caption(
+_sidebar_race_count = int(active_city_race_counts.get(selected_city, 0))
+st.sidebar.markdown(
+    f"<div class='sidebar-program-status'>"
     f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-    f"{len(active_cities)} koşu bulundu."
+    f"{_sidebar_race_count} koşu bulundu."
+    f"</div>",
+    unsafe_allow_html=True,
 )
 
 
@@ -1380,6 +1388,19 @@ if (
         st.stop()
 
 
+# Program getirildikten sonra gerçek veri özeti sol panelde
+# PROGRAMI GETİR butonunun altında güncellenir.
+if races:
+    st.sidebar.markdown(
+        f"<div class='sidebar-program-status'>"
+        f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
+        f"{len(races)} koşu bulundu.<br>"
+        f"<b>✓ {len(races)} koşu • "
+        f"{sum(len(r.get('horses', [])) for r in races)} at verisi alındı</b>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
 # ============================================================
 # KOŞULAR
 # ============================================================
@@ -1427,11 +1448,8 @@ if not races:
 # PROGRAM BİLGİSİ
 # ============================================================
 
-st.success(
-    f"{selected_city} — "
-    f"{selected_date.strftime('%d/%m/%Y')} — "
-    f"{len(races)} koşu bulundu."
-)
+# Üstteki yeşil program bilgi bandı bilinçli olarak kaldırıldı.
+# Program bilgisi yalnızca sol panelde, PROGRAMI GETİR butonunun altında gösterilir.
 
 
 # ============================================================
@@ -1910,7 +1928,8 @@ else:
     # Dikey kaydırma çubuğu olmayacak şekilde tüm atları gösterecek dinamik yükseklik.
     # Satır yüksekliği önceki görünüme göre yaklaşık %30 azaltılmıştır.
     # Önceki 28 px satır yüksekliğinin %50 artırılmış hali.
-    table_row_height = 42
+    # Satır yüksekliği mevcut sürümün 2 katı.
+    table_row_height = 84
     table_height = 56 + (len(df) * table_row_height) + 24
 
     st.markdown(
@@ -1958,9 +1977,24 @@ else:
 
 
 
+
+    .sidebar-program-status {
+        margin-top: 5px !important;
+        padding: 7px 2px !important;
+        color: #FFFFFF !important;
+        font-size: 13px !important;
+        line-height: 1.45 !important;
+        font-weight: 700 !important;
+    }
+    .sidebar-program-status b {
+        font-size: 13px !important;
+        font-weight: 950 !important;
+        color: #FFFFFF !important;
+    }
+
     /* ANA TABLO BAŞLIĞI */
     div[data-testid="stDataFrame"] [role="columnheader"] {
-        background: #147EB3 !important;
+        background: #78BFE6 !important;
         color: #FFFFFF !important;
         font-size: 15px !important;
         font-weight: 950 !important;
@@ -1975,7 +2009,34 @@ else:
         font-weight: 950 !important;
     }
 
-        /* Kullanıcının istediği kompakt dikey yerleşim. */
+    
+    /* AT KOŞU PROGRAMI ANA TABLOSU — FİLTRELİ BAŞLIKLAR */
+    div[data-testid="stDataFrame"] [role="columnheader"] {
+        background: #78BFE6 !important;
+        color: #FFFFFF !important;
+        font-size: 15px !important;
+        font-weight: 950 !important;
+        text-transform: uppercase !important;
+        min-height: 15mm !important;
+        height: 15mm !important;
+        line-height: 15mm !important;
+        border-color: rgba(255,255,255,.35) !important;
+    }
+    div[data-testid="stDataFrame"] [role="columnheader"] * {
+        background: transparent !important;
+        color: #FFFFFF !important;
+        font-size: 15px !important;
+        font-weight: 950 !important;
+    }
+
+    /* Ana tablo satırları: mevcut genişlikleri koru, yalnızca yükseklik 2 kat. */
+    div[data-testid="stDataFrame"] [role="gridcell"] {
+        min-height: 84px !important;
+        height: 84px !important;
+        line-height: 84px !important;
+    }
+
+    /* Kullanıcının istediği kompakt dikey yerleşim. */
         div[data-testid="stExpander"] {
             margin-bottom: 2px !important;
         }
@@ -2330,3 +2391,39 @@ if show_raw_horses:
     st.json(
         horses
     )
+
+
+# V7 son güvenlik CSS'i: başlık alanı hiçbir üst konteyner tarafından kırpılmasın.
+st.markdown("""
+<style>
+section.main,
+section.main > div,
+section.main [data-testid="stMainBlockContainer"] {
+    overflow: visible !important;
+}
+div.ri-header {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+div.ri-title {
+    display: block !important;
+    visibility: visible !important;
+    color: #FFFFFF !important;
+    font-size: 40px !important;
+    font-weight: 950 !important;
+    line-height: 1.15 !important;
+    white-space: nowrap !important;
+    text-align: center !important;
+    width: 100% !important;
+    margin-top: 5mm !important;
+}
+div.ri-subtitle {
+    display: block !important;
+    visibility: visible !important;
+}
+</style>
+""", unsafe_allow_html=True)
