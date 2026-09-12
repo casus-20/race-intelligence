@@ -566,16 +566,49 @@ def get_race_number(
 def get_horse_name(
     horse: Dict[str, Any],
 ) -> str:
-
+    """At adını TJK/YB hücrelerinden temizleyerek döndürür."""
     raw = display_value(
         horse.get("at_ismi")
         or horse.get("At İsmi")
         or horse.get("name")
         or horse.get("horseName")
     )
-    equipment = _extract_equipment_from_text(raw)
-    if equipment:
-        raw = re.sub(r"\s+" + re.escape(equipment) + r"$", "", raw, flags=re.I).strip()
+    if not raw or raw == "-":
+        return raw
+
+    raw = re.sub(r"\s*Image.*$", "", raw, flags=re.I).strip()
+
+    # Program numarası adın içine gömülmüşse çıkar:
+    # FRANKI CHA CHA (2) -> FRANKI CHA CHA
+    raw = re.sub(r"\s*\(\d{1,2}\)\s*", " ", raw).strip()
+
+    # Orijin alanındaki baba adı ad hücresine de taşınmışsa ayır.
+    origin = display_value(
+        horse.get("origin")
+        or horse.get("orijin")
+        or horse.get("Orijin")
+        or horse.get("pedigree")
+        or horse.get("baba_anne"),
+        "",
+    )
+    if origin:
+        sire = re.split(r"\s+-\s+", origin, maxsplit=1)[0].strip()
+        if sire:
+            raw = re.sub(
+                r"\s+" + re.escape(sire) + r"\s*$",
+                "",
+                raw,
+                flags=re.I,
+            ).strip()
+
+    # Orijin alanı boş kaldığında "... AUTHORIZED (IRE)" gibi
+    # baba bilgisinin ad hücresine gömüldüğü kayıtları ayır.
+    raw = re.sub(
+        r"\s+[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'/&-]{2,}\s+\([A-Z]{2,3}\)\s*$",
+        "",
+        raw,
+    ).strip()
+
     return raw
 
 
@@ -599,13 +632,29 @@ def _split_origin(origin: Any) -> tuple[str, str]:
 def get_horse_origin(
     horse: Dict[str, Any],
 ) -> str:
-    return display_value(
+    """Baba / anne orijinini TJK alanından, gerekirse ad hücresinden al."""
+    origin = display_value(
         horse.get("origin")
         or horse.get("orijin")
         or horse.get("Orijin")
         or horse.get("pedigree")
-        or horse.get("baba_anne")
-    , "")
+        or horse.get("baba_anne"),
+        "",
+    )
+    if origin:
+        return origin
+
+    # Bazı günlük program cevaplarında Orijin kolonu boş, ancak At İsmi hücresinde
+    # "AT ADI (No) BABA - ANNE / ANNE BABASI" biçimi geliyor.
+    raw = display_value(
+        horse.get("at_ismi")
+        or horse.get("At İsmi")
+        or horse.get("name")
+        or horse.get("horseName"),
+        "",
+    )
+    m = re.match(r"^.+?\s*\(\d{1,2}\)\s+(.+)$", raw)
+    return m.group(1).strip() if m else ""
 
 
 def _extract_equipment_from_text(text: Any) -> str:
@@ -896,7 +945,13 @@ def _history_year(date_text: Any) -> int | None:
 
 
 def _money_number(value: Any) -> float:
-    """TJK para alanını hem sayı hem TR/EN metin biçimlerinde doğru parse eder."""
+    """TJK para alanını Türkçe binlik/ondalık gösterimiyle doğru parse eder.
+
+    Örnek:
+      292.000   -> 292000
+      3.655.200 -> 3655200
+      2.500,50  -> 2500.50
+    """
     if value is None:
         return 0.0
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -906,30 +961,42 @@ def _money_number(value: Any) -> float:
     if not text or text == "-":
         return 0.0
 
-    # Para birimi, boşluk ve sembolleri temizle; eksi işaretini koru.
+    text = text.replace("₺", "").replace("TL", "").replace("tl", "")
+    text = re.sub(r"\s+", "", text)
     text = re.sub(r"[^0-9,.-]", "", text)
     if not text:
         return 0.0
 
-    # 1.234.567,89 -> 1234567.89
-    if "," in text and "." in text:
-        if text.rfind(",") > text.rfind("."):
+    if "," in text:
+        if "." in text:
             text = text.replace(".", "").replace(",", ".")
         else:
-            text = text.replace(",", "")
-    elif "," in text:
-        parts = text.split(",")
-        if len(parts[-1]) in (1, 2):
-            text = "".join(parts[:-1]) + "." + parts[-1]
-        else:
+            tail = text.rsplit(",", 1)[-1]
+            if len(tail) in (1, 2):
+                text = text.replace(",", ".")
+            else:
+                text = text.replace(",", "")
+    elif "." in text:
+        parts = text.split(".")
+        # TJK'da 292.000 / 3.655.200 biçimi binlik ayırıcıdır.
+        if all(part.isdigit() for part in parts) and len(parts[-1]) == 3:
             text = "".join(parts)
-    elif text.count(".") > 1:
-        text = text.replace(".", "")
+        elif len(parts) > 2:
+            text = "".join(parts)
 
     try:
         return float(text)
     except ValueError:
         return 0.0
+
+
+def _format_tl(value: float) -> str:
+    """Tabloda TJK görünümü: 3.655.200 ₺."""
+    try:
+        n = int(round(float(value)))
+    except Exception:
+        n = 0
+    return f"{n:,}".replace(",", ".") + " ₺"
 
 
 def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
@@ -2616,8 +2683,8 @@ else:
             "GÜNCEL SINIF": current_class,
             "SON GALOP": workout_display(horse),
             "SON KOŞU": last_race_display(horse),
-            "BU YIL KAZANÇ": year_earnings(horse, target_year),
-            "TOPLAM KAZANÇ": total_earnings(horse),
+            "BU YIL KAZANÇ": _format_tl(year_earnings(horse, target_year)),
+            "TOPLAM KAZANÇ": _format_tl(total_earnings(horse)),
             "Sahip": owner or "-",
             "Antrenör": trainer or "-",
         })
@@ -2661,8 +2728,8 @@ else:
         "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f", width=105),
         "SON GALOP": st.column_config.TextColumn("SON GALOP", width=110),
         "SON KOŞU": st.column_config.TextColumn("SON KOŞU", width=100),
-        "BU YIL KAZANÇ": st.column_config.NumberColumn("BU YIL KAZANÇ", format="%,.0f ₺", width=125),
-        "TOPLAM KAZANÇ": st.column_config.NumberColumn("TOPLAM KAZANÇ", format="%,.0f ₺", width=135),
+        "BU YIL KAZANÇ": st.column_config.TextColumn("BU YIL KAZANÇ", width=125),
+        "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=135),
         "Sahip": st.column_config.TextColumn("Sahip", width=150),
         "Antrenör": st.column_config.TextColumn("Antrenör", width=130),
     }
@@ -2731,7 +2798,7 @@ else:
     # Satır yüksekliği önceki görünüme göre yaklaşık %30 azaltılmıştır.
     # Önceki 28 px satır yüksekliğinin %50 artırılmış hali.
     # Satır yüksekliği mevcut sürümün 2 katı.
-    table_row_height = 54
+    table_row_height = 84
     table_height = 56 + (len(df) * table_row_height) + 24
 
     st.markdown(
@@ -2856,7 +2923,8 @@ else:
     }
 
     /* Ana tablo satırları: mevcut genişlikleri koru, yalnızca yükseklik 2 kat. */
-    div[data-testid="stDataFrame"] [role="gridcell"] {
+    div[data-testid="stDataFrame"] [role="gridcell"],
+    div[data-testid="stDataFrame"] [role="gridcell"] > div {
         min-height: 84px !important;
         height: 84px !important;
         line-height: 1.25 !important;
@@ -2864,6 +2932,9 @@ else:
         overflow: hidden !important;
         text-overflow: clip !important;
         vertical-align: middle !important;
+        white-space: pre-line !important;
+        overflow-wrap: anywhere !important;
+        word-break: normal !important;
     }
 
     /* Kullanıcının istediği kompakt dikey yerleşim. */
