@@ -423,6 +423,16 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     )
 
+    # TJK programındaki gerçek Orijin alanını koru.
+    result["origin"] = (
+        result.get("origin")
+        or result.get("orijin")
+        or result.get("Orijin")
+        or result.get("pedigree")
+        or ""
+    )
+    result["orijin"] = result["origin"]
+
     result["trainer"] = (
         result.get("trainer")
         or result.get("antrenor")
