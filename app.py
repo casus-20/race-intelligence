@@ -122,7 +122,7 @@ st.markdown(
     .main-title {
         font-size: 40px;
         font-weight: 950;
-        margin-top: 5mm !important;
+        margin-top: 25mm !important;
         margin-bottom: 8px;
         line-height: 1.15;
         padding-top: 0 !important;
@@ -397,7 +397,7 @@ st.markdown(
     }
 
     .horse-title {
-        margin-top: 0 !important;
+        margin-top: 10 !important;
         margin-bottom: 1px !important;
         line-height: 1.0 !important;
     }
