@@ -1084,6 +1084,612 @@ def _pist_mesafe_score(horse: Dict[str, Any], race: Dict[str, Any], city: str) -
     return 50.0
 
 
+
+def _class_level_from_text(value: Any) -> float | None:
+    """TJK geçmişindeki koşu sınıfını tek bir sınıf seviyesine dönüştürür.
+
+    Bu değer BİZİM SKOR veya ŞART UYUMU değildir.
+    Amaç yalnızca atın son gerçek koşularında hangi sınıf seviyelerinde
+    koştuğunu ölçmek ve bunu GÜNCEL SINIF olarak göstermek.
+
+    Öncelik: açık sınıf > KV > Şartlı > Handikap.
+    Handikaplarda H numarası doğrudan kullanılır.
+    Şartlı koşularda Şartlı 1-5 sırası kullanılır.
+    """
+    text = str(value or "").upper().strip()
+    if not text or text == "-":
+        return None
+
+    # Açık sınıf koşular
+    for pat, score in (
+        (r"\bG\s*1\b", 100.0),
+        (r"\bG\s*2\b", 97.0),
+        (r"\bG\s*3\b", 94.0),
+        (r"\bAÇIK\b", 90.0),
+    ):
+        if re.search(pat, text):
+            return score
+
+    # Kısa vadeli / KV koşuları. KV numarası yükseldikçe sınıf seviyesi yükselir.
+    m = re.search(r"\bKV\s*[- ]?\s*(\d+)\b", text)
+    if m:
+        n = int(m.group(1))
+        return min(89.0, 70.0 + n * 2.0)
+
+    # Şartlı 1-5.
+    m = re.search(r"ŞARTLI\s*([1-5])\b|ŞART\s*([1-5])\b", text)
+    if m:
+        n = int(m.group(1) or m.group(2))
+        return 35.0 + n * 7.0
+
+    # Handikap H1-H18. H numarası sınıf seviyesini doğrudan temsil eder.
+    m = re.search(r"\bH\s*(\d{1,2})\b", text)
+    if m:
+        n = int(m.group(1))
+        return min(86.0, 30.0 + n * 3.0)
+
+    # Satış / Maiden gibi diğer yarışlar.
+    if "SATIŞ" in text or "SATIS" in text:
+        m = re.search(r"(?:SATIŞ|SATIS)\s*[- ]?(\d+)", text)
+        return 25.0 + (int(m.group(1)) if m else 1) * 3.0
+    if "MAIDEN" in text:
+        return 25.0
+
+    return None
+
+
+def _history_class_text(row: Dict[str, Any]) -> str:
+    """Geçmiş yarış kaydındaki gerçek TJK sınıf/koşu adını al."""
+    return display_value(_first_value(row, [
+        "className", "class", "sinif", "Sınıf",
+        "raceName", "race_name", "kosu", "Koşu",
+    ]), "")
+
+
+# ============================================================
+# TJK-ONLY ŞART UYUMU ENDEKSİ
+# ============================================================
+# Bu skor yalnızca TJK'dan gelen koşu şartları ve TJK geçmiş
+# koşu kayıtları üzerinden hesaplanır.
+#
+# KULLANILMAZ:
+#   AGF / galop / jokey / Son 6 / Bizim Skor
+#
+# KULLANILIR:
+#   Yarış tipi, sınıf, ırk, yaş, pist, mesafe, HP, kilo,
+#   geçmiş koşu sonucu.
+# ============================================================
+
+def _su_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return (
+        str(value).strip().upper()
+        .replace("İ", "I")
+        .replace("Ğ", "G")
+        .replace("Ü", "U")
+        .replace("Ş", "S")
+        .replace("Ö", "O")
+        .replace("Ç", "C")
+    )
+
+
+def _su_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    s = str(value).strip().replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    return float(m.group()) if m else None
+
+
+def _su_class(value: Any) -> int | None:
+    if value is None:
+        return None
+    s = _su_text(value)
+    m = re.search(r"(?:H|SARTLI|KV)\s*[-/]?\s*(\d+)", s)
+    return int(m.group(1)) if m else None
+
+
+def _su_family(value: Any) -> str:
+    s = _su_text(value).replace(" ", "").replace("-", "").replace("/", "")
+    if s.startswith("H"):
+        return "HANDIKAP"
+    if "SARTLI" in s:
+        return "SARTLI"
+    if s.startswith("KV"):
+        return "KV"
+    if "MAIDEN" in s:
+        return "MAIDEN"
+    if s.startswith("G1"):
+        return "G1"
+    if s.startswith("G2"):
+        return "G2"
+    if s.startswith("G3"):
+        return "G3"
+    return s
+
+
+def _su_race_type_score(past_type: Any, today_type: Any) -> float:
+    p = _su_text(past_type).replace(" ", "").replace("-", "").replace("/", "")
+    t = _su_text(today_type).replace(" ", "").replace("-", "").replace("/", "")
+    if p == t and p:
+        return 100.0
+
+    pf = _su_family(p)
+    tf = _su_family(t)
+
+    if pf == tf:
+        return 82.0
+
+    if {pf, tf} <= {"HANDIKAP", "SARTLI"}:
+        return 58.0
+
+    if {pf, tf} <= {"KV", "G1", "G2", "G3"}:
+        return 65.0
+
+    return 30.0
+
+
+def _su_class_score(past_class: Any, today_class: Any) -> float:
+    if past_class is None or today_class is None:
+        return 50.0
+    d = abs(int(past_class) - int(today_class))
+    if d == 0:
+        return 100.0
+    if d == 1:
+        return 92.0
+    if d == 2:
+        return 82.0
+    if d == 3:
+        return 70.0
+    if d == 4:
+        return 58.0
+    if d <= 6:
+        return 42.0
+    return 25.0
+
+
+def _su_distance_score(past_distance: Any, today_distance: Any) -> float:
+    p = _su_number(past_distance)
+    t = _su_number(today_distance)
+    if p is None or t is None:
+        return 50.0
+    d = abs(p - t)
+    if d == 0:
+        return 100.0
+    if d <= 100:
+        return 95.0
+    if d <= 200:
+        return 86.0
+    if d <= 300:
+        return 74.0
+    if d <= 400:
+        return 60.0
+    if d <= 500:
+        return 45.0
+    if d <= 700:
+        return 28.0
+    return 10.0
+
+
+def _su_weight_score(past_weight: Any, today_weight: Any) -> float:
+    p = _su_number(past_weight)
+    t = _su_number(today_weight)
+    if p is None or t is None:
+        return 50.0
+    d = abs(p - t)
+    if d == 0:
+        return 100.0
+    if d <= 1:
+        return 97.0
+    if d <= 2:
+        return 92.0
+    if d <= 3:
+        return 85.0
+    if d <= 4:
+        return 76.0
+    if d <= 5:
+        return 65.0
+    if d <= 6:
+        return 52.0
+    if d <= 8:
+        return 38.0
+    return 25.0
+
+
+def _su_hp_score(past_hp: Any, today_hp: Any) -> float:
+    p = _su_number(past_hp)
+    t = _su_number(today_hp)
+    if p is None or t is None:
+        return 50.0
+    d = abs(p - t)
+    if d == 0:
+        return 100.0
+    if d <= 2:
+        return 97.0
+    if d <= 4:
+        return 92.0
+    if d <= 7:
+        return 84.0
+    if d <= 10:
+        return 74.0
+    if d <= 15:
+        return 58.0
+    if d <= 20:
+        return 42.0
+    return 25.0
+
+
+def _su_finish_score(value: Any) -> float:
+    p = _su_number(value)
+    if p is None:
+        return 50.0
+    p = int(p)
+    if p == 1:
+        return 100.0
+    if p == 2:
+        return 96.0
+    if p == 3:
+        return 92.0
+    if p == 4:
+        return 86.0
+    if p == 5:
+        return 78.0
+    if p == 6:
+        return 68.0
+    if p == 7:
+        return 57.0
+    if p == 8:
+        return 47.0
+    if p == 9:
+        return 37.0
+    return 25.0
+
+
+def _su_parse_today(race: Dict[str, Any]) -> Dict[str, Any]:
+    meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
+
+    race_type = (
+        race.get("condition")
+        or meta.get("detail")
+        or meta.get("raceName")
+        or ""
+    )
+
+    distance = _su_number(
+        race.get("distance") or meta.get("distance")
+    )
+
+    surface = (
+        race.get("surface")
+        or meta.get("surface")
+        or ""
+    )
+
+    class_no = (
+        race.get("class_no")
+        or race.get("class")
+        or _su_class(race_type)
+    )
+
+    breed = (
+        race.get("breed")
+        or race.get("irk")
+        or meta.get("breed")
+        or meta.get("irk")
+        or ""
+    )
+
+    age_text = _su_text(
+        race.get("age")
+        or race.get("yas")
+        or meta.get("age")
+        or ""
+    )
+
+    ages = [int(x) for x in re.findall(r"\d+", age_text)]
+
+    return {
+        "race_type": race_type,
+        "class_no": int(class_no) if class_no is not None else None,
+        "breed": breed,
+        "surface": surface,
+        "distance": distance,
+        "age_min": min(ages) if ages else None,
+    }
+
+
+def _su_history_row_match(
+    horse: Dict[str, Any],
+    row: Dict[str, Any],
+    today: Dict[str, Any],
+) -> float | None:
+
+    if not isinstance(row, dict):
+        return None
+
+    # TJK geçmiş kaydındaki alan adlarını kullan.
+    past_type = (
+        row.get("raceName")
+        or row.get("race_name")
+        or row.get("kosu")
+        or row.get("condition")
+        or row.get("className")
+        or row.get("class")
+        or ""
+    )
+
+    past_class = (
+        row.get("className")
+        or row.get("class")
+        or row.get("sinif")
+        or _su_class(past_type)
+    )
+
+    past_breed = (
+        row.get("breed")
+        or row.get("irk")
+        or row.get("horseType")
+        or row.get("horse_type")
+        or ""
+    )
+
+    today_breed = _su_text(today["breed"])
+
+    # Geçmiş kaydında ırk açıkça varsa ve farklıysa kullanma.
+    if past_breed and today_breed:
+        if _su_text(past_breed) != today_breed:
+            return None
+
+    past_surface = (
+        row.get("surface")
+        or row.get("pist")
+        or ""
+    )
+
+    today_surface = _su_text(today["surface"])
+
+    # Aynı pist şartı zorunlu.
+    if past_surface and today_surface:
+        if _su_text(past_surface) != today_surface:
+            return None
+
+    past_distance = (
+        row.get("distance")
+        or row.get("msf")
+        or row.get("mesafe")
+    )
+
+    past_weight = (
+        row.get("weight")
+        or row.get("kilo")
+        or row.get("siklet")
+    )
+
+    past_hp = (
+        row.get("hp")
+        or row.get("HP")
+        or row.get("rating")
+    )
+
+    place = (
+        row.get("place")
+        or row.get("sira")
+        or row.get("S")
+    )
+
+    today_weight = (
+        horse.get("weight")
+        or horse.get("siklet")
+        or horse.get("Sıklet")
+    )
+
+    today_hp = (
+        horse.get("hp")
+        or horse.get("HP")
+        or horse.get("rating")
+    )
+
+    scores = {
+        "race_type": _su_race_type_score(
+            past_type,
+            today["race_type"]
+        ),
+        "class": _su_class_score(
+            _su_class(past_class),
+            today["class_no"]
+        ),
+        "distance": _su_distance_score(
+            past_distance,
+            today["distance"]
+        ),
+        "weight": _su_weight_score(
+            past_weight,
+            today_weight
+        ),
+        "hp": _su_hp_score(
+            past_hp,
+            today_hp
+        ),
+        "finish": _su_finish_score(place),
+    }
+
+    # Eksik değerler 50 ile nötr kalır.
+    # Pist + ırk eşleşmesi yukarıda filtrelenir.
+    return (
+        scores["race_type"] * 0.20
+        + scores["class"] * 0.20
+        + scores["distance"] * 0.20
+        + scores["weight"] * 0.15
+        + scores["hp"] * 0.15
+        + scores["finish"] * 0.10
+    )
+
+
+def calculate_sart_uyumu(
+    horse: Dict[str, Any],
+    race: Dict[str, Any],
+) -> Dict[str, Any]:
+
+    today = _su_parse_today(race)
+
+    history = horse.get("_history", [])
+
+    if not isinstance(history, list):
+        history = []
+
+    matches = []
+
+    for row in history:
+
+        score = _su_history_row_match(
+            horse,
+            row,
+            today
+        )
+
+        if score is None:
+            continue
+
+        matches.append({
+            "score": score,
+            "date": (
+                row.get("date")
+                or row.get("tarih")
+                or ""
+            ),
+            "race": (
+                row.get("raceName")
+                or row.get("race_name")
+                or row.get("kosu")
+                or ""
+            ),
+            "distance": (
+                row.get("distance")
+                or row.get("msf")
+                or row.get("mesafe")
+                or ""
+            ),
+            "surface": (
+                row.get("surface")
+                or row.get("pist")
+                or ""
+            ),
+            "weight": (
+                row.get("weight")
+                or row.get("kilo")
+                or row.get("siklet")
+                or ""
+            ),
+            "hp": (
+                row.get("hp")
+                or row.get("HP")
+                or ""
+            ),
+            "finish": (
+                row.get("place")
+                or row.get("sira")
+                or row.get("S")
+                or ""
+            ),
+        })
+
+    matches.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    # En güçlü gerçek TJK şart eşleşmelerini kullan.
+    selected = matches[:5]
+
+    if not selected:
+        return {
+            "score": 50.0,
+            "confidence": 0.0,
+            "sample": 0,
+            "matches": [],
+        }
+
+    # En iyi eşleşme daha belirleyicidir.
+    rank_weights = [0.40, 0.25, 0.15, 0.12, 0.08]
+
+    total = 0.0
+    weight_sum = 0.0
+
+    for i, item in enumerate(selected):
+        w = rank_weights[i]
+        total += item["score"] * w
+        weight_sum += w
+
+    score = total / weight_sum
+
+    # Güven: gerçek TJK şart eşleşmesi sayısına göre.
+    sample = len(matches)
+
+    if sample >= 10:
+        confidence = 100.0
+    elif sample >= 7:
+        confidence = 90.0
+    elif sample >= 5:
+        confidence = 80.0
+    elif sample >= 3:
+        confidence = 65.0
+    elif sample >= 2:
+        confidence = 45.0
+    else:
+        confidence = 30.0
+
+    # Tek eşleşmenin skoru gereğinden fazla yükseltmesini önle.
+    if sample == 1:
+        score = score * 0.75 + 50.0 * 0.25
+    elif sample == 2:
+        score = score * 0.85 + 50.0 * 0.15
+
+    return {
+        "score": round(max(0.0, min(100.0, score)), 1),
+        "confidence": confidence,
+        "sample": sample,
+        "matches": selected,
+    }
+
+
+def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
+    """Atın son gerçek TJK yarışlarından güncel sınıf seviyesini hesaplar.
+
+    - Galop, AGF, jokey, bugünkü kilo ve bugünkü HP kullanılmaz.
+    - Yalnızca atın gerçek geçmiş yarışlarındaki sınıf/koşu bilgisi kullanılır.
+    - En yeni yarış daha yüksek ağırlıklıdır.
+    - Sınıf bilgisi olmayan kayıtlar puana dahil edilmez.
+    """
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return 50.0
+
+    parsed = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        class_text = _history_class_text(row)
+        level = _class_level_from_text(class_text)
+        if level is None:
+            continue
+        parsed.append((row, level))
+        if len(parsed) >= max_races:
+            break
+
+    if not parsed:
+        return 50.0
+
+    # TJK geçmişi yeni -> eski sıralı geliyor. Değilse tarih üzerinden sıralamayı
+    # zorlamıyoruz; Worker'ın verdiği gerçek sıra korunuyor.
+    weights = [1.00, 0.85, 0.70, 0.55, 0.40]
+    used = weights[:len(parsed)]
+    weighted = sum(level * w for (_, level), w in zip(parsed, used)) / sum(used)
+    return round(max(0.0, min(100.0, weighted)), 1)
+
+
 def calculate_ranking(
     horses: List[Dict[str, Any]],
     race: Dict[str, Any],
@@ -1795,8 +2401,11 @@ else:
                 break
 
         comps = r.get("components", {})
-        class_quality = float(comps.get("Sınıf / HP", 50.0))
-        current_form = float(comps.get("Güncel Form", 50.0))
+        # GÜNCEL SINIF artık Güncel Form bileşeninden alınmaz.
+        # Gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
+        current_class = calculate_guncel_sinif(horse)
+        sart_result = calculate_sart_uyumu(horse, selected_race)
+        sart_uyumu = float(sart_result.get("score", 50.0))
 
         table_rows.append({
             "_horse_index": horse_index,
@@ -1818,9 +2427,8 @@ else:
             "Gny": display_value(horse.get("odds")),
             "AGF": get_horse_agf(horse),
             "BİZİM SKOR": r["score"],
-            "SINIF / KALİTE": round(class_quality, 1),
-            "GÜNCEL SINIF": round(current_form, 1),
-            "SINIF AVANTAJI": round(class_quality - current_form, 1),
+            "ŞART UYUMU": sart_uyumu,
+            "GÜNCEL SINIF": current_class,
             "SON GALOP": workout_display(horse),
             "SON KOŞU": last_race_display(horse),
             "BU YIL KAZANÇ": year_earnings(horse, target_year),
@@ -1843,7 +2451,7 @@ else:
     display_columns = [
         "No", "At İsmi / Orijin", "Yaş", "Sıklet", "Jokey",
         "St", "HP", "Son 6 Y.", "KGS", "s20", "En İyi D.", "Gny", "AGF",
-        "BİZİM SKOR", "SINIF / KALİTE", "GÜNCEL SINIF", "SINIF AVANTAJI",
+        "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF",
         "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "Sahip", "Antrenör",
     ]
     df_display = df[display_columns].copy()
@@ -1852,9 +2460,8 @@ else:
         "No": st.column_config.NumberColumn("No", format="%d", width="small"),
         "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin", width="large"),
         "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f"),
-        "SINIF / KALİTE": st.column_config.NumberColumn("SINIF / KALİTE", format="%.1f"),
+        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f"),
         "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f"),
-        "SINIF AVANTAJI": st.column_config.NumberColumn("SINIF AVANTAJI", format="%.1f"),
         "BU YIL KAZANÇ": st.column_config.NumberColumn("BU YIL KAZANÇ", format="%,.0f ₺"),
     }
 
