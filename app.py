@@ -12,6 +12,7 @@ from worker.tjk_fetch import get_program, get_horse_enrichment
 # SAYFA AYARLARI
 # ============================================================
 
+# UI_V3_LIGHT_TJK — eski yeşil/mavi tablo stili kaldırıldı
 st.set_page_config(
     page_title="Race Intelligence",
     page_icon="🏇",
@@ -122,7 +123,7 @@ st.markdown(
     .main-title {
         font-size: 40px;
         font-weight: 950;
-        margin-top: 25mm !important;
+        margin-top: 6px !important;
         margin-bottom: 8px;
         line-height: 1.15;
         padding-top: 0 !important;
@@ -296,17 +297,17 @@ st.markdown(
     .race-title-panel {
         width: 100% !important;
         min-height: 36px;
-        border: 2px solid #8fd3ff;
+        border: 1px solid #b9c8d8;
         border-radius: 7px;
-        background: #6fb7dc;
-        color: #ffffff;
+        background: #ffffff;
+        color: #16324d;
         padding: 7px 12px;
         box-sizing: border-box;
         display: flex;
         align-items: center;
         gap: 16px;
         flex-wrap: nowrap;
-        box-shadow: 0 0 8px rgba(143,211,255,.24);
+        box-shadow: none;
         text-transform: uppercase;
     }
     .race-title-panel .race-title-main {
@@ -334,7 +335,7 @@ st.markdown(
         border-radius: 5px;
         font-size: 15px;
         font-weight: 950;
-        background: #dff1ff;
+        background: #e8f1f8;
         color: #07579f;
         white-space: nowrap;
         margin-left: auto;
@@ -382,12 +383,12 @@ st.markdown(
         font-weight: 800;
     }
     table.ri-real-table tbody tr:nth-child(odd) td {
-        background: #063f2b;
-        color: #ffffff;
+        background: #ffffff;
+        color: #17212b;
     }
     table.ri-real-table tbody tr:nth-child(even) td {
-        background: #cfe8f8;
-        color: #062b55;
+        background: #f1f3f5;
+        color: #17212b;
     }
     .real-section-title {
         margin-top: 5px !important;
