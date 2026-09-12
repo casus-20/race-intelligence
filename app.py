@@ -724,16 +724,35 @@ def enrich_race_horses(horses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
 
     def one(item):
-        at_id = item.get("atId") or item.get("at_id") or ""
+        # TJK programında kimlik alanı farklı isimlerle gelebilir.
+        # At numarasını (no) ID olarak kullanmıyoruz; yalnızca gerçek at
+        # kimliği alanlarını kabul ediyoruz.
+        at_id = (
+            item.get("atId")
+            or item.get("at_id")
+            or item.get("horseId")
+            or item.get("horse_id")
+            or item.get("horseKey")
+            or item.get("horse_key")
+            or item.get("id")
+            or item.get("Id")
+            or ""
+        )
         name = get_horse_name(item)
         if not at_id:
+            item["_history"] = []
+            item["_workouts"] = []
+            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
             return item
         data = load_horse_enrichment(str(at_id), name)
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
 
+        item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
+        if isinstance(data, dict) and data.get("error"):
+            item["_enrichment_error"] = str(data.get("error"))
 
         # V34: sahip / antrenör / bu yıl kazanç geçmiş gerçek yarışlardan.
         if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
@@ -2168,7 +2187,10 @@ _current_race_signature = (
 if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
-    st.session_state.real_analysis_requested = False
+    # GERÇEK VERİ modu varsayılandır: yeni koşu seçildiğinde geçmiş
+    # yarış/galop verisini otomatik olarak hazırla. Aksi halde ŞART UYUMU
+    # ve GÜNCEL SINIF, veri gelmeden zorunlu olarak 50.0 gösterirdi.
+    st.session_state.real_analysis_requested = True
     st.session_state.real_analysis_done = False
     st.session_state["_last_race_signature"] = _current_race_signature
 
@@ -2347,9 +2369,16 @@ else:
                 1 for h in horses
                 if h.get("_history") or h.get("_workouts")
             )
+            id_count = sum(1 for h in horses if h.get("_at_id"))
+            error_count = sum(1 for h in horses if h.get("_enrichment_error"))
             analysis_status.write(
-                f"✓ {ok_count}/{len(horses)} at için gerçek veri alındı."
+                f"✓ {ok_count}/{len(horses)} at için gerçek geçmiş/galop verisi alındı "
+                f"• ID bulunan: {id_count}/{len(horses)}"
             )
+            if error_count:
+                analysis_status.write(
+                    f"⚠️ {error_count} at için veri alınamadı; hata ayrıntısı at kaydında tutuldu."
+                )
             analysis_status.update(
                 label="✅ GERÇEK VERİ ANALİZİ TAMAMLANDI",
                 state="complete",
