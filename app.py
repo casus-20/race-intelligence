@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import date
 from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from worker.tjk_fetch import get_program
 
@@ -21,19 +22,20 @@ st.set_page_config(
 # HİPODROMLAR
 # ============================================================
 
-# TJK şehirleri.
-# Hipodrom seçimi başlangıçta sabit kalır; böylece
-# tarih/şehir keşfi yüzünden arayüz kilitlenmez.
+# Worker V1'de tanımlı şehirler.
+# Arayüzde bunların tamamı gösterilmez; aşağıda seçilen tarih
+# için gerçekten programı olanlar otomatik olarak filtrelenir.
 ALL_CITIES = [
-    "Adana",
-    "İzmir",
+    "Ankara",
+    "Kocaeli",
     "İstanbul",
     "Bursa",
-    "Ankara",
-    "Şanlıurfa",
+    "İzmir",
+    "Adana",
     "Elazığ",
     "Diyarbakır",
-    "Kocaeli",
+    "Şanlıurfa",
+    "Antalya",
 ]
 
 
@@ -137,6 +139,40 @@ def load_program(
         selected_date,
         city,
     )
+
+
+# ============================================================
+# SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
+# ============================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_active_cities(selected_date: date) -> List[str]:
+    """
+    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
+
+    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
+    yeni Worker dosyası veya yeni API gerekmez.
+    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
+    """
+    active = []
+
+    def check_city(city: str):
+        try:
+            data = get_program(selected_date, city)
+            races = data.get("races", []) if isinstance(data, dict) else []
+            return city if isinstance(races, list) and len(races) > 0 else None
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
+        for future in as_completed(futures):
+            city = future.result()
+            if city:
+                active.append(city)
+
+    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
+    return [city for city in ALL_CITIES if city in active]
 
 
 # ============================================================
@@ -298,20 +334,34 @@ selected_date = st.sidebar.date_input(
 # HİPODROM
 # ============================================================
 
-if st.session_state.loaded_city in ALL_CITIES:
-    default_city_index = ALL_CITIES.index(
+with st.sidebar:
+    with st.spinner("TJK'daki aktif hipodromlar kontrol ediliyor..."):
+        active_cities = load_active_cities(selected_date)
+
+if not active_cities:
+    st.sidebar.warning(
+        f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
+    )
+    st.info(
+        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
+    )
+    st.stop()
+
+if st.session_state.loaded_city in active_cities:
+    default_city_index = active_cities.index(
         st.session_state.loaded_city
     )
 else:
-    # 12/09/2026 programı bulunan şehirlerden biri olan
-    # Ankara ile başla; kullanıcı diğer hipodromları seçebilir.
-    default_city_index = ALL_CITIES.index("Ankara")
-
+    default_city_index = 0
 
 selected_city = st.sidebar.selectbox(
     "Hipodrom",
-    ALL_CITIES,
+    active_cities,
     index=default_city_index,
+)
+
+st.sidebar.caption(
+    f"{len(active_cities)} hipodromda yarış var • {selected_date.strftime('%d/%m/%Y')}"
 )
 
 
@@ -721,145 +771,44 @@ if not horses:
 
 else:
 
-    # --------------------------------------------------------
-    # TABLO BAŞLIĞI
-    # --------------------------------------------------------
+    # Tek kompakt tablo: gereksiz satır çizgileri ve ayrı kolon blokları yok.
+    table_rows = []
 
-    columns = st.columns(
-        [
-            0.45,
-            2.4,
-            0.55,
-            0.9,
-            1.8,
-            0.7,
-            0.8,
-            0.65,
-            0.7,
-            1.3,
-        ]
-    )
-
-
-    headers = [
-        "No",
-        "At",
-        "Yaş",
-        "Kilo",
-        "Jokey",
-        "HP",
-        "AGF",
-        "St",
-        "KGS",
-        "Form",
-    ]
-
-
-    for column, header in zip(
-        columns,
-        headers,
-    ):
-
-        with column:
-
-            st.markdown(
-                f"**{header}**"
-            )
-
-
-    st.divider()
-
-
-    # --------------------------------------------------------
-    # ATLAR
-    # --------------------------------------------------------
-
-    for horse_index, horse in enumerate(
-        horses
-    ):
-
-        if not isinstance(
-            horse,
-            dict,
-        ):
+    for horse_index, horse in enumerate(horses):
+        if not isinstance(horse, dict):
             continue
 
+        table_rows.append({
+            "No": get_horse_number(horse, horse_index + 1),
+            "At": get_horse_name(horse),
+            "Yaş": get_horse_age(horse),
+            "Kilo": get_horse_weight(horse),
+            "Jokey": get_horse_jockey(horse),
+            "HP": get_horse_hp(horse),
+            "AGF": get_horse_agf(horse),
+            "St": get_horse_start(horse),
+            "KGS": get_horse_kgs(horse),
+            "Form": get_horse_form(horse),
+        })
 
-        columns = st.columns(
-            [
-                0.45,
-                2.4,
-                0.55,
-                0.9,
-                1.8,
-                0.7,
-                0.8,
-                0.65,
-                0.7,
-                1.3,
-            ]
-        )
-
-
-        values = [
-            get_horse_number(
-                horse,
-                horse_index + 1,
-            ),
-
-            get_horse_name(
-                horse
-            ),
-
-            get_horse_age(
-                horse
-            ),
-
-            get_horse_weight(
-                horse
-            ),
-
-            get_horse_jockey(
-                horse
-            ),
-
-            get_horse_hp(
-                horse
-            ),
-
-            get_horse_agf(
-                horse
-            ),
-
-            get_horse_start(
-                horse
-            ),
-
-            get_horse_kgs(
-                horse
-            ),
-
-            get_horse_form(
-                horse
-            ),
-        ]
-
-
-        for column, value in zip(
-            columns,
-            values,
-        ):
-
-            with column:
-
-                st.write(
-                    display_value(
-                        value
-                    )
-                )
-
-
-        st.divider()
+    st.dataframe(
+        table_rows,
+        use_container_width=True,
+        hide_index=True,
+        height=min(520, 44 + max(1, len(table_rows)) * 42),
+        column_config={
+            "No": st.column_config.TextColumn("No", width="small"),
+            "At": st.column_config.TextColumn("At", width="medium"),
+            "Yaş": st.column_config.TextColumn("Yaş", width="small"),
+            "Kilo": st.column_config.TextColumn("Kilo", width="small"),
+            "Jokey": st.column_config.TextColumn("Jokey", width="medium"),
+            "HP": st.column_config.TextColumn("HP", width="small"),
+            "AGF": st.column_config.TextColumn("AGF", width="small"),
+            "St": st.column_config.TextColumn("St", width="small"),
+            "KGS": st.column_config.TextColumn("KGS", width="small"),
+            "Form": st.column_config.TextColumn("Form", width="medium"),
+        },
+    )
 
 
 # ============================================================
