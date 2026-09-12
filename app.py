@@ -1922,7 +1922,7 @@ else:
     # Satır yüksekliği önceki görünüme göre yaklaşık %30 azaltılmıştır.
     # Önceki 28 px satır yüksekliğinin %50 artırılmış hali.
     # Satır yüksekliği mevcut sürümün 2 katı.
-    table_row_height = 54
+    table_row_height = 70
     table_height = 56 + (len(df) * table_row_height) + 24
 
     st.markdown(
@@ -2003,6 +2003,22 @@ else:
     }
 
     
+
+    /* ANA ATLAR KOŞU PROGRAMI TABLOSU */
+    div[data-testid="stDataFrame"] [role="gridcell"] {
+        min-height: 70px !important;
+        height: 70px !important;
+        line-height: 70px !important;
+        background: #B9DDF2 !important;
+        color: #000000 !important;
+        font-weight: 900 !important;
+    }
+
+    div[data-testid="stDataFrame"] [role="gridcell"] * {
+        color: #000000 !important;
+        font-weight: 900 !important;
+    }
+
     /* AT KOŞU PROGRAMI ANA TABLOSU — FİLTRELİ BAŞLIKLAR */
     div[data-testid="stDataFrame"] [role="columnheader"] {
         background: #78BFE6 !important;
