@@ -25,7 +25,7 @@ CITY_IDS = {
     "Bursa": 4,
     "İzmir": 2,
     "Adana": 1,
-    "Elazığ": 7,
+    "Elazığ": 6,
     "Diyarbakır": 8,
     "Şanlıurfa": 7,
     "Antalya": 10,
@@ -311,7 +311,7 @@ def get_program(
         },
     }
 
-    return result
+    return normalize_program(result)
 
 
 # =========================================================
@@ -319,92 +319,132 @@ def get_program(
 # =========================================================
 
 def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Worker V1 -> Streamlit ortak at şeması.
 
+    Worker'ın döndürdüğü alanlar korunur; ayrıca app.py'nin
+    kullandığı V34 alan adları da oluşturulur.
+    """
     if not isinstance(horse, dict):
         return {}
 
     result = dict(horse)
 
-    # Eski Worker farklı isimlendirme kullansa bile
-    # Streamlit tarafında tek alan adı kullanabilmek için
-    # güvenli alias'lar.
+    # Ortak / Worker alanları
+    result["name"] = (
+        result.get("name")
+        or result.get("horse")
+        or result.get("horseName")
+        or result.get("At İsmi")
+        or ""
+    )
 
-    if "name" not in result:
-        result["name"] = (
-            result.get("horse")
-            or result.get("horseName")
-            or result.get("At İsmi")
-            or ""
-        )
+    result["no"] = (
+        result.get("no")
+        or result.get("number")
+        or result.get("numara")
+        or result.get("s")
+        or result.get("S")
+        or ""
+    )
 
-    if "no" not in result:
-        result["no"] = (
-            result.get("number")
-            or result.get("s")
-            or result.get("S")
-            or ""
-        )
+    result["age"] = (
+        result.get("age")
+        or result.get("yas")
+        or result.get("Yaş")
+        or ""
+    )
 
-    if "weight" not in result:
-        result["weight"] = (
-            result.get("siklet")
-            or result.get("Sıklet")
-            or result.get("kilo")
-            or ""
-        )
+    result["weight"] = (
+        result.get("weight")
+        or result.get("siklet")
+        or result.get("Sıklet")
+        or result.get("kilo")
+        or ""
+    )
 
-    if "hp" not in result:
-        result["hp"] = (
-            result.get("HP")
-            or result.get("rating")
-            or result.get("RT")
-            or ""
-        )
+    result["jockey"] = (
+        result.get("jockey")
+        or result.get("jokey")
+        or result.get("Jokey")
+        or result.get("jockeyName")
+        or ""
+    )
 
-    if "trainer" not in result:
-        result["trainer"] = (
-            result.get("antrenor")
-            or result.get("Antrenörü")
-            or result.get("trainerName")
-            or ""
-        )
+    result["hp"] = (
+        result.get("hp")
+        or result.get("HP")
+        or result.get("rating")
+        or result.get("RT")
+        or ""
+    )
 
-    if "owner" not in result:
-        result["owner"] = (
-            result.get("sahip")
-            or result.get("Sahip")
-            or result.get("ownerName")
-            or ""
-        )
+    result["last6"] = (
+        result.get("last6")
+        or result.get("son6")
+        or result.get("Son 6 Y.")
+        or result.get("lastSix")
+        or ""
+    )
 
-    if "age" not in result:
-        result["age"] = (
-            result.get("yas")
-            or result.get("Yaş")
-            or ""
-        )
+    result["agf"] = (
+        result.get("agf")
+        or result.get("AGF")
+        or result.get("odds")
+        or ""
+    )
 
-    if "last6" not in result:
-        result["last6"] = (
-            result.get("son6")
-            or result.get("Son 6 Y.")
-            or result.get("lastSix")
-            or ""
-        )
+    result["st"] = (
+        result.get("st")
+        or result.get("St")
+        or result.get("start")
+        or ""
+    )
 
-    if "jockey" not in result:
-        result["jockey"] = (
-            result.get("jokey")
-            or result.get("Jokey")
-            or result.get("jockeyName")
-            or ""
-        )
+    result["kgs"] = (
+        result.get("kgs")
+        or result.get("KGS")
+        or ""
+    )
+
+    result["form"] = (
+        result.get("form")
+        or result.get("Forma")
+        or result.get("last6")
+        or ""
+    )
+
+    result["trainer"] = (
+        result.get("trainer")
+        or result.get("antrenor")
+        or result.get("Antrenörü")
+        or result.get("trainerName")
+        or ""
+    )
+
+    result["owner"] = (
+        result.get("owner")
+        or result.get("sahip")
+        or result.get("Sahip")
+        or result.get("ownerName")
+        or ""
+    )
+
+    # app.py'nin kullandığı V34 alan adları
+    result["at_ismi"] = result["name"]
+    result["numara"] = result["no"]
+    result["yas"] = result["age"]
+    result["siklet"] = result["weight"]
+    result["jokey"] = result["jockey"]
 
     return result
 
 
 def normalize_program(program: Dict[str, Any]) -> Dict[str, Any]:
-
+    """
+    Worker V1 yarış şemasını app.py'nin beklediği V34 şemasına çevirir.
+    Worker verisinin orijinal alanları korunur.
+    """
     if not isinstance(program, dict):
         return {
             "ok": False,
@@ -414,63 +454,106 @@ def normalize_program(program: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     races = program.get("races", [])
+    if not isinstance(races, list):
+        races = []
 
     normalized_races = []
 
     for index, race in enumerate(races, start=1):
-
         if not isinstance(race, dict):
             continue
 
         item = dict(race)
 
-        if not item.get("no"):
-            item["no"] = index
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        item["meta"] = meta
+
+        race_no = (
+            item.get("race_number")
+            or item.get("no")
+            or item.get("number")
+            or index
+        )
+
+        race_time = (
+            item.get("race_time")
+            or item.get("time")
+            or meta.get("time")
+            or ""
+        )
+
+        distance = (
+            item.get("distance")
+            or meta.get("distance")
+            or ""
+        )
+
+        surface = (
+            item.get("surface")
+            or meta.get("surface")
+            or ""
+        )
+
+        condition = (
+            item.get("condition")
+            or meta.get("condition")
+            or ""
+        )
 
         horses = item.get("horses", [])
-
         if not isinstance(horses, list):
             horses = []
 
-        item["horses"] = [
+        normalized_horses = [
             normalize_horse(h)
             for h in horses
             if isinstance(h, dict)
         ]
 
-        if "meta" not in item or not isinstance(
-            item["meta"],
-            dict,
-        ):
-            item["meta"] = {}
+        # Worker alanlarını koru + app.py uyumlu alanları ekle
+        item["race_number"] = race_no
+        item["race_time"] = race_time
+        item["distance"] = distance
+        item["surface"] = surface
+        item["condition"] = condition
+        item["no"] = race_no
+        item["time"] = race_time
+        item["horses"] = normalized_horses
 
         normalized_races.append(item)
 
     program["races"] = normalized_races
 
-    program["race_count"] = len(
-        normalized_races
-    )
+    program["race_count"] = len(normalized_races)
+    program["raceCount"] = len(normalized_races)
 
-    program["raceCount"] = len(
-        normalized_races
-    )
-
-    total = sum(
-        len(r["horses"])
-        for r in normalized_races
-    )
+    total = sum(len(r["horses"]) for r in normalized_races)
 
     program["total_horses"] = total
     program["horse_count"] = total
     program["horseCount"] = total
 
+    # Worker ve Streamlit bağlantısını debug ekranında açıkça göster
+    debug = program.get("debug")
+    if not isinstance(debug, dict):
+        debug = {}
+
+    debug.setdefault("transport", "Cloudflare Worker V1")
+    debug.setdefault("worker_url", API_DATA)
+    debug["city_id"] = CITY_IDS.get(program.get("city"))
+    debug["race_count"] = len(normalized_races)
+    debug["total_horse_count"] = total
+    debug["horses_per_race"] = {
+        str(r.get("race_number", i + 1)): len(r.get("horses", []))
+        for i, r in enumerate(normalized_races)
+    }
+
+    program["debug"] = debug
+
     return program
 
-
-# =========================================================
-# DIŞARIDAN KULLANILAN FONKSİYONLAR
-# =========================================================
 
 def get_supported_cities() -> List[str]:
     return list(CITY_IDS.keys())
