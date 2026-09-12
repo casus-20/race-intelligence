@@ -570,7 +570,21 @@ def get_horse_name(
     return display_value(
         horse.get("at_ismi")
         or horse.get("At İsmi")
+        or horse.get("name")
+        or horse.get("horseName")
     )
+
+
+def get_horse_origin(
+    horse: Dict[str, Any],
+) -> str:
+    return display_value(
+        horse.get("origin")
+        or horse.get("orijin")
+        or horse.get("Orijin")
+        or horse.get("pedigree")
+        or horse.get("baba_anne")
+    , "")
 
 
 def get_horse_number(
@@ -631,24 +645,61 @@ def get_race_condition(race: Dict[str, Any]) -> str:
 
     return "-"
 
+def _weight_parts(value: Any) -> tuple[str, str]:
+    text = display_value(value, "")
+    if not text:
+        return "-", ""
+
+    # TJK programlarında örn. "53 +1.20 Fazla Kilo" / "53,5" gibi
+    # biçimler görülebilir. Ana kilo ilk satırda, fazla kilo ikinci satırda
+    # gösterilir; veri kaybedilmez.
+    m = re.match(
+        r"^\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
+        text,
+        flags=re.I,
+    )
+    if not m:
+        return text, ""
+
+    base = m.group(1).replace(",", ".")
+    rest = (m.group(2) or "").strip()
+    if not rest:
+        return base, ""
+
+    # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
+    fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
+    if fm:
+        return base, f"Fazla Kilo: {fm.group(1).replace(',', '.')}"
+    return base, rest
+
+
 def get_horse_weight(
     horse: Dict[str, Any],
 ) -> str:
-
-    return display_value(
+    base, extra = _weight_parts(
         horse.get("siklet")
         or horse.get("Sıklet")
+        or horse.get("weight")
     )
+    return f"{base}\n{extra}" if extra else base
 
 
 def get_horse_jockey(
     horse: Dict[str, Any],
 ) -> str:
-
-    return display_value(
+    text = display_value(
         horse.get("jokey")
         or horse.get("Jokey")
-    )
+        or horse.get("jockey")
+    , "")
+    if not text:
+        return "-"
+
+    # "E.ATLAMAZ AP Apranti" gibi kayıtları iki satır yap.
+    m = re.match(r"^(.*?)(?:\s+)(AP\s+Apranti|Apranti)$", text, flags=re.I)
+    if m:
+        return f"{m.group(1).strip()}\n{m.group(2).strip()}"
+    return text
 
 
 def get_horse_hp(
@@ -828,14 +879,35 @@ def _money_number(value: Any) -> float:
         return 0.0
 
 
+def total_earnings(horse: Dict[str, Any]) -> float:
+    """TJK gerçek koşu geçmişindeki tüm ikramiyelerin toplamı."""
+    total = 0.0
+    for row in horse.get("_history", []):
+        if not isinstance(row, dict):
+            continue
+        total += _money_number(
+            row.get("prize")
+            or row.get("ikramiye")
+            or row.get("Ikramiye")
+        )
+    return total
+
+
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
     total = 0.0
     for row in horse.get("_history", []):
         if not isinstance(row, dict):
             continue
-        if _history_year(row.get("date")) != target_year:
+        if _history_year(
+            row.get("date")
+            or row.get("tarih")
+        ) != target_year:
             continue
-        total += _money_number(row.get("prize"))
+        total += _money_number(
+            row.get("prize")
+            or row.get("ikramiye")
+            or row.get("Ikramiye")
+        )
     return total
 
 
@@ -881,29 +953,34 @@ def workout_display(horse: Dict[str, Any]) -> str:
 
 
 def last_race_display(horse: Dict[str, Any]) -> str:
+    """Ana tabloda SON KOŞU sütununda yalnızca gerçek dereceyi gösterir."""
     row = horse.get("_last_race")
     if not isinstance(row, dict):
         return "-"
-    time = display_value(_first_value(row, ["time", "derece"]), "")
-    distance = display_value(_first_value(row, ["distance", "msf", "mesafe"]), "")
-    surface = display_value(_first_value(row, ["surface", "pist"]), "")
-    place = display_value(_first_value(row, ["place", "sira", "S"]), "")
-    date_text = display_value(_first_value(row, ["date", "tarih"]), "")
-    city = display_value(_first_value(row, ["city", "şehir"]), "")
-    parts = []
-    if date_text:
-        parts.append(date_text)
-    if city:
-        parts.append(city)
-    if distance:
-        parts.append(f"{distance}m")
-    if surface:
-        parts.append(surface)
-    if time:
-        parts.append(time)
-    if place:
-        parts.append(f"{place}.")
-    return " • ".join(parts) if parts else "-"
+    return display_value(
+        _first_value(row, ["time", "derece", "Derece"]),
+        "-",
+    )
+
+
+def last_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
+    row = horse.get("_last_race")
+    if not isinstance(row, dict):
+        return {}
+    return {
+        "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
+        "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
+        "Mesafe": display_value(_first_value(row, ["distance", "msf", "mesafe"])),
+        "Pist": display_value(_first_value(row, ["surface", "pist"])),
+        "Sıra": display_value(_first_value(row, ["place", "sira", "S"])),
+        "Derece": display_value(_first_value(row, ["time", "derece", "Derece"])),
+        "Sıklet": display_value(_first_value(row, ["weight", "kilo", "siklet"])),
+        "Jokey": display_value(_first_value(row, ["jockey", "jokey"])),
+        "HP": display_value(_first_value(row, ["hp", "HP"])),
+        "Koşu": display_value(_first_value(row, ["raceName", "race_name", "kosu"])),
+        "Sınıf": display_value(_first_value(row, ["className", "class", "sinif"])),
+        "İkramiye": display_value(_first_value(row, ["prize", "ikramiye", "Ikramiye"])),
+    }
 
 
 def _first_value(row: Dict[str, Any], keys: List[str]) -> Any:
@@ -2443,7 +2520,10 @@ else:
             # Görsel No her zaman tablo sırasıdır: 1,2,3,4...
             # TJK'nın gerçek at numarası _horse_no içinde korunur.
             "No": len(table_rows) + 1,
-            "At İsmi / Orijin": get_horse_name(horse),
+            "At İsmi / Orijin": (
+                f"{get_horse_name(horse)}\n{get_horse_origin(horse)}"
+                if get_horse_origin(horse) else get_horse_name(horse)
+            ),
             "Yaş": get_horse_age(horse),
             "Sıklet": get_horse_weight(horse),
             "Jokey": get_horse_jockey(horse),
@@ -2461,6 +2541,7 @@ else:
             "SON GALOP": workout_display(horse),
             "SON KOŞU": last_race_display(horse),
             "BU YIL KAZANÇ": year_earnings(horse, target_year),
+            "TOPLAM KAZANÇ": total_earnings(horse),
             "Sahip": owner or "-",
             "Antrenör": trainer or "-",
         })
@@ -2481,17 +2562,33 @@ else:
         "No", "At İsmi / Orijin", "Yaş", "Sıklet", "Jokey",
         "St", "HP", "Son 6 Y.", "KGS", "s20", "En İyi D.", "Gny", "AGF",
         "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF",
-        "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "Sahip", "Antrenör",
+        "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "TOPLAM KAZANÇ", "Sahip", "Antrenör",
     ]
     df_display = df[display_columns].copy()
 
     column_config = {
-        "No": st.column_config.NumberColumn("No", format="%d", width="small"),
-        "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin", width="large"),
-        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f"),
-        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f"),
-        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f"),
-        "BU YIL KAZANÇ": st.column_config.NumberColumn("BU YIL KAZANÇ", format="%,.0f ₺"),
+        "No": st.column_config.NumberColumn("No", format="%d", width=55),
+        "At İsmi / Orijin": st.column_config.TextColumn("At İsmi / Orijin", width=250),
+        "Yaş": st.column_config.TextColumn("Yaş", width=70),
+        "Sıklet": st.column_config.TextColumn("Sıklet", width=90),
+        "Jokey": st.column_config.TextColumn("Jokey", width=135),
+        "St": st.column_config.TextColumn("St", width=55),
+        "HP": st.column_config.TextColumn("HP", width=55),
+        "Son 6 Y.": st.column_config.TextColumn("Son 6 Y.", width=100),
+        "KGS": st.column_config.TextColumn("KGS", width=60),
+        "s20": st.column_config.TextColumn("s20", width=55),
+        "En İyi D.": st.column_config.TextColumn("En İyi D.", width=85),
+        "Gny": st.column_config.TextColumn("Gny", width=65),
+        "AGF": st.column_config.TextColumn("AGF", width=70),
+        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f", width=105),
+        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f", width=105),
+        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f", width=105),
+        "SON GALOP": st.column_config.TextColumn("SON GALOP", width=110),
+        "SON KOŞU": st.column_config.TextColumn("SON KOŞU", width=100),
+        "BU YIL KAZANÇ": st.column_config.NumberColumn("BU YIL KAZANÇ", format="%,.0f ₺", width=125),
+        "TOPLAM KAZANÇ": st.column_config.NumberColumn("TOPLAM KAZANÇ", format="%,.0f ₺", width=135),
+        "Sahip": st.column_config.TextColumn("Sahip", width=150),
+        "Antrenör": st.column_config.TextColumn("Antrenör", width=130),
     }
 
     selected_horse_index = st.session_state.get("selected_horse_index")
@@ -2528,7 +2625,7 @@ else:
         .style
         .apply(_cell_style, axis=None)
         .apply(_row_style, axis=1)
-        .set_properties(**{"font-size": "12px", "font-weight": "750", "white-space": "nowrap"})
+        .set_properties(**{"font-size": "12px", "font-weight": "750", "white-space": "pre-line", "vertical-align": "middle"})
         .set_table_styles([
             {
                 "selector": "th",
@@ -2686,7 +2783,11 @@ else:
     div[data-testid="stDataFrame"] [role="gridcell"] {
         min-height: 84px !important;
         height: 84px !important;
-        line-height: 84px !important;
+        line-height: 1.25 !important;
+        white-space: pre-line !important;
+        overflow: hidden !important;
+        text-overflow: clip !important;
+        vertical-align: middle !important;
     }
 
     /* Kullanıcının istediği kompakt dikey yerleşim. */
@@ -2794,7 +2895,20 @@ else:
                 "<div class='real-section-title'>📋 SON KOŞU BİLGİSİ</div>",
                 unsafe_allow_html=True,
             )
-            with st.expander("GERÇEK KOŞU GEÇMİŞİ", expanded=True):
+            detail = last_race_detail(selected_horse)
+            if detail:
+                with st.expander(
+                    f"Son derece: {detail.get('Derece', '-')} — ayrıntıları göster / gizle",
+                    expanded=True,
+                ):
+                    detail_cols = st.columns(4)
+                    detail_items = list(detail.items())
+                    for i, (label, value) in enumerate(detail_items):
+                        with detail_cols[i % 4]:
+                            st.markdown(
+                                f"**{label}**\n\n{value}",
+                            )
+            with st.expander("GERÇEK KOŞU GEÇMİŞİ", expanded=False):
                 _history_tables(selected_horse.get("_history", []))
 
             st.markdown(
