@@ -21,6 +21,41 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# UI RENKLERI — butonlar veri yuklenmeden once de ayni renkte kalir.
+st.markdown("""
+<style>
+/* Buton renkleri: Streamlit render sirasindan bagimsiz olarak erken uygulanir. */
+.st-key-program_get_button button,
+.st-key-program_get_button button[kind="secondary"] {
+    background:#1976d2 !important;
+    border:1px solid #1976d2 !important;
+    color:#fff !important;
+    font-size:14px !important;
+    font-weight:800 !important;
+    min-height:42px !important;
+    line-height:1.15 !important;
+    padding:8px 10px !important;
+    white-space:normal !important;
+}
+.st-key-program_get_button button:hover { background:#1565c0 !important; border-color:#1565c0 !important; }
+.st-key-reset_model_button_top button,
+.st-key-reset_model_button_top button[kind="secondary"] {
+    background:#c58a2b !important; border:1px solid #c58a2b !important; color:#fff !important;
+}
+.st-key-real_analysis_button_top button,
+.st-key-real_analysis_button_top button[kind="secondary"] {
+    background:#20a34a !important; border:1px solid #20a34a !important; color:#fff !important;
+}
+.st-key-manual_analysis_button_top button,
+.st-key-manual_analysis_button_top button[kind="secondary"] {
+    background:#ff4b4b !important; border:1px solid #ff4b4b !important; color:#fff !important;
+}
+.st-key-reset_model_button_top button:hover { background:#b77d24 !important; border-color:#b77d24 !important; }
+.st-key-real_analysis_button_top button:hover { background:#188a3e !important; border-color:#188a3e !important; }
+.st-key-manual_analysis_button_top button:hover { background:#e83f3f !important; border-color:#e83f3f !important; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # ============================================================
 # HİPODROMLAR
@@ -2981,11 +3016,10 @@ else:
         line-height:34px !important; border-color:#c0c7d0 !important; text-transform:none !important;
     }
     div[data-testid="stDataFrame"] [role="columnheader"] * { color:#101820 !important; font-weight:900 !important; background:transparent !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"],
-    div[data-testid="stDataFrame"] [role="gridcell"] > div {
-        min-height:44px !important; height:44px !important; line-height:1.18 !important;
-        white-space:pre-line !important; overflow:hidden !important; text-overflow:clip !important;
-        overflow-wrap:normal !important; word-break:normal !important; color:#17212b !important;
+    div[data-testid="stDataFrame"] [role="gridcell"] {
+        line-height:1.18 !important;
+        white-space:pre-line !important;
+        color:#17212b !important;
     }
     div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical { width:0 !important; }
     div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal { height:12px !important; }
@@ -3000,13 +3034,8 @@ else:
         width:30px !important; min-width:30px !important; max-width:30px !important;
         padding:0 !important; background:#171b24 !important;
     }
-    /* No + At İsmi sabitleme: Streamlit'in resmi pinned API'si kullanılır.
-       Grid hücrelerine position:sticky zorlamak kaldırıldı; bu CSS Glide
-       tablosunun yatay kaydırmasını bozabiliyordu. */
-    div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
-        max-width:100% !important;
-    }
-
+    /* No + At İsmi sabitleme column_config icindeki pinned=True ile yapilir.
+       Grid'e position:sticky zorlanmaz; bu yatay kaydirmayi bozabilir. */
     /* PROGRAMI GETİR: daima mavi */
     .st-key-program_get_button button {
         background:#1976d2 !important;
