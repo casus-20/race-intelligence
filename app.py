@@ -927,7 +927,7 @@ def _weight_parts(value: Any) -> tuple[str, str]:
     # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
     fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
     if fm:
-        return base, f"Fazla Kilo: {fm.group(1).replace(',', '.')}"
+        return base, fm.group(1).replace(",", ".").replace(" ", "")
     return base, rest
 
 
@@ -957,7 +957,7 @@ def get_horse_jockey(
     # olarak gelir. İkisini de görselde ikinci satıra taşırız.
     m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
     if m:
-        label = "AP Apranti" if m.group(2).strip().upper() == "AP" else m.group(2).strip()
+        label = "Ap" if m.group(2).strip().upper().startswith("AP") else m.group(2).strip()
         return f"{m.group(1).strip()}\n{label}"
     return text
 
@@ -2947,6 +2947,24 @@ else:
         ])
     )
 
+    # Hücre içi vurgu: isim/orijin/jokey/sahip-antrenör/kilo/EİD.
+    # Native dataframe korunur; böylece satır seçimi ve yatay kaydırma çalışmaya devam eder.
+    def _semantic_cell_style(data):
+        out = pd.DataFrame("", index=data.index, columns=data.columns)
+        if "At İsmi" in data.columns:
+            out["At İsmi"] = "font-weight:900;"
+        if "Jokey" in data.columns:
+            out["Jokey"] = "font-weight:800;"
+        if "Sahip / Antrenör" in data.columns:
+            out["Sahip / Antrenör"] = "font-weight:800;"
+        if "Kilo" in data.columns:
+            out["Kilo"] = "font-weight:900;"
+        if "EİD" in data.columns:
+            out["EİD"] = "color:#d62828 !important;font-weight:900;"
+        return out
+
+    styled_df = styled_df.apply(_semantic_cell_style, axis=None)
+
     table_row_height = 44
     table_height = 54 + (len(df) * table_row_height) + 28
 
@@ -2983,63 +3001,55 @@ else:
         width:30px !important; min-width:30px !important; max-width:30px !important;
         padding:0 !important; background:#171b24 !important;
     }
-    /* At İsmi + No: native pinned=True ana yöntemdir.
-       Aşağıdaki sticky katmanı da farklı Streamlit/Glide sürümlerinde
-       yatay kaydırma sırasında ilk iki veri kolonunun görünür kalması için
-       geri uyumluluk sağlar. */
-    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(2),
-    div[data-testid="stDataFrame"] [role="gridcell"]:nth-child(2) {
-        position:sticky !important; left:30px !important; z-index:9 !important;
-        background:#ffffff !important; box-shadow:1px 0 0 #c8cdd4 !important;
+    /* No + At İsmi sabitleme: Streamlit'in resmi pinned API'si kullanılır.
+       Grid hücrelerine position:sticky zorlamak kaldırıldı; bu CSS Glide
+       tablosunun yatay kaydırmasını bozabiliyordu. */
+    div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
+        max-width:100% !important;
     }
-    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(3),
-    div[data-testid="stDataFrame"] [role="gridcell"]:nth-child(3) {
-        position:sticky !important; left:62px !important; z-index:10 !important;
-        background:#ffffff !important; box-shadow:2px 0 5px rgba(0,0,0,.16) !important;
-    }
-    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(2),
-    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(3) {
-        background:#d5dae2 !important;
-    }
-    /* PROGRAMI GETİR: mavi, kompakt ve okunabilir yazı. */
+
+    /* PROGRAMI GETİR: daima mavi */
     .st-key-program_get_button button {
         background:#1976d2 !important;
         border-color:#1976d2 !important;
         color:#ffffff !important;
         font-size:14px !important;
         font-weight:800 !important;
-        line-height:1.2 !important;
+        line-height:1.15 !important;
         min-height:42px !important;
         padding:7px 10px !important;
         white-space:normal !important;
     }
     .st-key-program_get_button button:hover {
-        background:#1565c0 !important;
-        border-color:#1565c0 !important;
+        background:#1565c0 !important; border-color:#1565c0 !important;
     }
 
-    /* Ana işlem düğmeleri: varsayılan sarı, gerçek veri yeşil. */
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-        min-height:34px !important; font-size:10px !important; padding:4px 8px !important;
-    }
-    /* Birincil buton yeşil; Manuel Analiz artık secondary olduğundan kırmızı görünmez. */
-    button[kind="primary"] { background:#20a34a !important; border-color:#20a34a !important; color:#fff !important; }
-    /* Üst işlem butonlarının kesin renkleri */
-    div[data-testid="stHorizontalBlock"] div:has(.ri-reset-marker) button {
+    /* Üst işlem düğmeleri: key tabanlıdır; veri yüklenmeden önce de renklidir. */
+    .st-key-reset_model_button_top button {
         background:#c58a2b !important; border-color:#c58a2b !important; color:#fff !important;
     }
-    div[data-testid="stHorizontalBlock"] div:has(.ri-real-marker) button {
+    .st-key-real_analysis_button_top button {
         background:#20a34a !important; border-color:#20a34a !important; color:#fff !important;
     }
-    div[data-testid="stHorizontalBlock"] div:has(.ri-manual-marker) button {
+    .st-key-manual_analysis_button_top button {
         background:#ff4b4b !important; border-color:#ff4b4b !important; color:#fff !important;
     }
-    /* Buton renkleri metne göre */
-    div[data-testid="stButton"]:has(button:has(span)) button { color:#fff !important; }
-    div[data-testid="stButton"]:has(button span) button { border-radius:5px !important; }
-    div[data-testid="stButton"]:has(button span) { }
-    /* Varsayılana dön: sarı */
-    button:has(span) { }
+    .st-key-reset_model_button_top button:hover { background:#b77d24 !important; }
+    .st-key-real_analysis_button_top button:hover { background:#188a3e !important; }
+    .st-key-manual_analysis_button_top button:hover { background:#e83f3f !important; }
+
+    /* Tablo seçim kutusu: görünür mavi */
+    div[data-testid="stDataFrame"] input[type="checkbox"] {
+        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
+        min-width:15px !important; accent-color:#1976d2 !important;
+    }
+    /* Ana tablo kompakt TJK görünümü */
+    div[data-testid="stDataFrame"] [role="columnheader"] {
+        font-size:10px !important; font-weight:900 !important;
+    }
+    div[data-testid="stDataFrame"] [role="gridcell"] {
+        white-space:pre-line !important; line-height:1.15 !important;
+    }
         </style>
     """, unsafe_allow_html=True)
 
