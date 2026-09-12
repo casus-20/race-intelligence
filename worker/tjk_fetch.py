@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 WORKER_URL = "https://fragrant-hat-ae48.raceanaliz.workers.dev"
 
 API_DATA = f"{WORKER_URL}/api/tjk/data"
+API_CITIES = f"{WORKER_URL}/api/tjk/cities"
 API_HEALTH = f"{WORKER_URL}/api/health"
 
 
@@ -93,6 +94,82 @@ def format_date_tr(value: Any) -> str:
         return f"{d}/{m}/{y}"
     except Exception:
         return iso
+
+
+def get_active_cities(
+    date_value: Any,
+    timeout: int = 45,
+) -> List[str]:
+    """
+    Worker V1 /api/tjk/cities üzerinden seçilen tarihte
+    gerçekten yarış bulunan hipodromları döndürür.
+    """
+    iso_date = normalize_date(date_value)
+
+    try:
+        response = requests.get(
+            API_CITIES,
+            params={"date": iso_date},
+            timeout=timeout,
+            headers={
+                "User-Agent": (
+                    "Race-Intelligence-Streamlit/34 "
+                    "(TJK Gateway Client)"
+                ),
+                "Accept": "application/json,text/plain,*/*",
+                "Cache-Control": "no-cache",
+            },
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Race Intelligence Worker şehir bağlantısı başarısız: {exc}"
+        ) from exc
+
+    response_text = response.text or ""
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Worker şehir HTTP {response.status_code}: "
+            f"{response_text[:500]}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "Worker şehir cevabı geçerli JSON değil. "
+            f"İlk cevap: {response_text[:500]}"
+        ) from exc
+
+    if not isinstance(data, dict) or not data.get("ok", False):
+        raise RuntimeError(
+            "Worker şehir listesi alınamadı: "
+            f"{data.get('error', 'bilinmeyen hata') if isinstance(data, dict) else 'geçersiz cevap'}"
+        )
+
+    cities = data.get("cities", [])
+    if not isinstance(cities, list):
+        cities = []
+
+    active = []
+    for item in cities:
+        if not isinstance(item, dict):
+            continue
+
+        name = normalize_text(item.get("name"))
+        race_count = item.get("raceCount", 0)
+
+        try:
+            race_count = int(race_count or 0)
+        except Exception:
+            race_count = 0
+
+        if name and race_count > 0 and name in CITY_IDS:
+            active.append(name)
+
+    # Worker hiç aktif şehir döndürmezse uygulama tamamen kilitlenmesin.
+    # Bu yalnızca olağanüstü durumda güvenli fallback'tir.
+    return active
 
 
 # =========================================================
