@@ -269,60 +269,123 @@ st.markdown(
     }
 
     .race-title-panel {
-        width: 80% !important;
-        min-height: 56px;
+        width: 100% !important;
+        min-height: 46px;
         border: 2px solid #8fd3ff;
-        border-radius: 8px;
+        border-radius: 7px;
         background: #6fb7dc;
         color: #ffffff;
-        padding: 7px 11px;
+        padding: 7px 12px;
         box-sizing: border-box;
         display: flex;
         align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-        box-shadow: 0 0 7px rgba(143,211,255,.20);
+        gap: 16px;
+        flex-wrap: nowrap;
+        box-shadow: 0 0 8px rgba(143,211,255,.24);
+        text-transform: uppercase;
     }
     .race-title-panel .race-title-main {
-        font-size: 20px;
-        line-height: 1.1;
-        font-weight: 900;
+        font-size: 30px;
+        line-height: 1.0;
+        font-weight: 950;
         white-space: nowrap;
     }
     .race-title-panel .race-condition {
-        font-size: 11px;
-        line-height: 1.25;
-        font-weight: 800;
-        white-space: normal;
-        flex: 1 1 260px;
+        font-size: 16px;
+        line-height: 1.15;
+        font-weight: 900;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1 1 auto;
         min-width: 0;
     }
     .race-title-panel .analysis-inline {
-        display: inline-block;
-        padding: 4px 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 31px;
+        padding: 4px 11px;
         border-radius: 5px;
-        font-size: 10px;
-        font-weight: 900;
-        background: #e8f4ff;
+        font-size: 15px;
+        font-weight: 950;
+        background: #dff1ff;
         color: #07579f;
         white-space: nowrap;
         margin-left: auto;
+        text-transform: uppercase;
+    }
+
+    /* Seçili koşu / analiz bekleniyor paneli ana tablo ile aynı genişlikte. */
+    .race-info-compact + .horse-title {
+        margin-top: 0 !important;
+    }
+
+    /* Gerçek veri tabloları: yatay scrollbar yok, başlık tek sıra ve 15 mm. */
+    .ri-real-table-wrap {
+        width: 100%;
+        overflow: hidden !important;
+        border: 1px solid rgba(80,100,130,.35);
+        border-radius: 7px;
+    }
+    table.ri-real-table {
+        width: 100% !important;
+        table-layout: fixed;
+        border-collapse: collapse;
+        font-size: 11px;
+    }
+    table.ri-real-table thead th {
+        height: 15mm;
+        min-height: 15mm;
+        padding: 6px 5px;
+        background: #0868c9;
+        color: #ffffff;
+        font-weight: 950;
+        text-align: center;
+        vertical-align: middle;
+        border: 1px solid rgba(255,255,255,.25);
+        white-space: nowrap;
+    }
+    table.ri-real-table tbody td {
+        padding: 6px 5px;
+        border: 1px solid rgba(100,120,140,.18);
+        text-align: center;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 800;
+    }
+    table.ri-real-table tbody tr:nth-child(odd) td {
+        background: #063f2b;
+        color: #ffffff;
+    }
+    table.ri-real-table tbody tr:nth-child(even) td {
+        background: #cfe8f8;
+        color: #062b55;
+    }
+    .real-section-title {
+        margin-top: 5px !important;
+        margin-bottom: 4px !important;
+        font-size: 17px;
+        font-weight: 950;
     }
 
     .horse-title {
-        margin-top: 1px !important;
-        margin-bottom: 2px !important;
-        line-height: 1.05 !important;
+        margin-top: 0 !important;
+        margin-bottom: 1px !important;
+        line-height: 1.0 !important;
     }
 
     .analysis-badge {
         display:inline-block;
-        padding:5px 10px;
+        padding:7px 12px;
         border-radius:5px;
-        font-size:11px;
-        font-weight:900;
-        margin:2px 0 10px 0;
+        font-size:17px;
+        font-weight:950;
+        margin:1px 0 4px 0;
         border:1px solid rgba(20,80,130,.35);
+        text-transform:uppercase;
     }
     .analysis-waiting { background:#eaf3fb; color:#075b9f; }
     .analysis-active { background:#e7f6ec; color:#147a35; }
@@ -807,32 +870,37 @@ def _first_value(row: Dict[str, Any], keys: List[str]) -> Any:
     return ""
 
 
-def _hide_index_table(df: pd.DataFrame):
-    """Gerçek veri tablolarını başlıkları görünür, sıra numarası görünmez çiz."""
+def _html_real_table(df: pd.DataFrame, widths=None) -> None:
+    """Gerçek TJK verisini tek başlık satırında, yatay kaydırmasız gösterir."""
     if df.empty:
         return
-    try:
-        st.table(df.style.hide(axis="index"))
-    except Exception:
-        # Eski pandas/Streamlit kombinasyonlarında hide desteklenmezse
-        # indeks bilgisi gerçek veri olarak ekrana basılmaz.
-        st.table(df.reset_index(drop=True))
+    safe = df.copy().replace({None: "-", "": "-"}).fillna("-")
+    html = safe.to_html(
+        index=False,
+        escape=True,
+        classes="ri-real-table",
+        border=0,
+    )
+    if widths:
+        # Kolon sayısı fazla olduğunda table-layout fixed ile taşmayı engeller.
+        pass
+    st.markdown(
+        f"<div class='ri-real-table-wrap'>{html}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _history_tables(history: List[Dict[str, Any]]) -> None:
-    """TJK'dan gelen gerçek koşu kayıtlarını eksiksiz ve yatay kaydırmasız göster."""
+    """TJK gerçek koşu geçmişini tüm başlıkları tek satırda göster."""
     if not history:
         st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
         return
 
-    rows_main = []
-    rows_detail = []
-
+    rows = []
     for row in history:
         if not isinstance(row, dict):
             continue
-
-        rows_main.append({
+        rows.append({
             "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
             "Şehir": _first_value(row, ["city", "şehir", "Sehir"]),
             "Mesafe": _first_value(row, ["distance", "msf", "mesafe"]),
@@ -842,36 +910,24 @@ def _history_tables(history: List[Dict[str, Any]]) -> None:
             "Kilo": _first_value(row, ["weight", "kilo", "siklet"]),
             "Jokey": _first_value(row, ["jockey", "jokey"]),
             "HP": _first_value(row, ["hp", "HP"]),
-            "Sınıf": _first_value(row, ["className", "class", "sinif"]),
-        })
-
-        rows_detail.append({
-            "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
             "Takı": _first_value(row, ["equipment", "taki"]),
             "Start": _first_value(row, ["post", "st", "start"]),
             "Gny": _first_value(row, ["odds", "gny"]),
             "Grup": _first_value(row, ["group", "grup"]),
             "Koşu": _first_value(row, ["raceName", "race_name", "kosu"]),
+            "Sınıf": _first_value(row, ["className", "class", "sinif"]),
             "Antrenör": _first_value(row, ["trainer", "antrenor"]),
             "Sahip": _first_value(row, ["owner", "sahip"]),
             "İkramiye": _first_value(row, ["prize", "ikramiye"]),
             "S20": _first_value(row, ["s20", "S20"]),
         })
 
-    main_df = pd.DataFrame(rows_main)
-    detail_df = pd.DataFrame(rows_detail)
-
-    if not main_df.empty:
-        main_df = main_df.replace({None: "-", "": "-"}).fillna("-")
-        _hide_index_table(main_df)
-
-    if not detail_df.empty:
-        detail_df = detail_df.replace({None: "-", "": "-"}).fillna("-")
-        _hide_index_table(detail_df)
+    df = pd.DataFrame(rows)
+    _html_real_table(df)
 
 
 def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
-    """TJK gerçek galop kayıtlarının mevcut bütün alanlarını göster."""
+    """TJK gerçek galop kayıtlarını tek başlık satırında göster."""
     if not workouts:
         st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
         return
@@ -880,7 +936,6 @@ def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
     for row in workouts:
         if not isinstance(row, dict):
             continue
-
         rows.append({
             "Tarih": _first_value(row, ["date", "tarih", "Tarih"]),
             "Şehir": _first_value(row, ["city", "şehir", "Sehir"]),
@@ -899,10 +954,8 @@ def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
             "Not": _first_value(row, ["note", "not", "aciklama"]),
         })
 
-    work_df = pd.DataFrame(rows)
-    if not work_df.empty:
-        work_df = work_df.replace({None: "-", "": "-"}).fillna("-")
-        _hide_index_table(work_df)
+    df = pd.DataFrame(rows)
+    _html_real_table(df)
 
 
 # ============================================================
@@ -1868,6 +1921,19 @@ else:
             border-radius: 10px !important;
         }
 
+
+        /* Kullanıcının istediği kompakt dikey yerleşim. */
+        div[data-testid="stExpander"] {
+            margin-bottom: 2px !important;
+        }
+        .race-info-compact {
+            margin-top: 0 !important;
+            margin-bottom: 1px !important;
+        }
+        .race-title-panel .analysis-inline {
+            text-transform: uppercase !important;
+        }
+
         /* Gerçek koşu ve galop kayıtları st.table ile çizilir; yatay scrollbar yoktur. */
         </style>
         """,
@@ -1957,25 +2023,18 @@ else:
                 f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
             )
 
-            d1, d2, d3, d4, d5 = st.columns(5)
-            with d1:
-                st.metric("Son Galop", workout_display(selected_horse))
-            with d2:
-                st.metric("Son Gerçek Koşu", last_race_display(selected_horse))
-            with d3:
-                st.metric(
-                    "Bu Yıl Kazanç",
-                    f"{year_earnings(selected_horse, selected_date.year):,.0f} ₺",
-                )
-            with d4:
-                st.metric("Sahip", display_value(selected_horse.get("owner")))
-            with d5:
-                st.metric("Antrenör", display_value(selected_horse.get("trainer")))
-
-            with st.expander("📋 GERÇEK KOŞU GEÇMİŞİ", expanded=True):
+            st.markdown(
+                "<div class='real-section-title'>📋 SON KOŞU BİLGİSİ</div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("GERÇEK KOŞU GEÇMİŞİ", expanded=True):
                 _history_tables(selected_horse.get("_history", []))
 
-            with st.expander("🏇 GERÇEK GALOP KAYITLARI", expanded=True):
+            st.markdown(
+                "<div class='real-section-title'>🏇 GERÇEK GALOPLAR</div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("GERÇEK GALOP KAYITLARI", expanded=True):
                 _workout_tables(selected_horse.get("_workouts", []))
 
     # Analiz özeti
