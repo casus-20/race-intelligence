@@ -295,7 +295,7 @@ st.markdown(
 
     .race-title-panel {
         width: 100% !important;
-        min-height: 46px;
+        min-height: 36px;
         border: 2px solid #8fd3ff;
         border-radius: 7px;
         background: #6fb7dc;
