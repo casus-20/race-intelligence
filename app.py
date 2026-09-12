@@ -124,7 +124,7 @@ st.markdown(
     <style>
 
     .main-title {
-        font-size: 40px;
+        font-size:27px;
         font-weight: 950;
         margin-top: 6px !important;
         margin-bottom: 8px;
@@ -142,9 +142,9 @@ st.markdown(
     div[data-testid="stMainBlockContainer"] {
         max-width: none !important;
         width: 100% !important;
-        padding-top: 5mm !important;
-        padding-left: 6mm !important;
-        padding-right: 6mm !important;
+        padding-top: 2.5mm !important;
+        padding-left: 3.5mm !important;
+        padding-right: 3.5mm !important;
     }
 
     /* EKRAN ÖLÇEĞİ: Chrome %100 iken uygulama yaklaşık %67 yoğunlukta
@@ -160,17 +160,17 @@ st.markdown(
 
     /* Sidebar, %67 tarayıcı görünümüne yakın kompakt ölçüde. */
     section[data-testid="stSidebar"] {
-        width: 212px !important;
-        min-width: 212px !important;
-        max-width: 212px !important;
+        width: 150px !important;
+        min-width: 150px !important;
+        max-width: 150px !important;
     }
     section[data-testid="stSidebar"] > div {
-        width: 212px !important;
+        width: 150px !important;
     }
 
     /* Ana içerik tam kalan genişliği kullansın. */
     [data-testid="stAppViewContainer"] > .main {
-        width: calc(100% - 212px) !important;
+        width: calc(100% - 150px) !important;
         max-width: none !important;
     }
     section.main > div.block-container,
@@ -184,13 +184,13 @@ st.markdown(
     }
 
     .sub-title {
-        font-size: 15px;
+        font-size:10px;
         opacity: 0.75;
         margin-bottom: 20px;
     }
 
     .horse-title {
-        font-size: 18px;
+        font-size:12px;
         font-weight: 700;
         margin-top: 15px;
         margin-bottom: 10px;
@@ -215,13 +215,13 @@ st.markdown(
     }
 
     .ri-subtitle {
-        font-size: 13px;
+        font-size:10px;
         opacity: .72;
         margin-top: 3px;
     }
 
     .ri-clock {
-        font-size: 12px;
+        font-size:9px;
         font-weight: 800;
         opacity: .7;
         letter-spacing: 1px;
@@ -232,12 +232,12 @@ st.markdown(
         border-radius: 7px;
         padding: 10px 12px;
         margin: 6px 0 12px 0;
-        font-size: 13px;
+        font-size:10px;
         line-height: 1.55;
     }
 
     .model-note {
-        font-size: 12px;
+        font-size:9px;
         opacity: .72;
         margin-top: -4px;
     }
@@ -267,7 +267,7 @@ st.markdown(
         border-collapse:collapse;
         width:100%;
         min-width:1180px;
-        font-size:12px;
+        font-size:9px;
     }
 
     .ri-table th {
@@ -317,9 +317,9 @@ st.markdown(
     div[data-testid="stMainBlockContainer"] {
         max-width: none !important;
         width: 100% !important;
-        padding-top: 5mm !important;
-        padding-left: 6mm !important;
-        padding-right: 6mm !important;
+        padding-top: 2.5mm !important;
+        padding-left: 3.5mm !important;
+        padding-right: 3.5mm !important;
     }
 
     .race-info-compact {
@@ -368,7 +368,7 @@ st.markdown(
         min-height: 31px;
         padding: 4px 11px;
         border-radius: 5px;
-        font-size: 15px;
+        font-size:10px;
         font-weight: 950;
         background: #e8f1f8;
         color: #07579f;
@@ -570,6 +570,7 @@ with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=False):
 # Fonksiyonlar CANLI MODEL AYARLARININ DIŞINDA
 btn1, btn2, btn3, mode_col = st.columns([1.15, 1.15, 1.15, 0.65])
 with btn1:
+    st.markdown("<span class='ri-reset-marker'></span>", unsafe_allow_html=True)
     st.button(
         "↩️ VARSAYILANA DÖN",
         key="reset_model_button_top",
@@ -577,19 +578,22 @@ with btn1:
         on_click=_reset_model_weights,
     )
 with btn2:
+    st.markdown("<span class='ri-real-marker'></span>", unsafe_allow_html=True)
     st.button(
         "🔎 GERÇEK VERİ İLE ANALİZ ET",
         key="real_analysis_button_top",
         use_container_width=True,
         on_click=_request_real_analysis,
+        type="primary",
     )
 with btn3:
+    st.markdown("<span class='ri-manual-marker'></span>", unsafe_allow_html=True)
     st.button(
         "🧠 MANUEL ANALİZ",
         key="manual_analysis_button_top",
         use_container_width=True,
         on_click=_request_manual_analysis,
-        type="primary",
+        type="secondary",
     )
 with mode_col:
     current_mode = st.session_state.get("analysis_mode", "Gerçek veri")
@@ -2865,28 +2869,28 @@ else:
     df_display["No"] = pd.to_numeric(df_display["No"], errors="coerce").fillna(0).astype(int)
 
     column_config = {
-        "No": st.column_config.NumberColumn("No", format="%d", width=48),
-        "At İsmi": st.column_config.TextColumn("At İsmi", width=165),
-        "Yaş": st.column_config.TextColumn("Yaş", width=58),
-        "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=205),
-        "Kilo": st.column_config.TextColumn("Kilo", width=80),
-        "Jokey": st.column_config.TextColumn("Jokey", width=125),
-        "Sahip / Antrenör": st.column_config.TextColumn("Sahip / Antrenör", width=170),
-        "St": st.column_config.TextColumn("St", width=45),
-        "HP": st.column_config.TextColumn("Hp", width=50),
-        "Son 6 Y.": st.column_config.TextColumn("Son 6", width=82),
-        "KGS": st.column_config.TextColumn("KGS", width=55),
-        "s20": st.column_config.TextColumn("s20", width=55),
-        "EİD": st.column_config.TextColumn("EİD", width=78),
-        "Gny": st.column_config.TextColumn("Gny", width=58),
-        "AGF": st.column_config.TextColumn("AGF", width=70),
-        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f", width=100),
-        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f", width=100),
-        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f", width=105),
-        "SON GALOP": st.column_config.TextColumn("SON GALOP", width=105),
-        "SON KOŞU": st.column_config.TextColumn("SON KOŞU", width=90),
-        "BU YIL KAZANÇ": st.column_config.TextColumn("BU YIL KAZANÇ", width=125),
-        "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=135),
+        "No": st.column_config.NumberColumn("No", format="%d", width=32),
+        "At İsmi": st.column_config.TextColumn("At İsmi", width=110),
+        "Yaş": st.column_config.TextColumn("Yaş", width=40),
+        "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=140),
+        "Kilo": st.column_config.TextColumn("Kilo", width=38),
+        "Jokey": st.column_config.TextColumn("Jokey", width=84),
+        "Sahip / Antrenör": st.column_config.TextColumn("Sahip / Antrenör", width=115),
+        "St": st.column_config.TextColumn("St", width=30),
+        "HP": st.column_config.TextColumn("Hp", width=34),
+        "Son 6 Y.": st.column_config.TextColumn("Son 6", width=38),
+        "KGS": st.column_config.TextColumn("KGS", width=38),
+        "s20": st.column_config.TextColumn("s20", width=38),
+        "EİD": st.column_config.TextColumn("EİD", width=52),
+        "Gny": st.column_config.TextColumn("Gny", width=40),
+        "AGF": st.column_config.TextColumn("AGF", width=47),
+        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f", width=67),
+        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f", width=67),
+        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f", width=70),
+        "SON GALOP": st.column_config.TextColumn("SON GALOP", width=70),
+        "SON KOŞU": st.column_config.TextColumn("SON KOŞU", width=60),
+        "BU YIL KAZANÇ": st.column_config.TextColumn("BU YIL KAZANÇ", width=84),
+        "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=90),
     }
 
     selected_horse_index = st.session_state.get("selected_horse_index")
@@ -2915,51 +2919,89 @@ else:
         .apply(_row_style, axis=1)
         .apply(_cell_style, axis=None)
         .set_properties(**{
-            "font-size":"12px", "font-weight":"700",
+            "font-size":"9px", "font-weight":"700",
             "white-space":"pre-line", "vertical-align":"middle",
             "color":"#17212b"
         })
         .set_table_styles([
             {"selector":"th", "props":[
                 ("background-color","#d5dae2"),("color","#101820"),
-                ("font-weight","900"),("font-size","12px"),
+                ("font-weight","900"),("font-size","9px"),
                 ("height","42px"),("text-align","center"),
                 ("border","1px solid #c0c7d0")
             ]},
             {"selector":"td", "props":[
-                ("font-size","12px"),("font-weight","700"),
+                ("font-size","9px"),("font-weight","700"),
                 ("white-space","pre-line"),("border","1px solid #d2d7de")
             ]},
         ])
     )
 
-    table_row_height = 66
+    table_row_height = 44
     table_height = 54 + (len(df) * table_row_height) + 28
 
     st.markdown("""
     <style>
-    .ri-mode-badge { text-align:center; font-size:12px; padding:9px 4px; color:#66717d; }
+    .ri-mode-badge { text-align:center; font-size:9px; padding:9px 4px; color:#66717d; }
     .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
-    .ri-model-summary { text-align:right; font-size:12px; color:#46515d; }
+    .ri-model-summary { text-align:right; font-size:9px; color:#46515d; }
     div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:hidden !important; }
     div[data-testid="stDataFrame"] input[type="checkbox"] { opacity:0 !important; width:2px !important; margin:0 !important; }
     div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) { width:6px !important; min-width:6px !important; max-width:6px !important; padding:0 !important; }
     div[data-testid="stDataFrame"] [role="columnheader"] {
         background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
-        font-weight:900 !important; height:42px !important; min-height:42px !important;
-        line-height:42px !important; border-color:#c0c7d0 !important; text-transform:none !important;
+        font-weight:900 !important; height:34px !important; min-height:34px !important;
+        line-height:34px !important; border-color:#c0c7d0 !important; text-transform:none !important;
     }
     div[data-testid="stDataFrame"] [role="columnheader"] * { color:#101820 !important; font-weight:900 !important; background:transparent !important; }
     div[data-testid="stDataFrame"] [role="gridcell"],
     div[data-testid="stDataFrame"] [role="gridcell"] > div {
-        min-height:66px !important; height:66px !important; line-height:1.18 !important;
+        min-height:44px !important; height:44px !important; line-height:1.18 !important;
         white-space:pre-line !important; overflow:hidden !important; text-overflow:clip !important;
         overflow-wrap:normal !important; word-break:normal !important; color:#17212b !important;
     }
     div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical { width:0 !important; }
     div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal { height:12px !important; }
     div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb { background:#aeb7c2 !important; border-radius:8px !important; }
-    </style>
+    /* Seçim kutusu görünür ve mavi */
+    div[data-testid="stDataFrame"] input[type="checkbox"] {
+        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
+        min-width:15px !important; margin:0 !important; accent-color:#1976d2 !important;
+        cursor:pointer !important;
+    }
+    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) {
+        width:30px !important; min-width:30px !important; max-width:30px !important;
+        padding:0 !important; background:#171b24 !important;
+    }
+    /* At İsmi yatay kaydırmada sabit kalsın; seçim + No alanından sonra başlar. */
+    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(3),
+    div[data-testid="stDataFrame"] [role="gridcell"]:nth-child(3) {
+        position:sticky !important; left:62px !important; z-index:8 !important;
+        background:inherit !important; box-shadow:2px 0 4px rgba(0,0,0,.12) !important;
+    }
+    /* Ana işlem düğmeleri: varsayılan sarı, gerçek veri yeşil. */
+    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+        min-height:34px !important; font-size:10px !important; padding:4px 8px !important;
+    }
+    /* Birincil buton yeşil; Manuel Analiz artık secondary olduğundan kırmızı görünmez. */
+    button[kind="primary"] { background:#20a34a !important; border-color:#20a34a !important; color:#fff !important; }
+    /* Üst işlem butonlarının kesin renkleri */
+    div[data-testid="stHorizontalBlock"] div:has(.ri-reset-marker) button {
+        background:#c58a2b !important; border-color:#c58a2b !important; color:#fff !important;
+    }
+    div[data-testid="stHorizontalBlock"] div:has(.ri-real-marker) button {
+        background:#20a34a !important; border-color:#20a34a !important; color:#fff !important;
+    }
+    div[data-testid="stHorizontalBlock"] div:has(.ri-manual-marker) button {
+        background:#ff4b4b !important; border-color:#ff4b4b !important; color:#fff !important;
+    }
+    /* Buton renkleri metne göre */
+    div[data-testid="stButton"]:has(button:has(span)) button { color:#fff !important; }
+    div[data-testid="stButton"]:has(button span) button { border-radius:5px !important; }
+    div[data-testid="stButton"]:has(button span) { }
+    /* Varsayılana dön: sarı */
+    button:has(span) { }
+        </style>
     """, unsafe_allow_html=True)
 
     table_event = st.dataframe(
