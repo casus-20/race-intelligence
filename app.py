@@ -2300,10 +2300,18 @@ def calculate_ranking(
 
 st.sidebar.title("🏇 Yarış Programı")
 
+# Gün değiştiğinde önceki Streamlit widget state'inin (örn. 12/09)
+# yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
+# farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
+# otomatik olarak bugüne geçilir.
+_today = date.today()
+if st.session_state.get("_date_auto_sync_day") != _today:
+    st.session_state["selected_date_widget"] = _today
+    st.session_state["_date_auto_sync_day"] = _today
 
 selected_date = st.sidebar.date_input(
     "Tarih",
-    value=date.today(),
+    key="selected_date_widget",
 )
 
 
@@ -2343,6 +2351,7 @@ selected_city = st.sidebar.selectbox(
 
 get_program_clicked = st.sidebar.button(
     "📥 PROGRAMI GETİR",
+    key="program_get_button",
     use_container_width=True,
 )
 
@@ -2869,8 +2878,8 @@ else:
     df_display["No"] = pd.to_numeric(df_display["No"], errors="coerce").fillna(0).astype(int)
 
     column_config = {
-        "No": st.column_config.NumberColumn("No", format="%d", width=32),
-        "At İsmi": st.column_config.TextColumn("At İsmi", width=110),
+        "No": st.column_config.NumberColumn("No", format="%d", width=32, pinned=True),
+        "At İsmi": st.column_config.TextColumn("At İsmi", width=130, pinned=True),
         "Yaş": st.column_config.TextColumn("Yaş", width=40),
         "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=140),
         "Kilo": st.column_config.TextColumn("Kilo", width=38),
@@ -2973,12 +2982,26 @@ else:
         width:30px !important; min-width:30px !important; max-width:30px !important;
         padding:0 !important; background:#171b24 !important;
     }
-    /* At İsmi yatay kaydırmada sabit kalsın; seçim + No alanından sonra başlar. */
-    div[data-testid="stDataFrame"] [role="columnheader"]:nth-child(3),
-    div[data-testid="stDataFrame"] [role="gridcell"]:nth-child(3) {
-        position:sticky !important; left:62px !important; z-index:8 !important;
-        background:inherit !important; box-shadow:2px 0 4px rgba(0,0,0,.12) !important;
+    /* At İsmi Streamlit'in native pinned column özelliğiyle sabitlenir.
+       CSS ile nth-child/position:sticky uygulanmıyor; çünkü dataframe
+       sanal grid olarak çiziliyor ve bu yöntem yatay kaydırmada çalışmıyor. */
+    /* PROGRAMI GETİR: mavi, kompakt ve okunabilir yazı. */
+    .st-key-program_get_button button {
+        background:#1976d2 !important;
+        border-color:#1976d2 !important;
+        color:#ffffff !important;
+        font-size:14px !important;
+        font-weight:800 !important;
+        line-height:1.2 !important;
+        min-height:42px !important;
+        padding:7px 10px !important;
+        white-space:normal !important;
     }
+    .st-key-program_get_button button:hover {
+        background:#1565c0 !important;
+        border-color:#1565c0 !important;
+    }
+
     /* Ana işlem düğmeleri: varsayılan sarı, gerçek veri yeşil. */
     div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
         min-height:34px !important; font-size:10px !important; padding:4px 8px !important;
