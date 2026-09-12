@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import date
 from typing import Any, Dict, List
 
-from worker.tjk_fetch import get_program
+from worker.tjk_fetch import get_program, get_active_cities, get_supported_cities
 
 
 # ============================================================
@@ -21,17 +21,9 @@ st.set_page_config(
 # HİPODROMLAR
 # ============================================================
 
-ALL_CITIES = [
-    "Adana",
-    "İzmir",
-    "İstanbul",
-    "Bursa",
-    "Ankara",
-    "Şanlıurfa",
-    "Elazığ",
-    "Diyarbakır",
-    "Kocaeli",
-]
+# Sabit liste yerine TJK Worker V1'in seçilen tarihte
+# gerçekten yarış bulunan hipodromlarını kullan.
+ALL_CITIES = get_supported_cities()
 
 
 # ============================================================
@@ -134,6 +126,25 @@ def load_program(
         selected_date,
         city,
     )
+
+
+@st.cache_data(
+    ttl=300,
+    show_spinner=False,
+)
+def load_active_cities(
+    selected_date: date,
+) -> List[str]:
+    """
+    Seçilen tarihte TJK'da programı bulunan hipodromları getirir.
+    """
+    cities = get_active_cities(selected_date)
+
+    if cities:
+        return cities
+
+    # Veri kaynağı geçici olarak boş dönerse tüm şehirleri göster.
+    return get_supported_cities()
 
 
 # ============================================================
@@ -295,24 +306,28 @@ selected_date = st.sidebar.date_input(
 # HİPODROM
 # ============================================================
 
+active_cities = load_active_cities(selected_date)
+
 if (
     st.session_state.loaded_city
-    in ALL_CITIES
+    in active_cities
 ):
-
-    default_city_index = ALL_CITIES.index(
+    default_city_index = active_cities.index(
         st.session_state.loaded_city
     )
-
 else:
-
     default_city_index = 0
 
 
 selected_city = st.sidebar.selectbox(
     "Hipodrom",
-    ALL_CITIES,
+    active_cities,
     index=default_city_index,
+)
+
+st.sidebar.caption(
+    f"TJK'da {selected_date.strftime('%d/%m/%Y')} için "
+    f"{len(active_cities)} aktif hipodrom bulundu."
 )
 
 
