@@ -12,6 +12,9 @@ WORKER_URL = "https://fragrant-hat-ae48.raceanaliz.workers.dev"
 
 API_DATA = f"{WORKER_URL}/api/tjk/data"
 API_HEALTH = f"{WORKER_URL}/api/health"
+API_HORSE = f"{WORKER_URL}/api/tjk/horse"
+API_WORKOUTS = f"{WORKER_URL}/api/tjk/workouts"
+API_HORSEDATA = f"{WORKER_URL}/api/tjk/horsedata"
 
 
 # =========================================================
@@ -612,6 +615,93 @@ def worker_health() -> Dict[str, Any]:
             "error": str(exc),
         }
 
+
+
+# =========================================================
+# GERÇEK AT GEÇMİŞİ / GALOP VERİSİ
+# =========================================================
+
+def _worker_json(
+    url: str,
+    params: Dict[str, Any],
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    response = requests.get(
+        url,
+        params=params,
+        timeout=timeout,
+        headers={
+            "User-Agent": "Race-Intelligence-Streamlit/34",
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+        },
+    )
+    text = response.text or ""
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Worker HTTP {response.status_code}: {text[:400]}"
+        )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Worker geçerli JSON döndürmedi: {text[:400]}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Worker cevabı JSON nesnesi değil.")
+    if data.get("ok") is False:
+        raise RuntimeError(str(data.get("error") or "Worker isteği başarısız."))
+    return data
+
+
+def get_horse_history(
+    at_id: Any,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    if at_id in (None, ""):
+        return {"ok": False, "history": []}
+    return _worker_json(
+        API_HORSE,
+        {"atId": str(at_id)},
+        timeout=timeout,
+    )
+
+
+def get_horse_workouts(
+    horse: str,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    if not normalize_text(horse):
+        return {"ok": False, "workouts": []}
+    return _worker_json(
+        API_WORKOUTS,
+        {"horse": normalize_text(horse)},
+        timeout=timeout,
+    )
+
+
+def get_horse_enrichment(
+    at_id: Any,
+    horse: str,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    """Worker V1 /api/tjk/horsedata: geçmiş + galop tek çağrıda."""
+    if at_id in (None, ""):
+        return {
+            "ok": False,
+            "history": [],
+            "workouts": [],
+            "error": "atId yok",
+        }
+
+    return _worker_json(
+        API_HORSEDATA,
+        {
+            "atId": str(at_id),
+            "horse": normalize_text(horse),
+        },
+        timeout=timeout,
+    )
 
 # =========================================================
 # GERİYE DÖNÜK UYUMLULUK
