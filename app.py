@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from worker.tjk_fetch import get_program, get_horse_enrichment
+import streamlit.components.v1 as components
 
 
 # ============================================================
@@ -3062,7 +3063,7 @@ else:
     for i,(n,_) in enumerate(cols):
         if n in _sort_keys:
             arrow = " ↓" if (_sort == n and _dir == "desc") else (" ↑" if _sort == n else " ↕")
-            _th_parts.append(f"<th class='c{i}'><a class='ri-sort' href='{_sort_href(n)}'>{_esc(n)}{arrow}</a></th>")
+            _th_parts.append(f"<th class='c{i}'><a class='ri-sort' target='_parent' href='{_sort_href(n)}'>{_esc(n)}{arrow}</a></th>")
         else:
             _th_parts.append(f"<th class='c{i}'>{_esc(n)}</th>")
     th = "".join(_th_parts)
@@ -3071,9 +3072,9 @@ else:
         hidx = int(row.get("_horse_index", ri)); no = int(row.get("No", hidx + 1))
         sel = selected_horse_index is not None and hidx == int(selected_horse_index)
         rc = "selected" if sel else ("even" if ri % 2 == 0 else "odd")
-        check = f"<a class='ri-check checked' href='?horse_no={no}'>✓</a>" if sel else f"<a class='ri-check' href='?horse_no={no}'>□</a>"
+        check = f"<a class='ri-check checked' target='_parent' href='?horse_no={no}'>✓</a>" if sel else f"<a class='ri-check' target='_parent' href='?horse_no={no}'>□</a>"
         td = [
-            check, _esc(no), f"<a class='ri-horse-link' href='?horse_no={no}'>{_esc(row.get('At İsmi', '-'))}</a>", _esc(row.get("Yaş", "-")),
+            check, _esc(no), f"<a class='ri-horse-link' target='_parent' href='?horse_no={no}'>{_esc(row.get('At İsmi', '-'))}</a>", _esc(row.get("Yaş", "-")),
             _origin_html(row.get("Orijin (Baba-Anne)", "-")), _weight_html(row.get("Kilo", "-")),
             _jockey_html(row.get("Jokey", "-")), _owner_html(row.get("Sahip / Antrenör", "-")),
             _esc(row.get("St", "-")), _esc(row.get("HP", "-")), _esc(row.get("Son 6 Y.", "-")),
@@ -3085,30 +3086,57 @@ else:
         ]
         trs.append(f"<tr class='{rc}'>" + "".join(f"<td class='c{i}'>{v}</td>" for i,v in enumerate(td)) + "</tr>")
 
-    st.markdown(f"""
+    # Ana program tablosu: Streamlit markdown yerine gerçek HTML component.
+    # Böylece HTML/CSS kaynak kodu olarak görünmez; sticky kolonlar ve bağlantılar
+    # iframe içinde güvenilir şekilde çalışır. Başlık bağlantıları target=_parent
+    # ile ana Streamlit sayfasını yeniden yükleyerek gerçek sıralama yapar.
+    table_html = f"""
     <style>
-    .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
-    table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
-    .ri-table th{{position:sticky;top:0;z-index:20;background:#d5dae2;color:#101820;height:38px;padding:5px 7px;border-right:1px solid #bcc4cf;border-bottom:1px solid #aab3bf;text-align:center;font-weight:900;white-space:nowrap;}}
-.ri-table th .ri-sort{{color:#101820;text-decoration:none;display:block;width:100%;height:100%;}} .ri-table th .ri-sort:hover{{color:#1976d2;}}
-    .ri-horse-link{{color:#101820;text-decoration:none;font-weight:900;}} .ri-horse-link:hover{{color:#1976d2;text-decoration:underline;}}
-    .ri-green{{color:#169447;font-weight:900;}}
-    .ri-table td{{height:46px;padding:5px 7px;border-right:1px solid #d4d9df;border-bottom:1px solid #d0d5dc;color:#17212b;font-weight:700;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
-    .ri-table tr.even td{{background:#fff;}} .ri-table tr.odd td{{background:#eef1f4;}} .ri-table tr.selected td{{background:#cfe6ff!important;color:#07345f!important;}}
-    .ri-table .c0,.ri-table .c1,.ri-table .c2{{position:sticky;z-index:10;}}
-    .ri-table th.c0{{left:0;z-index:30;width:38px;}} .ri-table td.c0{{left:0;z-index:11;width:38px;background:#171d27;}}
-    .ri-table th.c1{{left:38px;z-index:30;width:42px;}} .ri-table td.c1{{left:38px;z-index:11;width:42px;}}
-    .ri-table th.c2{{left:80px;z-index:30;width:155px;text-align:left;}} .ri-table td.c2{{left:80px;z-index:11;width:155px;font-weight:900;}}
-    .ri-table tr.even td.c0,.ri-table tr.even td.c1,.ri-table tr.even td.c2{{background:#fff;}} .ri-table tr.odd td.c0,.ri-table tr.odd td.c1,.ri-table tr.odd td.c2{{background:#eef1f4;}}
-    .ri-table tr.selected td.c0,.ri-table tr.selected td.c1,.ri-table tr.selected td.c2{{background:#cfe6ff!important;}}
-    .ri-check{{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border:1px solid #647180;border-radius:3px;color:#1976d2!important;background:#fff;text-decoration:none!important;font-size:15px;font-weight:900;}} .ri-check.checked{{background:#1976d2;border-color:#1976d2;color:#fff!important;}}
-    .ri-blue{{color:#1976d2;font-weight:900;}} .ri-red{{color:#d62828;font-weight:900;}} .ri-black{{color:#101820;font-weight:800;}}
-    .ri-extra-weight{{color:#d62828;font-weight:900;}} .ri-eid summary{{cursor:pointer;color:#d62828;font-weight:900;}}
-    .ri-eid div{{background:#fff3f3;color:#17212b;border:1px solid #efb2b2;padding:4px 6px;margin-top:3px;border-radius:3px;white-space:normal;min-width:150px;}}
-    .ri-table-wrap::-webkit-scrollbar{{height:12px;}} .ri-table-wrap::-webkit-scrollbar-thumb{{background:#8b96a4;border-radius:7px;}}
+      html,body{{margin:0;padding:0;background:transparent;font-family:Arial,sans-serif;}}
+      .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
+      table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
+      .ri-table th{{position:sticky;top:0;z-index:40;background:#d5dae2;color:#101820;height:38px;padding:5px 7px;border-right:1px solid #bcc4cf;border-bottom:1px solid #aab3bf;text-align:center;font-weight:900;white-space:nowrap;}}
+      .ri-table th .ri-sort{{color:#101820;text-decoration:none;display:block;width:100%;height:100%;line-height:28px;}}
+      .ri-table th .ri-sort:hover{{color:#1976d2;}}
+      .ri-table td{{height:46px;padding:5px 7px;border-right:1px solid #d4d9df;border-bottom:1px solid #d0d5dc;color:#17212b;font-weight:700;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+      .ri-table tr.even td{{background:#fff;}}
+      .ri-table tr.odd td{{background:#eef1f4;}}
+      .ri-table tr.selected td{{background:#cfe6ff!important;color:#07345f!important;}}
+      .ri-table .c0,.ri-table .c1,.ri-table .c2{{position:sticky;z-index:30;}}
+      .ri-table th.c0{{left:0;width:38px;z-index:50;}}
+      .ri-table td.c0{{left:0;width:38px;z-index:31;}}
+      .ri-table th.c1{{left:38px;width:42px;z-index:50;}}
+      .ri-table td.c1{{left:38px;width:42px;z-index:31;}}
+      .ri-table th.c2{{left:80px;width:155px;text-align:left;z-index:50;}}
+      .ri-table td.c2{{left:80px;width:155px;font-weight:900;z-index:31;}}
+      .ri-table tr.even td.c0,.ri-table tr.even td.c1,.ri-table tr.even td.c2{{background:#fff;}}
+      .ri-table tr.odd td.c0,.ri-table tr.odd td.c1,.ri-table tr.odd td.c2{{background:#eef1f4;}}
+      .ri-table tr.selected td.c0,.ri-table tr.selected td.c1,.ri-table tr.selected td.c2{{background:#cfe6ff!important;}}
+      .ri-check{{display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border:1px solid #1976d2;border-radius:3px;color:#1976d2!important;background:#fff;text-decoration:none!important;font-size:15px;font-weight:900;line-height:18px;}}
+      .ri-check.checked{{background:#1976d2;border-color:#1976d2;color:#fff!important;}}
+      .ri-horse-link{{color:#101820;text-decoration:none;font-weight:900;}}
+      .ri-horse-link:hover{{color:#1976d2;text-decoration:underline;}}
+      .ri-blue{{color:#1976d2;font-weight:900;}}
+      .ri-red{{color:#d62828;font-weight:900;}}
+      .ri-black{{color:#101820;font-weight:800;}}
+      .ri-green{{color:#169447;font-weight:900;}}
+      .ri-extra-weight{{color:#d62828;font-weight:900;}}
+      .ri-eid summary{{cursor:pointer;color:#d62828;font-weight:900;}}
+      .ri-eid div{{background:#fff3f3;color:#17212b;border:1px solid #efb2b2;padding:4px 6px;margin-top:3px;border-radius:3px;white-space:normal;min-width:150px;}}
+      .ri-table-wrap::-webkit-scrollbar{{height:12px;}}
+      .ri-table-wrap::-webkit-scrollbar-thumb{{background:#8b96a4;border-radius:7px;}}
     </style>
-    <div class='ri-table-wrap'><table class='ri-table'><thead><tr>{th}</tr></thead><tbody>{''.join(trs)}</tbody></table></div>
-    """, unsafe_allow_html=True)
+    <div class='ri-table-wrap'>
+      <table class='ri-table'>
+        <thead><tr>{th}</tr></thead>
+        <tbody>{''.join(trs)}</tbody>
+      </table>
+    </div>
+    """
+    # Component yüksekliği satır sayısına göre ayarlanır; dış sayfada gereksiz
+    # büyük boşluk oluşmaz. Yatay kaydırma yalnızca tablonun kendi alanındadır.
+    _table_height = min(900, max(180, 38 + 46 * len(df) + 8))
+    components.html(table_html, height=_table_height, scrolling=False)
 
     if selected_rows:
         selected_display_row = int(selected_rows[0])
