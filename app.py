@@ -240,11 +240,28 @@ def get_horse_number(
 def get_horse_age(
     horse: Dict[str, Any],
 ) -> str:
+    value = horse.get("yas") or horse.get("Yaş") or horse.get("age") or ""
+    text = display_value(value)
+    parts = text.lower().replace("y", " y ").split()
+    if len(parts) >= 2 and parts[0].isdigit():
+        age = parts[0]
+        sex = parts[2] if len(parts) >= 3 and parts[1] == "y" else parts[1]
+        breed = parts[3] if len(parts) >= 4 and parts[1] == "y" else (parts[2] if len(parts) >= 3 else "")
+        sex_text = {"d": "dişi", "e": "erkek"}.get(sex, sex)
+        breed_text = {"e": "İngiliz", "a": "Arap"}.get(breed, breed)
+        return f"{age} yaş {sex_text}" + (f" {breed_text}" if breed_text else "")
+    return text
 
-    return display_value(
-        horse.get("yas")
-        or horse.get("Yaş")
-    )
+
+def get_race_condition(race: Dict[str, Any]) -> str:
+    direct = race.get("condition")
+    if direct:
+        return display_value(direct)
+    meta = race.get("meta")
+    if isinstance(meta, dict):
+        detail = meta.get("detail") or meta.get("raceName") or ""
+        return display_value(detail)
+    return "-"
 
 
 def get_horse_weight(
@@ -687,11 +704,7 @@ surface = display_value(
     )
 )
 
-condition = display_value(
-    selected_race.get(
-        "condition"
-    )
-)
+condition = get_race_condition(selected_race)
 
 
 st.markdown("---")
