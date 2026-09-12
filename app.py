@@ -1,3626 +1,1238 @@
-import streamlit as st
-import pandas as pd
-try:
-    from zoneinfo import ZoneInfo
-except Exception:
-    ZoneInfo = None
-import re
-from datetime import date, datetime
-from typing import Any, Dict, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
+const TJK="https://www.tjk.org";
+const CITY_IDS={Ankara:5,Kocaeli:9,İstanbul:3,Bursa:4,İzmir:1,Adana:2,Elazığ:6,Diyarbakır:7,Şanlıurfa:8,Antalya:10};
+const CORS={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,OPTIONS","Access-Control-Allow-Headers":"Content-Type"};
+const H={"Content-Type":"application/json; charset=utf-8",...CORS};
 
-AGGRID_IMPORT_ERROR = None
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
-except Exception as _aggrid_exc:
-    AGGRID_IMPORT_ERROR = repr(_aggrid_exc)
-    AgGrid = GridOptionsBuilder = JsCode = GridUpdateMode = DataReturnMode = None
+const YB="https://yenibeygir.com";
+const YB_CITY_SLUG={"Ankara":"ankara","Kocaeli":"kocaeli","İstanbul":"istanbul","Bursa":"bursa","İzmir":"izmir","Adana":"adana","Elazığ":"elazig","Diyarbakır":"diyarbakir","Şanlıurfa":"sanliurfa","Antalya":"antalya"};
+const YB_DAY_CACHE=new Map();
+const YB_HORSE_CACHE=new Map();
 
-from worker.tjk_fetch import get_program, get_horse_enrichment
+// TJK günlük programı pahalı bir HTML parserı çalıştırdığı için aynı tarih/şehir
+// isteğini Worker isolate içinde kısa süreli önbelleğe al. Bu, Streamlit
+// başlangıcındaki tekrar isteklerinde CPU tüketimini ciddi biçimde azaltır.
+const DAILY_CACHE=new Map();
+const DAILY_CACHE_TTL=60_000;
 
+function out(x,status=200){return new Response(JSON.stringify(x),{status,headers:H})}
+function dateTR(s){const [y,m,d]=s.split("-");return `${d}/${m}/${y}`}
+function escReg(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
+function clean(s){
+  return String(s??"").replace(/<script[\s\S]*?<\/script>/gi," ")
+    .replace(/<style[\s\S]*?<\/style>/gi," ")
+    .replace(/<[^>]+>/g," ")
+    .replace(/&amp;nbsp;/gi," ").replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&").replace(/&#39;/g,"'")
+    .replace(/&quot;/gi,'"').replace(/&uuml;/gi,"ü").replace(/&Uuml;/gi,"Ü")
+    .replace(/&ouml;/gi,"ö").replace(/&Ouml;/gi,"Ö").replace(/&ccedil;/gi,"ç")
+    .replace(/&Ccedil;/gi,"Ç").replace(/&scedil;/gi,"ş").replace(/&Scedil;/gi,"Ş")
+    .replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(+n)).replace(/\s+/g," ").trim()
+}
+function normTime(s){
+  const m=String(s||"").match(/^(\d{1,2})[.:](\d{2})$/);
+  return m?`${m[1].padStart(2,"0")}:${m[2]}`:String(s||"");
+}
+function cells(row){
+  return [...row.matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map(m=>clean(m[1]));
+}
+function rawCells(row){
+  return [...row.matchAll(/<(?:td|th)\b[^>]*>[\s\S]*?<\/(?:td|th)>/gi)].map(m=>m[0]);
+}
+function attrOf(cell,name){
+  const re=new RegExp('\\b'+name+'\\s*=\\s*[\"\']([^\"\']*)[\"\']','i');
+  const m=String(cell||'').match(re);
+  return m?clean(m[1]):'';
+}
+function attrDeep(cell,names){
+  for(const name of names){
+    const v=attrOf(cell,name);
+    if(v)return v;
+  }
+  return '';
+}
+function tables(html){
+  return [...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(m=>{
+    const rawRows=[...m[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(x=>x[0]);
+    return {start:m.index,html:m[0],rawRows,rows:rawRows.map(x=>cells(x))};
+  });
+}
+function hrefs(row){
+  return [...row.matchAll(/href\s*=\s*["\']([^"\']+)["\']/gi)].map(m=>m[1].replace(/&amp;/g,"&"));
+}
+function extractKosuKodu(rowHtml){
+  const raw=String(rowHtml||"");
+  const links=hrefs(raw);
+  for(const u of links){
+    const m=String(u).match(/KosuKodu(?:=|%3D)(\d+)/i);
+    if(m) return m[1];
+  }
+  const m=raw.match(/KosuKodu(?:=|%3D|[\"'\s:=]+)(\d+)/i);
+  return m?m[1]:"";
+}
+function workoutInfoUrlFromRow(rowHtml, atId=""){
+  const k=extractKosuKodu(rowHtml);
+  if(!k || !atId) return "";
+  return `${TJK}/TR/YarisSever/Info/idmanpisti/Kosu?Atkodu=${encodeURIComponent(atId)}&KosuKodu=${encodeURIComponent(k)}`;
+}
+function extractVideoUrl(rowHtml, atId=""){
+  const raw=String(rowHtml||"");
+  const links=hrefs(raw);
+  const hit=links.find(u=>/YarisVideoAt|YarisVideo|KosuKodu/i.test(u));
+  if(hit){
+    return /^https?:\/\//i.test(hit) ? hit : `${TJK}${hit.startsWith("/")?"":"/"}${hit}`;
+  }
+  const km=raw.match(/KosuKodu(?:=|%3D|[\"'\s:=]+)(\d+)/i);
+  if(km && atId){
+    return `${TJK}/TR/YarisSever/Info/YarisVideoAt/At?AtKodu=${encodeURIComponent(atId)}&KosuKodu=${encodeURIComponent(km[1])}`;
+  }
+  return "";
+}
+function getAtId(rowHtml){
+  const a=hrefs(rowHtml).join(" ");
+  const m=a.match(/(?:QueryParameter_AtId|AtKodu|Atkodu)=(\d+)/i);
+  return m?m[1]:null;
+}
+function isNR(name){return /koşmaz|kosmaz|çekildi|cekildi|start almaz/i.test(name||"")}
 
-# ============================================================
-# SAYFA AYARLARI
-# ============================================================
-
-# UI_V4_REAL_DATA_STATUS_AND_REFRESH — eski yeşil/mavi tablo stili kaldırıldı
-st.set_page_config(
-    page_title="Race Intelligence",
-    page_icon="🏇",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-# ============================================================
-# HİPODROMLAR
-# ============================================================
-
-# Worker V1'de tanımlı şehirler.
-# Arayüzde bunların tamamı gösterilmez; aşağıda seçilen tarih
-# için gerçekten programı olanlar otomatik olarak filtrelenir.
-ALL_CITIES = [
-    "Ankara",
-    "Kocaeli",
-    "İstanbul",
-    "Bursa",
-    "İzmir",
-    "Adana",
-    "Elazığ",
-    "Diyarbakır",
-    "Şanlıurfa",
-    "Antalya",
-]
-
-
-# ============================================================
-# ANALİZ AĞIRLIKLARI
-# ============================================================
-
-DEFAULT_WEIGHTS = {
-    "Pist / Mesafe": 22,
-    "Ortak Rakip": 18,
-    "Sınıf / HP": 14,
-    "Güncel Form": 19,
-    "Kilo": 12,
-    "Derece": 8,
-    "Galop / Tempo": 5,
-    "Ham Hız": 3,
+function parseKayitlarTable(html){
+  const ts=tables(html); const races=[];
+  for(const t of ts){
+    let hi=-1;
+    for(let i=0;i<t.rows.length;i++){
+      if(t.rows[i].some(c=>/At İsmi|Horse Name/i.test(c))){hi=i;break}
+    }
+    if(hi<0)continue;
+    const headers=t.rows[hi].map(x=>x.trim());
+    const ix=(re)=>headers.findIndex(x=>re.test(x));
+    const noI=ix(/^S$|^R$/i), nameI=ix(/At İsmi|Horse Name/i), ageI=ix(/Yaş|Age/i),
+          originI=ix(/Orijin|Origin/i), weightI=ix(/Sıklet|Weight/i), ownerI=ix(/Sahip|Owner/i),
+          trainerI=ix(/Antrenörü|Trainer/i), hpI=ix(/^HP$|^RT$/i), formI=ix(/Son 6|Last 6/i),
+          lastI=ix(/Son Koşu Tarihi|Last Race Date/i);
+    if(nameI<0)continue;
+    const horses=[];
+    for(let i=hi+1;i<t.rows.length;i++){
+      const r=t.rows[i], raw=t.rawRows?.[i]||"";
+      if(!r[nameI])continue;
+      const name=clean(r[nameI]).replace(/\s+Image.*$/i,"").trim();
+      if(!name || /At İsmi|Horse Name/i.test(name))continue;
+      if(noI>=0 && !/^\d+$/.test((r[noI]||"").trim()))continue;
+      const atId=getAtId(raw);
+      horses.push({no:noI>=0?r[noI]:"",name,age:ageI>=0?r[ageI]:"",origin:originI>=0?r[originI]:"",weight:weightI>=0?r[weightI]:"",owner:ownerI>=0?r[ownerI]:"",trainer:trainerI>=0?r[trainerI]:"",hp:hpI>=0?r[hpI]:"",last6:formI>=0?r[formI]:"",lastDate:lastI>=0?r[lastI]:"",atId});
+    }
+    if(!horses.length)continue;
+    const before=clean(html.slice(Math.max(0,t.start-9000),t.start));
+    const dm=[...before.matchAll(/(\d{3,4})\s*(?:m)?\s+(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)/gi)];
+    const last=dm.length?dm[dm.length-1]:null;
+    const meta={distance:last?Number(last[1]):null,surface:last?last[2]:"",raw:before.slice(-1800)};
+    races.push({no:races.length+1,time:"",meta,horses});
+  }
+  return races;
 }
 
-WEIGHT_KEYS = {
-    "Pist / Mesafe": "w_pist",
-    "Ortak Rakip": "w_ortak",
-    "Sınıf / HP": "w_sinif",
-    "Güncel Form": "w_form",
-    "Kilo": "w_kilo",
-    "Derece": "w_derece",
-    "Galop / Tempo": "w_galop",
-    "Ham Hız": "w_hiz",
+// TJK'nin Kayıtlar sayfası bazı günlerde <table> yapısını eksik/alışılmadık
+// biçimde döndürebiliyor. Bu fallback doğrudan bütün <tr> satırlarını ve
+// "Koşu" başlık bloklarını tarar. Böylece 200 dönen ama klasik table parser'ının
+// 0 yarış verdiği sayfalarda da program çıkarılır.
+function parseKayitlarRobust(html){
+  const rows=[...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)].map(m=>({pos:m.index,html:m[0],cells:cells(m[0])}));
+  const horseRows=[];
+  for(const x of rows){
+    const c=x.cells; if(c.length<7)continue;
+    const noIdx=c.findIndex(v=>/^\d{1,2}$/.test(String(v).trim()));
+    const nameIdx=c.findIndex((v,i)=>i>noIdx && /[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'-]{2,}/i.test(v) && !/^(At İsmi|Horse Name)$/i.test(v));
+    if(noIdx<0||nameIdx<0)continue;
+    const name=clean(c[nameIdx]).replace(/\s+Image.*$/i,"").replace(/\s+\(Koşmaz\)$/i,"").trim();
+    if(!name||/^(Koşu|Ikramiye|Yetistirici|At Sahibi|S)$/i.test(name))continue;
+    const raw=x.html;
+    const atId=getAtId(raw);
+    // TJK Kayıtlar standart kolon sırası: S, At İsmi, Yaş, Orijin, Sıklet, Sahip, Antrenörü, HP, Son 6 Y., Son Koşu Tarihi
+    horseRows.push({pos:x.pos,html:raw,cells:c,no:c[noIdx],name,atId});
+  }
+  if(!horseRows.length)return [];
+
+  const text=clean(html);
+  const headerRe=/S\s+At İsmi\s+Yaş\s+Orijin(?:\([^)]*\))?\s+Sıklet\s+Sahip\s+Antrenörü\s+HP\s+Son 6 Y\.\s+Son Koşu Tarihi/gi;
+  const headers=[...text.matchAll(headerRe)];
+  const headingRe=/<(?:h[1-6]|div|span|strong|b)\b[^>]*>\s*Koşu\s*<\/(?:h[1-6]|div|span|strong|b)>/gi;
+  const heads=[...html.matchAll(headingRe)].map(m=>m.index);
+
+  // Önce başlık bloklarını kullan. Her blok, kendisinden sonraki at satırlarına aittir.
+  const boundaries=heads.length?heads:[0];
+  const races=[];
+  for(let bi=0;bi<boundaries.length;bi++){
+    const from=boundaries[bi], to=bi+1<boundaries.length?boundaries[bi+1]:Infinity;
+    const hs=horseRows.filter(r=>r.pos>=from&&r.pos<to);
+    if(!hs.length)continue;
+    const seg=clean(html.slice(from,to===Infinity?html.length:to));
+    const dm=seg.match(/(\d{3,4})\s*(?:m\s*)?(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)\b/i);
+    const classM=seg.match(/((?:ŞARTLI|KV-?\d+|Handikap\s*\d+|Maiden)[^\n]{0,180})/i);
+    const timeM=seg.match(/\b(\d{1,2})[:.](\d{2})\b/);
+    const horses=hs.map(r=>{const c=r.cells;return {
+      no:r.no,name:r.name,age:c[2]||"",origin:c[3]||"",weight:c[4]||"",owner:c[5]||"",trainer:c[6]||"",hp:c[7]||"",last6:c[8]||"",lastDate:c[9]||"",atId:r.atId
+    }}).filter(h=>h.name);
+    races.push({no:races.length+1,time:timeM?`${timeM[1].padStart(2,'0')}:${timeM[2]}`:"",meta:{distance:dm?Number(dm[1]):null,surface:dm?dm[2]:"",raceName:classM?classM[1].trim():"",raw:seg.slice(0,1800)},horses});
+  }
+  if(races.length)return races;
+
+  // Son fallback: bütün atları tek program bloğunda döndür; frontend en azından
+  // yarış programını ve AtId'leri kaybetmesin.
+  const horses=horseRows.map(r=>{const c=r.cells;return {no:r.no,name:r.name,age:c[2]||"",origin:c[3]||"",weight:c[4]||"",owner:c[5]||"",trainer:c[6]||"",hp:c[7]||"",last6:c[8]||"",lastDate:c[9]||"",atId:r.atId};});
+  return [{no:1,time:"",meta:{distance:null,surface:"",raceName:"",raw:text.slice(0,1800)},horses}];
 }
 
-for _criterion, _default in DEFAULT_WEIGHTS.items():
-    if WEIGHT_KEYS[_criterion] not in st.session_state:
-        st.session_state[WEIGHT_KEYS[_criterion]] = _default
+function parseKayitlar(html){
+  const a=parseKayitlarTable(html);
+  if(a.length)return a;
+  return parseKayitlarRobust(html);
+}
 
-def current_weights():
+// Günlük Yarış Programı parserı: Kayıtlar sayfasındaki geniş/deklare listesinden
+// farklı olarak TJK'nın günlük programında o gün gerçekten koşacak atları alır.
+function balancedTables(html){
+  const re=/<\/?table\b[^>]*>/gi, stack=[], out=[]; let m;
+  while((m=re.exec(html))){
+    const tag=m[0];
+    if(/^<table\b/i.test(tag)) stack.push({start:m.index,depth:stack.length});
+    else if(stack.length){
+      const x=stack.pop(); out.push({start:x.start,end:re.lastIndex,depth:x.depth,html:html.slice(x.start,re.lastIndex)});
+    }
+  }
+  return out;
+}
+function classText(rowHtml, cls){
+  const re=new RegExp('<[^>]*class=["\\\'][^"\\\']*'+cls+'[^"\\\']*["\\\'][^>]*>([\\s\\S]*?)<\\/[^>]+>','i');
+  const m=rowHtml.match(re); return m?clean(m[1]):'';
+}
+function extractRaceHeaders(html){
+  const out=[];
+  const txt=clean(html).replace(/\s+/g,' ');
+  const re=/(\d{1,2})\.\s*Koşu\s+([0-2]?\d(?:[:.]|\.)[0-5]\d)([\s\S]{0,900}?)(?=\d{1,2}\.\s*Koşu\s+[0-2]?\d(?:[:.]|\.)[0-5]\d|Forma\s+N\s+At İsmi|$)/gi;
+  let m;
+  while((m=re.exec(txt))){
+    const no=+m[1], time=normTime(m[2]);
+    let detail=String(m[3]||'').trim();
+    detail=detail.replace(/^[-–—:;,]+/,'').trim();
+    const stop=detail.search(/\s+(?:İkramiye|At Sahibi Primi|Yetiştiricilik Primi|Forma\s+N\s+At İsmi|N\s+At İsmi)\b/i);
+    if(stop>=0) detail=detail.slice(0,stop).trim();
+    const dm=detail.match(/(\d{3,4})\s*(?:m\s*)?(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)\b/i);
+    if(dm){
+      const eid=detail.match(/E\.?İ\.?D\.?\s*[:：]\s*([0-9.]+)/i);
+      out.push({no,time,detail:detail.slice(0,650),distance:Number(dm[1]),surface:dm[2],eid:eid?eid[1]:''});
+    } else {
+      out.push({no,time,detail:detail.slice(0,650)});
+    }
+  }
+  const seen=new Set();
+  return out.filter(x=>{if(seen.has(x.no))return false;seen.add(x.no);return true;}).sort((a,b)=>a.no-b.no);
+}
+
+function cleanJockey(v){
+  let x=String(v??'').replace(/\s+/g,' ').trim();
+  if(!x)return '';
+  x=x.replace(/\s*(?:raporlu|rapor(?:lu)? olduğundan|rapor nedeniyle|raporlu olduğundan dolayı|jokey değişikliği.*)$/i,'').trim();
+  x=x.replace(/\s+raporlu.*$/i,'').trim();
+  return x;
+}
+
+function parseDaily(html){
+  const blocks=balancedTables(html), candidates=[];
+  for(const b of blocks){
+    if(!/gunluk-GunlukYarisProgrami-AtAdi/i.test(b.html))continue;
+    const rs=[...b.html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)].map(m=>m[0]);
+    let headerCells=null;
+    for(const raw of rs){
+      const c=cells(raw);
+      if(c.some(x=>/At İsmi/i.test(x)) && c.some(x=>/^HP$/i.test(x)) && c.some(x=>/Son 6/i.test(x))){headerCells=c;break;}
+    }
+    if(!headerCells)continue;
+    const ix=(re)=>headerCells.findIndex(x=>re.test(String(x).trim()));
+    const noI=ix(/^N$|^No$|^S$/i), nameI=ix(/At İsmi|Horse Name/i), ageI=ix(/^Yaş$|^Age$/i),
+      originI=ix(/Orijin|Origin/i), weightI=ix(/Sıklet|Weight/i), jockeyI=ix(/^Jokey$|^Jockey$/i),
+      ownerI=ix(/^Sahip$|^Owner$/i), trainerI=ix(/Antrenör|Trainer/i), stI=ix(/^St$|^Start$/i),
+      hpI=ix(/^HP$|^RT$/i), formI=ix(/Son 6|Last 6/i), kgsI=ix(/^KGS$/i), s20I=ix(/^s20$/i), bestI=ix(/En İyi D\.|Best Time/i), oddsI=ix(/^Gny$|Odds/i), agfI=ix(/^AGF$|Favorite/i), workoutI=ix(/^İdm$|^Idm$|Workout/i), lastI=ix(/Son Koşu Tarihi|Last Race Date/i);
+    if(nameI<0||noI<0)continue;
+    const parsed=[];
+    for(const raw of rs){
+      if(!/gunluk-GunlukYarisProgrami-AtAdi/i.test(raw))continue;
+      const c=cells(raw); const rc=rawCells(raw); if(!c.length)continue;
+      const no=(c[noI]||'').match(/^(\d{1,2})$/)?.[1]||''; if(!no)continue;
+      let name=classText(raw,'gunluk-GunlukYarisProgrami-AtAdi').replace(/\s*Image.*$/i,'').trim();
+      if(!name && c[nameI]) name=String(c[nameI]).replace(/\s*Image.*$/i,'').trim();
+      if(!name)continue;
+      parsed.push({no,name,age:(c[ageI]||'').trim(),origin:(c[originI]||'').trim(),weight:(c[weightI]||'').trim(),
+        jockey:cleanJockey((c[jockeyI]||'').trim()),owner:(c[ownerI]||'').trim(),trainer:(c[trainerI]||'').trim(),
+        st:(c[stI]||'').trim(),hp:(c[hpI]||'').trim(),last6:(c[formI]||'').trim(),
+        lastDate:lastI>=0?(c[lastI]||'').trim():'',kgs:kgsI>=0?(c[kgsI]||'').trim():'',s20:s20I>=0?(c[s20I]||'').trim():'',bestTime:bestI>=0?((c[bestI]||'').match(/\b\d+\.\d{2}\.\d{2}\b/)||[])[0]||'':'',bestInfo:bestI>=0?(attrDeep(rc[bestI],['title','data-title','data-content','data-original-title','aria-label'])||((c[bestI]||'').replace(/^[\s\S]*?\b\d+\.\d{2}\.\d{2}\b/,'').trim())):'',bestCity:bestI>=0?attrDeep(rc[bestI],['data-city','data-hipodrom']):'',bestDate:bestI>=0?attrDeep(rc[bestI],['data-date','data-tarih']):'',bestDistance:bestI>=0?attrDeep(rc[bestI],['data-distance','data-mesafe']):'',odds:oddsI>=0?(c[oddsI]||'').trim():'',agf:agfI>=0?(c[agfI]||'').trim():'',workout:workoutI>=0?(c[workoutI]||'').trim():'',atId:getAtId(raw)});
+    }
+    if(parsed.length<2)continue;
+    const beforeRaw=html.slice(Math.max(0,b.start-35000),b.start);
+    const before=clean(beforeRaw).replace(/\s+/g,' ');
+    const markerRe=/(\d{1,2}\.\s*Koşu)\s+([0-2]?\d(?:[:.]|\.)[0-5]\d)/gi;
+    const matches=[...before.matchAll(markerRe)];
+    const head=matches.length?matches[matches.length-1]:null;
+    const time=head?normTime(head[2]):'';
+    let raceHeader='';
+    if(head){
+      const tail=before.slice(head.index+head[0].length);
+      const stop=tail.search(/\s+(?:İkramiye|At Sahibi Primi|Yetiştiricilik Primi|N\s+At İsmi|Forma\s+N\s+At İsmi)/i);
+      raceHeader=tail.slice(0,stop>=0?stop:1800);
+    }
+    raceHeader=clean(raceHeader).replace(/\s+/g,' ').replace(/^[,;:\-]+|[,;:\-]+$/g,'').trim();
+    const dm=[...raceHeader.matchAll(/(\d{3,4})\s*(?:m)?\s*(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)\b/gi)];
+    const last=dm.length?dm[dm.length-1]:null;
+    const surface=last?last[2]:'';
+    const distance=last?Number(last[1]):null;
+    const eid=raceHeader.match(/E\.?İ\.?D\.?\s*[:：]\s*([0-9.]+)/i);
+    const raceName=raceHeader;
+    candidates.push({start:b.start,depth:b.depth,horses:parsed,meta:{distance,surface,raceName,detail:raceHeader,eid:eid?eid[1]:'',raw:before.slice(-5000)},time,name:raceName});
+  }
+  const usable=candidates.filter(c=>c.horses.length>=2&&c.horses.length<=35);
+  const maxDepth=usable.length?Math.max(...usable.map(c=>c.depth)):0;
+  const pool=(usable.filter(c=>c.depth===maxDepth).length?usable.filter(c=>c.depth===maxDepth):usable).sort((a,b)=>a.start-b.start);
+  const headerList=extractRaceHeaders(html);
+  const races=[];
+  for(const c of pool){
+    const sig=c.horses.map(h=>normName(h.name)).join('|');
+    if(!sig||races.some(r=>r._sig===sig))continue;
+    races.push({...c,_sig:sig});
+  }
+  return races.sort((a,b)=>a.start-b.start).map((r,i)=>{
+    const hh=headerList[i]||{detail:"",time:""};
+    const detail=hh.detail||r.meta?.detail||r.meta?.raceName||'';
+    const dm=detail.match(/(\d{3,4})\s*(?:m\s*)?(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)\b/i);
+    const eid=detail.match(/E\.?İ\.?D\.?\s*[:：]\s*([0-9.]+)/i);
+    const meta={...r.meta,detail,raceName:detail,time:hh.time||r.time||'',distance:dm?Number(dm[1]):(r.meta?.distance||null),surface:dm?dm[2]:(r.meta?.surface||''),eid:eid?eid[1]:(r.meta?.eid||'')};
+    return {no:i+1,time:meta.time,name:detail||r.name||`Koşu ${i+1}`,meta,horses:r.horses};
+  });
+}
+
+
+function normalizeHistorySurface(v){
+  let t=clean(v||'').replace(/\s+/g,' ').trim();
+  if(!t) return '';
+  // TJK can render the Pist cell as text, as an image/badge title, or as
+  // separated DOM pieces such as "K" + "Normal". Normalize all of these
+  // representations to the original TJK-style value without inventing it.
+  const direct=t.match(/\b(K|Ç|S)\s*[:\-]?\s*(Normal|Nemli|Ağır|Yumuşak|Çok\s+Yumuşak|Islak|Kum|Çim|Sentetik)\b/i);
+  if(direct) return `${direct[1].toUpperCase()}:${direct[2]}`;
+  const compact=t.replace(/[\s|/\\>_<]+/g,' ').trim();
+  const compactM=compact.match(/\b(K|Ç|S)\s+(Normal|Nemli|Ağır|Yumuşak|Çok\s+Yumuşak|Islak|Kum|Çim|Sentetik)\b/i);
+  if(compactM) return `${compactM[1].toUpperCase()}:${compactM[2]}`;
+  if(/^(Kum)$/i.test(t)) return 'Kum';
+  if(/^(Çim)$/i.test(t)) return 'Çim';
+  if(/^(Sentetik)$/i.test(t)) return 'Sentetik';
+  if(/^(Fiber\s+Sand|Turf|Polytrack)$/i.test(t)) return t;
+  return '';
+}
+function extractSurfaceValue(raw){
+  const direct=normalizeHistorySurface(raw); if(direct)return direct;
+  const source=String(raw||'');
+  const attrs=[...source.matchAll(/(?:title|alt|data-pist|data-surface|data-value|value|class|src|id)\s*=\s*["']([^"']+)["']/gi)].map(m=>m[1]);
+  for(const a of attrs){
+    const got=normalizeHistorySurface(a); if(got)return got;
+    const z=String(a).replace(/[_\-\/]+/g,' ').trim();
+    if(/\b(?:K|Kum)\b/i.test(z)&&/\b(?:Normal|Nemli|Ağır|Yumuşak|Kum)\b/i.test(z))return `K:${(z.match(/Normal|Nemli|Ağır|Yumuşak|Kum/i)||['Kum'])[0]}`;
+    if(/\b(?:Ç|Cim|Çim)\b/i.test(z)&&/\b(?:Normal|Ağır|Yumuşak|Çim|Cim)\b/i.test(z))return `Ç:${(z.match(/Normal|Ağır|Yumuşak|Çim|Cim/i)||['Çim'])[0].replace(/^Cim$/i,'Çim')}`;
+    if(/\b(?:S|Sentetik)\b/i.test(z)&&/\b(?:Normal|Sentetik)\b/i.test(z))return `S:${(z.match(/Normal|Sentetik/i)||['Sentetik'])[0]}`;
+  }
+  // TJK sometimes stores the Pist as an icon/background asset where the
+  // human-readable value is only encoded in class/src/id names (e.g. kum, cim,
+  // normal). Read that upstream marker rather than inventing a value.
+  const marker=String(source).replace(/[_.\-\/\\]+/g,' ').replace(/%20/gi,' ').replace(/\s+/g,' ').trim();
+  if(/(?:pist|track|surface|zemin|kum|sand)/i.test(marker) && /(?:kum|sand)/i.test(marker)) return 'Kum';
+  if(/(?:pist|track|surface|zemin|cim|çim|turf)/i.test(marker) && /(?:cim|çim|turf)/i.test(marker)) return 'Çim';
+  if(/(?:pist|track|surface|zemin|sentetik|synthetic|polytrack)/i.test(marker) && /(?:sentetik|synthetic|polytrack)/i.test(marker)) return 'Sentetik';
+  const m=clean(source).match(/\b(K|Ç|S)\s*[:\-]?\s*(Normal|Nemli|Ağır|Yumuşak|Çok\s+Yumuşak|Islak|Kum|Çim|Sentetik)\b/i);
+  if(m)return `${m[1].toUpperCase()}:${m[2]}`;
+  const plain=clean(source).match(/\b(Kum|Çim|Sentetik|Fiber\s+Sand|Turf|Polytrack)\b/i);
+  return plain?plain[1]:'';
+}
+
+function parseExactTjkHistoryRows(html){
+  const rows=[...String(html||"").matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)];
+  const dateRe=/^\d{2}[./]\d{2}[./]\d{4}$/;
+  const timeRe=/^\d{1,2}\.\d{2}\.\d{2}$/;
+  const distRe=/^\d{3,4}$/;
+  const out=[];
+  const n=v=>String(v||"").replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
+  for(const m of rows){
+    const raw=m[0], c=cells(raw).map(n), rc=rawCells(raw);
+    // V44: Pist icon/class/source bilgisi de doğrudan 4. hücreden okunur.
+    if(c.length<19) continue;
+    if(!dateRe.test(c[0]) || !distRe.test(c[2]) || !timeRe.test(c[5])) continue;
+    // Pist is the 4th official TJK history column. Read the exact cell first,
+    // then raw cell attributes/HTML, then the whole row. Never infer it.
+    // V50: V46'nın tüm alan eşleşmelerini aynen koru. Sadece Pist boşsa,
+    // resmi TJK başlık satırından gerçek Pist sütununu bulup aynı satırdan oku.
+    let surface=normalizeHistorySurface(c[3])||extractSurfaceValue(rc[3])||extractSurfaceValue(raw);
+    if(!surface && rc[3]) surface=extractSurfaceValue(rc[3]);
+    if(!surface){
+      const whole=n(clean(raw));
+      const sm=whole.match(/\b(?:K|Ç|S)\s*[:\-]?\s*(?:Normal|Nemli|Ağır|Yumuşak|Çok\s+Yumuşak|Islak|Kum|Çim|Sentetik)(?:\s*[0-9]+(?:[.,][0-9]+)?)?|\b(?:Kum|Çim|Sentetik|Fiber\s+Sand|Turf|Polytrack)\b/i);
+      if(sm) surface=normalizeHistorySurface(sm[0])||sm[0].trim();
+    }
+    if(!surface){
+      // TJK bazı sürümlerde Pist bilgisini hücre metni yerine ikon/badge
+      // attribute'u ile verir. Başlıkta Pist sütununu tespit edip o index'i
+      // kullan; diğer hiçbir alanın indexini değiştirme.
+      const rowHtml=String(raw||'');
+      const allRows=[...String(html||'').matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)];
+      let surfaceIndex=-1;
+      for(const hr of allRows){
+        const hc=cells(hr[0]).map(n);
+        if(hc.some(v=>/^Pist$|^Surface$/i.test(v))){
+          surfaceIndex=hc.findIndex(v=>/^Pist$|^Surface$/i.test(v));
+          if(surfaceIndex>=0) break;
+        }
+      }
+      if(surfaceIndex>=0){
+        const rr=cells(rowHtml).map(n), rrc=rawCells(rowHtml);
+        surface=normalizeHistorySurface(rr[surfaceIndex])||extractSurfaceValue(rrc[surfaceIndex])||'';
+      }
+    }
+    out.push({
+      date:c[0], city:c[1], distance:c[2], surface, place:c[4], time:c[5],
+      weight:c[6], equipment:c[7], jockey:c[8], post:c[9], odds:c[10],
+      group:c[11], raceName:c[12], className:c[13], trainer:c[14], owner:c[15],
+      hp:c[16], prize:c[17], s20:c[18], videoUrl:extractVideoUrl(raw,q.get("atId")||""), kosuKodu:extractKosuKodu(raw), workoutInfoUrl:workoutInfoUrlFromRow(raw,q.get("atId")||"")
+    });
+  }
+  const seen=new Set();
+  return out.filter(x=>{const k=[x.date,x.city,x.distance,x.time,x.place].join("|");if(seen.has(k))return false;seen.add(k);return true;})
+    .sort((a,b)=>parseDmyForWorker(b.date)-parseDmyForWorker(a.date));
+}
+
+function enrichHistorySurfaceFromText(html, arr){
+  const txt=normForHistory(clean(html||''));
+  if(!txt || !Array.isArray(arr)) return arr||[];
+  const surf=String.raw`(?:(?:K|Ç|S)\s*[:\-]?\s*(?:Normal|Nemli|Ağır|Yumuşak|Çok\s+Yumuşak|Islak|Kum|Çim|Sentetik)(?:\s*[0-9]+(?:[.,][0-9]+)?)?|Kum|Çim|Sentetik|Fiber\s+Sand|Turf|Polytrack)`;
+  const cities=`Ankara|Bursa|Kocaeli|İstanbul|İzmir|Adana|Elazığ|Diyarbakır|Şanlıurfa|Antalya`;
+  return arr.map(x=>{
+    if(String(x.surface||'').trim()) return x;
+    const d=String(x.date||'').replace(/[.\/]/g,'[./]');
+    const rg=new RegExp(d+`\\s+(${cities})\\s+(${String(x.distance||'').replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')})\\s+(${surf})\\s+\\d{1,2}\\s+\\d{1,2}\\.\\d{2}\\.\\d{2}`,'i');
+    const m=txt.match(rg);
+    return m?{...x,surface:normalizeHistorySurface(m[3])||m[3].trim()}:x;
+  });
+}
+function normForHistory(s){return String(s||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim()}
+
+function parseHistory(html){
+  const exact=enrichHistorySurfaceFromText(html,parseExactTjkHistoryRows(html)).map(x=>({...x,surface:normalizeHistorySurface(x.surface)||x.surface}));
+  if(exact.length) return exact.slice(0,1000);
+  const rows=[...String(html||'').matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)]
+    .map(m=>({raw:m[0],c:cells(m[0])}));
+  const dateRe=/^\d{2}[./]\d{2}[./]\d{4}$/;
+  const timeRe=/^\d{1,2}\.\d{2}\.\d{2}$/;
+  const distRe=/^\d{3,4}$/;
+  const surfaceRe=/^(?:K:Normal|K:Kum|Ç:Normal|Ç:Çim|S:Normal|S:Sentetik|Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)/i;
+  const cityRe=/^(?:Ankara|İstanbul|Kocaeli|Bursa|İzmir|Adana|Elazığ|Diyarbakır|Şanlıurfa|Antalya)$/i;
+  const out=[];
+  const norm=v=>String(v||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();
+  const key=v=>norm(v).toLocaleLowerCase('tr-TR').replace(/[^a-z0-9çğıöşü]/gi,'');
+  const findHeaderIndex=(h,tests)=>{
+    for(let i=0;i<h.length;i++){
+      const k=key(h[i]);
+      if(tests.some(t=>k===t || k.includes(t))) return i;
+    }
+    return -1;
+  };
+
+  // TJK resmi geçmiş koşu tablosunun standart sırası:
+  // Tarih | Şehir | Msf | Pist | S | Derece | Sıklet | Takı | Jokey | St |
+  // Gny | Grup | K. No-K. Adı | Kcins | Ant. | Sahip | HP | Ikramiye | S20
+  const positional={
+    date:0, city:1, distance:2, surface:3, place:4, time:5, weight:6,
+    equipment:7, jockey:8, post:9, odds:10, group:11, race:12,
+    className:13, trainer:14, owner:15, hp:16, prize:17, s20:18
+  };
+
+  // 1) Header-aware parser. Match the official header loosely, then use both
+  // header positions and the known TJK positional layout as fallbacks.
+  for(let hi=0;hi<rows.length;hi++){
+    const h=rows[hi].c||[];
+    const hk=h.map(key);
+    const hasDate=hk.some(x=>x==='tarih'||x.includes('tarih'));
+    const hasCity=hk.some(x=>x==='şehir'||x==='sehir'||x.includes('şehir')||x.includes('sehir'));
+    const hasDist=hk.some(x=>x==='msf'||x==='mesafe'||x.includes('msf'));
+    const hasTime=hk.some(x=>x==='derece'||x.includes('derece'));
+    if(!hasDate||!hasCity||!hasDist||!hasTime) continue;
+
+    const I={
+      date:findHeaderIndex(h,['tarih','date']),
+      city:findHeaderIndex(h,['şehir','sehir','city']),
+      distance:findHeaderIndex(h,['msf','mesafe','distance']),
+      surface:findHeaderIndex(h,['pist','track']),
+      place:findHeaderIndex(h,['s','sıra','sira','place']),
+      time:findHeaderIndex(h,['derece','finishtime']),
+      weight:findHeaderIndex(h,['sıklet','siklet','weight']),
+      equipment:findHeaderIndex(h,['takı','taki','equipment']),
+      jockey:findHeaderIndex(h,['jokey','jockey']),
+      post:findHeaderIndex(h,['st','start']),
+      odds:findHeaderIndex(h,['gny','win']),
+      group:findHeaderIndex(h,['grup','group']),
+      race:findHeaderIndex(h,['kno-kadı','kno-kadi','kosuno-kosoadı','kosunokosoadi','racename','koşuadı','kosuadi']),
+      className:findHeaderIndex(h,['kcins','race type']),
+      trainer:findHeaderIndex(h,['ant','antrenör','antrenor','trainer']),
+      owner:findHeaderIndex(h,['sahip','owner']),
+      hp:findHeaderIndex(h,['hp','rt']),
+      prize:findHeaderIndex(h,['ikramiye','prize']),
+      s20:findHeaderIndex(h,['s20','l20'])
+    };
+
+    const get=(r,k)=>{
+      const i=I[k]>=0?I[k]:positional[k];
+      return i>=0&&i<r.length?norm(r[i]):'';
+    };
+
+    for(let ri=hi+1;ri<rows.length;ri++){
+      const r=rows[ri].c||[];
+      if(r.length<6) continue;
+      const date=get(r,'date') || r.find(c=>dateRe.test(norm(c))) || '';
+      const distance=get(r,'distance') || r.find(c=>distRe.test(norm(c)) && Number(c)>=1000 && Number(c)<=5000) || '';
+      const time=get(r,'time') || r.find(c=>timeRe.test(norm(c))) || '';
+      if(!dateRe.test(norm(date)) || !distRe.test(norm(distance)) || !timeRe.test(norm(time))) continue;
+
+      const city=get(r,'city') || r.find(c=>cityRe.test(norm(c))) || '';
+      const surface=normalizeHistorySurface(get(r,'surface')) || r.map(norm).map(normalizeHistorySurface).find(Boolean) || extractSurfaceValue((rows[ri]&&rows[ri].raw)||'') || '';
+      const place=get(r,'place');
+      const weight=get(r,'weight');
+      const jockey=get(r,'jockey');
+      const raceName=get(r,'race') || get(r,'className') || get(r,'group');
+      const hp=get(r,'hp');
+
+      out.push({
+        date:norm(date), city:norm(city), distance:norm(distance), surface:norm(surface),
+        place:norm(place), time:norm(time), weight:norm(weight),
+        equipment:get(r,'equipment'), jockey:norm(jockey), post:get(r,'post'),
+        odds:get(r,'odds'), group:get(r,'group'), raceName:norm(raceName),
+        className:get(r,'className'), trainer:get(r,'trainer'), owner:get(r,'owner'),
+        hp:norm(hp), prize:get(r,'prize'), s20:get(r,'s20'), videoUrl:extractVideoUrl(rows[ri]&&rows[ri].raw, ''), kosuKodu:extractKosuKodu(rows[ri]&&rows[ri].raw), workoutInfoUrl:workoutInfoUrlFromRow(rows[ri]&&rows[ri].raw, '')
+      });
+    }
+    if(out.length) break;
+  }
+
+  // 2) Row-independent parser with positional fallbacks.
+  if(!out.length){
+    for(const z of rows){
+      const c=(z.c||[]).map(norm);
+      if(c.length<6) continue;
+      const date=c.find(x=>dateRe.test(x))||'';
+      const time=c.find(x=>timeRe.test(x))||'';
+      const distance=c.find(x=>distRe.test(x) && Number(x)>=1000 && Number(x)<=5000)||'';
+      if(!date||!time||!distance) continue;
+      const ti=c.indexOf(time), di=c.indexOf(distance);
+      const city=c.find(x=>cityRe.test(x))||'';
+      const surface=c.map(normalizeHistorySurface).find(Boolean) || extractSurfaceValue(z.raw) || '';
+      let place=(c[4]&&/^\d{1,2}$/.test(c[4]))?c[4]:'';
+      if(!place){
+        const nums=c.filter(x=>/^\d{1,2}$/.test(x)&&Number(x)<=30);
+        place=nums[0]||'';
+      }
+      const weight=c.find(x=>/^\d{2}(?:[,.]\d)?$/.test(x)&&Number(x)>=40&&Number(x)<=80)||'';
+      const jockey=c[8]||'';
+      const raceName=c[12]||c[13]||'';
+      const hp=c[16]||'';
+      out.push({
+        date,city,distance,surface,place,time,weight,equipment:c[7]||'',jockey,
+        post:c[9]||'',odds:c[10]||'',group:c[11]||'',raceName,
+        className:c[13]||'',trainer:c[14]||'',owner:c[15]||'',hp,s20:c[18]||'',videoUrl:extractVideoUrl(z.raw,''), kosuKodu:extractKosuKodu(z.raw), workoutInfoUrl:workoutInfoUrlFromRow(z.raw,'')
+      });
+    }
+  }
+
+  // 3) Last-resort text scan. Only real upstream values are accepted.
+  if(!out.length){
+    const txt=norm(clean(html));
+    const re=/(\d{2}[./]\d{2}[./]\d{4})\s+([^\s]+)\s+(\d{3,4})\s+((?:K|Ç|S)\s*[:\-]?\s*(?:Normal|Nemli|Ağır|Yumuşak|Çok\s+Yumuşak|Islak|Kum|Çim|Sentetik)(?:\s+[0-9]+(?:[.,][0-9]+)?)?|Kum|Çim|Sentetik|Fiber\s+Sand|Turf|Polytrack)\s+(\d{1,2})\s+(\d{1,2}\.\d{2}\.\d{2})\s+(\d{2}(?:[,.]\d)?)/gi;
+    let m;
+    while((m=re.exec(txt))){
+      const city=m[2], surface=m[4];
+      if(!cityRe.test(city)&&!/^[A-Za-zÇĞİÖŞÜçğıöşü-]+$/.test(city)) continue;
+      out.push({date:m[1],city,distance:m[3],surface,place:m[5],time:m[6],weight:m[7],
+        equipment:'',jockey:'',post:'',odds:'',group:'',raceName:'',className:'',
+        trainer:'',owner:'',hp:'',prize:'',s20:'',videoUrl:''});
+    }
+  }
+
+  const seen=new Set();
+  return out.filter(x=>{
+    const k=[x.date,x.city,x.distance,x.time,x.place].join('|');
+    if(seen.has(k)) return false;
+    seen.add(k); return true;
+  }).sort((a,b)=>parseDmyForWorker(b.date)-parseDmyForWorker(a.date)).slice(0,1000);
+}
+
+// =========================================================
+// SINIF / KALITE MODULU V1 - SERVER
+// Skor puanina dahil DEGILDIR. Gercek TJK gecmisinden hesaplanir.
+// =========================================================
+const CLASS_BASE={G1:100,G2:90,G3:80,A3:80,KV8:70,KV9:70,KV6:60,KV7:60,S5:50,H21:50,S4:40,H16:40,S3:30,H15:30,S2:20,H14:20,MAIDEN:10,S1:10};
+const CLASS_W=[.35,.25,.20,.10,.10];
+function classNorm(v){return String(v??'').toLocaleUpperCase('tr-TR').trim().replace(/İ/g,'I').replace(/Ş/g,'S').replace(/Ğ/g,'G').replace(/Ü/g,'U').replace(/Ö/g,'O').replace(/Ç/g,'C').replace(/[^A-Z0-9]/g,'')}
+function classCode(v){const s=classNorm(v);if(!s)return null;if(/GRUP1|G1/.test(s))return'G1';if(/GRUP2|G2/.test(s))return'G2';if(/GRUP3|G3/.test(s))return'G3';if(/A3|ACIK3/.test(s))return'A3';if(/KV-?9|KV9/.test(s))return'KV9';if(/KV-?8|KV8/.test(s))return'KV8';if(/KV-?7|KV7/.test(s))return'KV7';if(/KV-?6|KV6/.test(s))return'KV6';if(/HANDIKAP21|H21/.test(s))return'H21';if(/HANDIKAP16|H16/.test(s))return'H16';if(/HANDIKAP15|H15/.test(s))return'H15';if(/HANDIKAP14|H14/.test(s))return'H14';if(/SARTLI5|S5/.test(s))return'S5';if(/SARTLI4|S4/.test(s))return'S4';if(/SARTLI3|S3/.test(s))return'S3';if(/SARTLI2|S2/.test(s))return'S2';if(/SARTLI1|S1/.test(s))return'S1';if(/MAIDEN|MAID/.test(s))return'MAIDEN';return null;}
+function classSource(x){return x?.className||x?.raceClass||x?.raceType||x?.kcins||x?.raceName||x?.race||x?.group||''}
+function classOne(x){const code=classCode(classSource(x));const base=code?CLASS_BASE[code]:null;const m=String(x?.place??'').match(/\d+/);const pos=m?Number(m[0]):null;if(base==null||pos==null||pos<1)return null;const factor=pos===1?1:pos===2?.8:pos===3?.65:pos===4?.5:.2;return{date:x.date||'',code,base,position:pos,factor,score:Number((base*factor).toFixed(2))};}
+function classHistory(hist,targetDate=''){const ref=targetDate?new Date(targetDate+'T00:00:00').getTime():Infinity;return(Array.isArray(hist)?hist:[]).filter(x=>{const t=parseDmyForWorker(x.date);return t>0&&t<ref}).sort((a,b)=>parseDmyForWorker(b.date)-parseDmyForWorker(a.date));}
+function classAnalysis(hist,todayClass='',targetDate=''){const rows=classHistory(hist,targetDate).map(classOne).filter(Boolean);const all=rows.length?Number((rows.reduce((a,x)=>a+x.score,0)/rows.length).toFixed(2)):null;const recent=rows.slice(0,5);let weighted=null,ws=0;if(recent.length){weighted=recent.reduce((a,x,i)=>a+x.score*CLASS_W[i],0);ws=recent.reduce((a,x,i)=>a+CLASS_W[i],0);weighted=Number((weighted/ws).toFixed(2));}const hi=rows.length?rows.reduce((a,x)=>x.base>a.base?x:a,rows[0]):null;const today=classCode(todayClass),todayBase=today?CLASS_BASE[today]:null;const advantage=weighted!=null&&todayBase!=null?Number((weighted-todayBase).toFixed(2)):null;const drop=hi&&todayBase!=null?hi.base-todayBase:null;return{classQuality:all,currentClass:weighted,todayClass:today,todayBase,advantage,highestClass:hi?.code||null,highestBase:hi?.base??null,classDrop:drop!=null&&drop>=10,dropDifference:drop,validRaceCount:rows.length,recentRaceCount:recent.length,races:recent};}
+function attachClassScores(hist){return(Array.isArray(hist)?hist:[]).map(x=>{const c=classOne(x);return c?{...x,classCode:c.code,classBasePoint:c.base,classFinishMultiplier:c.factor,classScore:c.score}:x;});}
+
+function parseDmyForWorker(s){const m=String(s||'').match(/(\d{2})\.(\d{2})\.(\d{4})/);return m?new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00`).getTime():0}
+
+function workoutTrackFromRaw(raw, cellsArr){
+  const cities=['Ankara','Bursa','Kocaeli','İstanbul','İzmir','Adana','Elazığ','Diyarbakır','Şanlıurfa','Antalya'];
+  const c=(cellsArr||[]).map(x=>String(x||'').trim());
+  const direct=c.find(x=>cities.some(city=>new RegExp('^'+escReg(city)+'$','i').test(x)));
+  if(direct) return direct;
+  const rawText=String(raw||'');
+  const attrMatches=[...rawText.matchAll(/(?:title|alt|value|data-hipodrom|data-track|data-city|data-value)=\s*["']([^"']+)["']/gi)].map(m=>clean(m[1]));
+  for(const v of attrMatches){ const hit=cities.find(city=>new RegExp('^'+escReg(city)+'$','i').test(v)||new RegExp('\\b'+escReg(city)+'\\b','i').test(v)); if(hit)return hit; }
+  const txt=clean(rawText);
+  const m=txt.match(new RegExp('\\b('+cities.map(escReg).join('|')+')\\b','i'));
+  return m?m[1]:'';
+}
+function parseWorkouts(html){
+  const rows=[...String(html||'').matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)].map(m=>({raw:m[0],c:cells(m[0])}));
+  const dateRe=/^\d{2}[./]\d{2}[./]\d{4}$/;
+  const wtRe=/^\d{1,2}[.,]\d{2}$/;
+  const out=[];
+  const norm=v=>String(v||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim().replace(',','.');
+  const idxRe=(h,re)=>h.findIndex(x=>re.test(norm(x)));
+  const headerScore=h=>{let s=0;for(const re of [/At\s*No/i,/At\s*(?:Adı|İsmi|Adi|Ismi)/i,/2200(?:\s*m)?$/i,/1200(?:\s*m)?$/i,/1000(?:\s*m)?$/i,/800(?:\s*m)?$/i,/400(?:\s*m)?$/i,/İ\.?\s*Tarihi/i,/^Pist$/i,/İdman\s*Hipodromu|İ\.?\s*Hip\.?/i])if(h.some(x=>re.test(norm(x))))s++;return s;};
+  for(let hi=0;hi<rows.length;hi++){
+    const h=rows[hi].c||[]; if(headerScore(h)<6) continue;
+    const I={horse:idxRe(h,/At\s*(?:Adı|İsmi|Adi|Ismi)|Horse/i),m2200:idxRe(h,/^2200(?:\s*m)?$/i),m2000:idxRe(h,/^2000(?:\s*m)?$/i),m1800:idxRe(h,/^1800(?:\s*m)?$/i),m1600:idxRe(h,/^1600(?:\s*m)?$/i),m1400:idxRe(h,/^1400(?:\s*m)?$/i),m1200:idxRe(h,/^1200(?:\s*m)?$/i),m1000:idxRe(h,/^1000(?:\s*m)?$/i),m800:idxRe(h,/^800(?:\s*m)?$/i),m600:idxRe(h,/^600(?:\s*m)?$/i),m400:idxRe(h,/^400(?:\s*m)?$/i),m200:idxRe(h,/^200(?:\s*m)?$/i),date:idxRe(h,/İ\.?\s*Tarihi|Tarih|Date/i),surface:idxRe(h,/^Pist$|Surface/i),type:idxRe(h,/İ\.?\s*Türü|Tür|Type/i),track:idxRe(h,/İdman\s*Hipodromu|İ\.?\s*Hip\.?|Hipodrom|Track/i),status:idxRe(h,/Durum|Status/i)};
+    for(let ri=hi+1;ri<rows.length;ri++){
+      const row=rows[ri], r=row.c||[]; if(!r.length) continue;
+      const get=k=>I[k]>=0?norm(r[I[k]]):'';
+      const date=get('date')||r.find(x=>dateRe.test(norm(x)))||''; if(!dateRe.test(date)) continue;
+      const vals=['m2200','m2000','m1800','m1600','m1400','m1200','m1000','m800','m600','m400','m200'].map(k=>get(k));
+      if(!vals.some(Boolean)) continue;
+      let track=get('track')||workoutTrackFromRaw(row.raw,r);
+      let surface=get('surface')||extractSurfaceValue(row.raw);
+      let type=get('type');
+      if(!type){const tm=clean(row.raw).match(/\b(Sprint|Galop|Kenter|İdman|Sprint Galop)\b/i);if(tm)type=tm[1];}
+      out.push({horse:get('horse'),m2200:get('m2200'),m2000:get('m2000'),m1800:get('m1800'),m1600:get('m1600'),m1400:get('m1400'),m1200:get('m1200'),m1000:get('m1000'),m800:get('m800'),m600:get('m600'),m400:get('m400'),m200:get('m200'),status:get('status'),date,surface,type,track,jockey:'',videoUrl:extractVideoUrl(row.raw,'')});
+    }
+    if(out.length) return dedupeWorkouts(out);
+  }
+  for(const z of rows){
+    const c=(z.c||[]).map(norm); if(c.length<5) continue;
+    const date=c.find(x=>dateRe.test(x))||''; if(!date) continue;
+    const nums=c.filter(x=>wtRe.test(x)); if(!nums.length) continue;
+    const surface=c.find(x=>/^(?:K:Normal|K:Kum|Ç:Normal|Ç:Çim|S:Normal|S:Sentetik|Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)/i.test(x))||extractSurfaceValue(z.raw);
+    const track=workoutTrackFromRaw(z.raw,c);
+    const times=nums.map(x=>x.replace(',','.')); const fast=times.find(x=>Number(x)<30)||''; const mid=times.find(x=>Number(x)>=30&&Number(x)<70)||'';
+    out.push({horse:'',m2200:'',m2000:'',m1800:'',m1600:'',m1400:'',m1200:'',m1000:'',m800:mid,m600:'',m400:fast,m200:'',status:'',date,surface,type:'',track,jockey:'',videoUrl:extractVideoUrl(z.raw,'')});
+  }
+  if(!out.length){
+    const txt=norm(clean(html)); const dateBlock=/(\d{2}[./]\d{2}[./]\d{4})([\s\S]{0,650}?)(?=\d{2}[./]\d{2}[./]\d{4}|$)/g; let m;
+    while((m=dateBlock.exec(txt))){const vals=[...m[2].matchAll(/\b(\d{1,2}[.,]\d{2})\b/g)].map(x=>x[1].replace(',','.'));if(!vals.length)continue;const fast=vals.find(x=>Number(x)<30)||'',mid=vals.find(x=>Number(x)>=30&&Number(x)<70)||'';const surface=(m[2].match(/\b(Kum|Çim|Sentetik|Fiber Sand|Turf|Polytrack)\b/i)||[])[1]||'';const track=(m[2].match(/\b(Ankara|Bursa|Kocaeli|İstanbul|İzmir|Adana|Elazığ|Diyarbakır|Şanlıurfa|Antalya)\b/i)||[])[1]||'';if(fast||mid)out.push({horse:'',m2200:'',m2000:'',m1800:'',m1600:'',m1400:'',m1200:'',m1000:'',m800:mid,m600:'',m400:fast,m200:'',status:'',date:m[1],surface,type:'',track,jockey:'',videoUrl:''});}
+  }
+  return dedupeWorkouts(out);
+}
+
+async function fetchWorkoutsFromHistory(atId,horse,history){
+  const urls=[]; const seen=new Set();
+  for(const h of (Array.isArray(history)?history:[]).slice(0,12)){
+    const u=h?.workoutInfoUrl||"";
+    if(u && !seen.has(u)){seen.add(u);urls.push(u);}
+  }
+  if(!urls.length) return [];
+  const all=[];
+  for(const url of urls){
+    try{
+      const r=await fetchT(url);
+      if(r.status>=400 || !r.text) continue;
+      let parsed=parseWorkouts(r.text);
+      if(parsed.some(x=>x.horse)){
+        const hn=normName(horse);
+        const f=parsed.filter(x=>normName(x.horse)===hn);
+        if(f.length) parsed=f;
+      }
+      for(const x of parsed){ all.push({...x,videoUrl:x.videoUrl||url,sourceUrl:url}); }
+    }catch(e){}
+  }
+  return dedupeWorkouts(all);
+}
+
+function dedupeWorkouts(arr){
+  const seen=new Set();
+  return arr.filter(x=>{const k=[x.date,x.m2200,x.m2000,x.m1800,x.m1600,x.m1400,x.m1200,x.m1000,x.m800,x.m600,x.m400,x.m200,x.track,x.surface].join('|');if(seen.has(k))return false;seen.add(k);return true;})
+    .sort((a,b)=>parseDmyForWorker(b.date)-parseDmyForWorker(a.date)).slice(0,1000);
+}
+
+function timeSec(s){
+  const m=String(s||"").match(/(\d+)\.(\d{2})\.(\d{2})/); if(!m)return null;
+  return (+m[1])*60+(+m[2])+(+m[3])/100;
+}
+function num(s){const x=parseFloat(String(s||"").replace(",","."));return Number.isFinite(x)?x:null}
+function normName(s){return String(s||"").toLocaleUpperCase("tr-TR").replace(/\([^)]*\)/g,"").replace(/\s+/g," ").trim()}
+
+function analyze(horses,histories,workouts,raceMeta){
+  const active=horses.filter(h=>!isNR(h.name));
+  const by={}; active.forEach(h=>by[h.name]=histories[h.name]||[]);
+  const weights={track:22,common:18,classFit:14,form:19,weight:12,time:8,pace:5,speed:3};
+
+  const allHP=active.map(h=>num(h.hp)).filter(x=>x!=null), allW=active.map(h=>num(h.weight)).filter(x=>x!=null);
+  const minHP=allHP.length?Math.min(...allHP):null,maxHP=allHP.length?Math.max(...allHP):null;
+  const minW=allW.length?Math.min(...allW):null,maxW=allW.length?Math.max(...allW):null;
+  const scoreScale=(v,lo,hi,inv=false)=>{
+    if(v==null||lo==null||hi==null)return null;
+    if(hi===lo)return 70;
+    const z=inv?(hi-v)/(hi-lo):(v-lo)/(hi-lo);
+    return Math.max(0,Math.min(100,z*100));
+  };
+  const placePts=p=>p===1?100:p===2?88:p===3?78:p===4?68:p===5?58:p===6?48:p===7?38:p===8?28:p===9?18:8;
+
+  // V54 Son Hız yardımcıları.
+  // TJK geçmiş koşu tablosunda kesit (400/600) derecesi yoksa uydurma değer üretme.
+  // Bunun yerine son gerçek koşunun normalize edilmiş hızını (km/saat) ayrı alan olarak verir.
+  const validRaceTime=x=>timeSec(x?.time)!=null && num(x?.distance)!=null && num(x?.distance)>0;
+  const speedKmh=x=>{
+    const sec=timeSec(x?.time), dist=num(x?.distance);
+    if(sec==null||dist==null||dist<=0)return null;
+    return (dist/sec)*3.6;
+  };
+  const latestValid=arr=>{
+    for(const x of arr||[]) if(validRaceTime(x)) return x;
+    return null;
+  };
+  const comparableLatest=(arr,raceMeta)=>{
+    const rs=String(raceMeta?.surface||'').toLocaleLowerCase('tr-TR');
+    const rd=Number(raceMeta?.distance);
+    const pool=(arr||[]).filter(validRaceTime);
+    const sameDist=Number.isFinite(rd)?pool.filter(x=>num(x.distance)===rd):[];
+    const sameSurf=rs?sameDist.filter(x=>String(x.surface||'').toLocaleLowerCase('tr-TR').includes(rs.split(' ')[0])):[];
+    return latestValid(sameSurf.length?sameSurf:(sameDist.length?sameDist:pool));
+  };
+
+  const out=active.map(h=>{
+    const hist=by[h.name]||[];
+    const form=String(h.last6||'').replace(/\s+/g,'').split('').filter(x=>/^\d$/.test(x)).map(x=>+x);
+    const formVal=form.length?form.reduce((a,p)=>a+placePts(p),0)/form.length:null;
+
+    const raceSurface=String(raceMeta?.surface||'').toLocaleLowerCase('tr-TR');
+    const same=hist.filter(x=>{
+      const d=num(x.distance);
+      const surf=String(x.surface||'').toLocaleLowerCase('tr-TR');
+      return d===Number(raceMeta?.distance) && raceSurface && surf.includes(raceSurface.split(' ')[0]);
+    });
+    const samePlaces=same.map(x=>num(x.place)).filter(x=>x!=null);
+    const trackVal=same.length?Math.max(0,Math.min(100,
+      samePlaces.reduce((a,p)=>a+placePts(p),0)/samePlaces.length
+    )):null;
+
+    let commonCount=0,wins=0,weightEdges=[];
+    for(const other of active){
+      if(other.name===h.name)continue;
+      const oh=by[other.name]||[];
+      for(const a of hist) for(const b of oh){
+        if(a.date===b.date && a.city===b.city && String(a.distance)===String(b.distance)){
+          const pa=num(a.place),pb=num(b.place);
+          if(pa!=null&&pb!=null){
+            commonCount++;
+            if(pa<pb)wins++;
+            const wa=num(a.weight),wb=num(b.weight);
+            if(wa!=null&&wb!=null)weightEdges.push((pa<pb?1:-1)*(wb-wa));
+          }
+        }
+      }
+    }
+    let commonVal=null;
+    if(commonCount){
+      const winRate=wins/commonCount;
+      const winScore=winRate*100;
+      const avgWeightEdge=weightEdges.length?weightEdges.reduce((a,b)=>a+b,0)/weightEdges.length:0;
+      const kiloAdj=Math.max(-15,Math.min(15,avgWeightEdge*3));
+      commonVal=Math.max(0,Math.min(100,winScore+kiloAdj));
+    }
+
+    const classVal=scoreScale(num(h.hp),minHP,maxHP,false);
+    const weightVal=scoreScale(num(h.weight),minW,maxW,true);
+
+    const histTimes=hist.map(x=>({sec:timeSec(x.time),dist:num(x.distance),surface:x.surface,place:num(x.place),date:x.date,city:x.city}))
+      .filter(x=>x.sec&&x.dist);
+    const sameSurface=histTimes.filter(x=>{
+      const surf=String(x.surface||'').toLocaleLowerCase('tr-TR');
+      return raceSurface && surf.includes(raceSurface.split(' ')[0]);
+    });
+    const rates=sameSurface.map(x=>x.sec/(x.dist/1000));
+    const avgRate=rates.length?rates.reduce((a,b)=>a+b,0)/rates.length:null;
+    const timeVal=rates.length?scoreScale(avgRate,Math.min(...rates),Math.max(...rates),true):null;
+
+    // ===================== V54 SON HIZ =====================
+    // Öncelik: aynı pist + aynı mesafedeki en son gerçek koşu.
+    // Yoksa aynı mesafe, sonra aynı pist, sonra son geçerli koşu.
+    const sonHizRace=comparableLatest(hist,raceMeta);
+    const sonHizKmh=sonHizRace?speedKmh(sonHizRace):null;
+    const sonHizRate=sonHizRace&&timeSec(sonHizRace.time)!=null&&num(sonHizRace.distance)>0
+      ? timeSec(sonHizRace.time)/(num(sonHizRace.distance)/1000):null;
+    const sonHizSec=sonHizRace?timeSec(sonHizRace.time):null;
+    const sonHizMesafe=sonHizRace?num(sonHizRace.distance):null;
+    const sonHizTarih=sonHizRace?.date||'';
+    const sonHizPist=sonHizRace?.surface||'';
+    // Field karşılaştırması daha sonra yapılır; ham hız ayrı tutulur.
+
+    const ws=(workouts[h.name]||[]).slice(0,5);
+    const workoutTimes=[];
+    for(const w of ws){
+      for(const k of ['m1400','m1200','m1000','m800','m600','m400','m200']){
+        const q=timeSec(w[k]); if(q!=null)workoutTimes.push(q);
+      }
+    }
+    const bestWorkout=workoutTimes.length?Math.min(...workoutTimes):null;
+
+    // Eski speed hesabı korunur; ancak V54'te kullanıcıya gösterilen Son Hız,
+    // doğrudan son gerçek koşudan alınan hızdır. speed kriteri de bunu kullanır.
+    const speedVal=sonHizKmh;
+
+    const parts=[
+      ['track',weights.track,trackVal],['common',weights.common,commonVal],['classFit',weights.classFit,classVal],
+      ['form',weights.form,formVal],['weight',weights.weight,weightVal],['time',weights.time,timeVal],
+      ['pace',weights.pace,bestWorkout],['speed',weights.speed,sonHizKmh]
+    ];
+    return {...h,_bestWorkout:bestWorkout,_hist:hist,_parts:parts,_same:same,_commonCount:commonCount,
+      // Frontend için açık Son Hız alanları
+      sonHiz:sonHizKmh==null?null:Number(sonHizKmh.toFixed(2)),
+      sonHizKmh:sonHizKmh==null?null:Number(sonHizKmh.toFixed(2)),
+      sonHizSure:sonHizSec==null?'':String(sonHizRace.time||''),
+      sonHizMesafe:sonHizMesafe,
+      sonHizTarih:sonHizTarih,
+      sonHizPist:sonHizPist,
+      sonHizKaynak:'Son gerçek koşu',
+      _sonHizRate:sonHizRate
+    };
+  });
+
+  const workoutField=out.map(x=>x._bestWorkout).filter(x=>x!=null);
+  const wlo=workoutField.length?Math.min(...workoutField):null, whi=workoutField.length?Math.max(...workoutField):null;
+  const speedField=out.map(x=>x.sonHizKmh).filter(x=>x!=null);
+  const slo=speedField.length?Math.min(...speedField):null, shi=speedField.length?Math.max(...speedField):null;
+
+  const final=out.map(x=>{
+    const parts=x._parts.map(p=>{
+      if(p[0]==='pace') return [p[0],p[1],scoreScale(p[2],wlo,whi,true)];
+      if(p[0]==='speed') return [p[0],p[1],scoreScale(p[2],slo,shi,false)];
+      return p;
+    });
+    const available=parts.filter(p=>p[2]!=null), total=available.reduce((a,p)=>a+p[1],0);
+    const score=total?available.reduce((a,p)=>a+p[1]*p[2],0)/total:0;
     return {
-        criterion: int(st.session_state[WEIGHT_KEYS[criterion]])
-        for criterion in DEFAULT_WEIGHTS
-    }
-
-ANALYSIS_WEIGHTS = current_weights()
-
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-
-if "program_data" not in st.session_state:
-    st.session_state.program_data = None
-
-if "loaded_date" not in st.session_state:
-    st.session_state.loaded_date = None
-
-if "loaded_city" not in st.session_state:
-    st.session_state.loaded_city = None
-
-if "selected_race" not in st.session_state:
-    st.session_state.selected_race = 1
-
-if "analysis_mode" not in st.session_state:
-    st.session_state.analysis_mode = "Gerçek veri"
-
-if "real_analysis_requested" not in st.session_state:
-    st.session_state.real_analysis_requested = False
-
-if "real_analysis_done" not in st.session_state:
-    st.session_state.real_analysis_done = False
-
-if "selected_horse_no" not in st.session_state:
-    st.session_state.selected_horse_no = None
-if "selected_horse_index" not in st.session_state:
-    st.session_state.selected_horse_index = None
-    st.session_state["_selected_detail_fetch_key"] = None
-if "_eid_info_open" not in st.session_state:
-    st.session_state["_eid_info_open"] = False
-if "_eid_info_key" not in st.session_state:
-    st.session_state["_eid_info_key"] = None
-if "_selected_detail_fetch_key" not in st.session_state:
-    st.session_state["_selected_detail_fetch_key"] = None
-
-
-# ============================================================
-# CSS
-# ============================================================
-
-st.markdown(
-    """
-    <style>
-
-    .main-title {
-        font-size:27px;
-        font-weight: 950;
-        margin-top: 6px !important;
-        margin-bottom: 8px;
-        line-height: 1.15;
-        padding-top: 0 !important;
-        overflow: visible !important;
-        position: relative;
-        z-index: 5;
-        text-align: center !important;
-        width: 100% !important;
-    }
-
-    /* Sayfanın üst kenarı ile RACE INTELLIGENCE arasında yalnızca 15 mm boşluk. */
-    section.main > div.block-container,
-    div[data-testid="stMainBlockContainer"] {
-        max-width: none !important;
-        width: 100% !important;
-        padding-top: 2.5mm !important;
-        padding-left: 3.5mm !important;
-        padding-right: 3.5mm !important;
-    }
-
-    /* EKRAN ÖLÇEĞİ: Chrome %100 iken uygulama yaklaşık %67 yoğunlukta
-       görünür; ancak Streamlit'in tablo/iframe genişliği küçülmez.
-       Önceki #root zoom yaklaşımı dataframe alanını ~%67 genişliğe düşürüyordu.
-       Bu nedenle artık root'a zoom uygulanmıyor; içerik ölçüleri doğrudan
-       kompaktlaştırılıyor ve ana alan tam genişlikte bırakılıyor. */
-    html, body, #root {
-        width: 100% !important;
-        max-width: none !important;
-        overflow-x: hidden !important;
-    }
-
-    /* Sidebar, %67 tarayıcı görünümüne yakın kompakt ölçüde. */
-    section[data-testid="stSidebar"] {
-        width: 150px !important;
-        min-width: 150px !important;
-        max-width: 150px !important;
-    }
-    section[data-testid="stSidebar"] > div {
-        width: 150px !important;
-    }
-
-    /* Ana içerik tam kalan genişliği kullansın. */
-    [data-testid="stAppViewContainer"] > .main {
-        width: calc(100% - 150px) !important;
-        max-width: none !important;
-    }
-    section.main > div.block-container,
-    div[data-testid="stMainBlockContainer"] {
-        max-width: none !important;
-        width: 100% !important;
-    }
-
-    .ri-header {
-        display: flex !important;
-    }
-
-    .sub-title {
-        font-size:10px;
-        opacity: 0.75;
-        margin-bottom: 20px;
-    }
-
-    .horse-title {
-        font-size:12px;
-        font-weight: 700;
-        margin-top: 15px;
-        margin-bottom: 10px;
-    }
-
-    .ri-header {
-        border: 0 !important;
-        border-radius: 0 !important;
-        padding: 0 !important;
-        margin: 0 0 8px 0 !important;
-        display: flex !important;
-        align-items: center;
-        justify-content: space-between;
-        overflow: visible !important;
-        min-height: 0 !important;
-    }
-
-    .ri-title {
-        font-size: 26px;
-        font-weight: 800;
-        letter-spacing: .3px;
-    }
-
-    .ri-subtitle {
-        font-size:10px;
-        opacity: .72;
-        margin-top: 3px;
-    }
-
-    .ri-clock {
-        font-size:9px;
-        font-weight: 800;
-        opacity: .7;
-        letter-spacing: 1px;
-    }
-
-    .condition-box {
-        border: 1px solid rgba(80,130,190,.30);
-        border-radius: 7px;
-        padding: 10px 12px;
-        margin: 6px 0 12px 0;
-        font-size:10px;
-        line-height: 1.55;
-    }
-
-    .model-note {
-        font-size:9px;
-        opacity: .72;
-        margin-top: -4px;
-    }
-
-    .race-condition-label {
-        display:inline-block;
-        margin-left:6px;
-        padding:1px 6px;
-        border-radius:5px;
-        font-size:10px;
-        font-weight:800;
-        color:#fff;
-    }
-
-    .analysis-action {
-        margin-top:4px;
-    }
-
-    .ri-table-wrap {
-        width:100%;
-        overflow-x:auto;
-        border:1px solid rgba(80,100,130,.25);
-        border-radius:7px;
-    }
-
-    .ri-table {
-        border-collapse:collapse;
-        width:100%;
-        min-width:1180px;
-        font-size:9px;
-    }
-
-    .ri-table th {
-        background:#1268b3;
-        color:#fff;
-        font-weight:800;
-        text-align:center;
-        padding:8px 7px;
-        border-right:1px solid rgba(255,255,255,.28);
-        white-space:nowrap;
-    }
-
-    .ri-table td {
-        padding:8px 7px;
-        border-bottom:1px solid rgba(100,120,140,.18);
-        border-right:1px solid rgba(100,120,140,.12);
-        white-space:nowrap;
-        text-align:center;
-    }
-
-    .ri-table td.horse-name {
-        text-align:left;
-        font-weight:800;
-        min-width:150px;
-    }
-
-    .ri-table tr.rank1 { background:rgba(46,160,67,.16); }
-    .ri-table tr.rank2 { background:rgba(255,193,7,.12); }
-    .ri-table tr.rank3 { background:rgba(255,152,0,.10); }
-    .ri-table tr:hover { background:rgba(80,130,190,.10); }
-
-    .ri-table tr.selected-row td {
-        background:#dff3ff !important;
-        box-shadow:inset 3px 0 0 #0878d1;
-        color:#16324d !important;
-        font-weight:700;
-    }
-
-    .ri-table tr.rank1 td { background:rgba(46,160,67,.14); }
-    .ri-table tr.rank2 td { background:rgba(255,193,7,.12); }
-    .ri-table tr.rank3 td { background:rgba(255,152,0,.10); }
-
-
-    .score-strong { font-weight:900; font-size:13px; }
-    /* Ana içerik alanını mümkün olduğunca geniş kullan. */
-    section.main > div.block-container,
-    div[data-testid="stMainBlockContainer"] {
-        max-width: none !important;
-        width: 100% !important;
-        padding-top: 2.5mm !important;
-        padding-left: 3.5mm !important;
-        padding-right: 3.5mm !important;
-    }
-
-    .race-info-compact {
-        margin-top: 1px !important;
-        margin-bottom: 2px !important;
-        padding: 0 !important;
-        width: 100% !important;
-    }
-
-    .race-title-panel {
-        width: 100% !important;
-        min-height: 36px;
-        border: 1px solid #b9c8d8;
-        border-radius: 7px;
-        background: #ffffff;
-        color: #16324d;
-        padding: 7px 12px;
-        box-sizing: border-box;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        flex-wrap: nowrap;
-        box-shadow: none;
-        text-transform: uppercase;
-    }
-    .race-title-panel .race-title-main {
-        font-size: 30px;
-        line-height: 1.0;
-        font-weight: 950;
-        white-space: nowrap;
-    }
-    .race-title-panel .race-condition {
-        font-size: 16px;
-        line-height: 1.15;
-        font-weight: 900;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        flex: 1 1 auto;
-        min-width: 0;
-    }
-    .race-title-panel .analysis-inline {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 31px;
-        padding: 4px 11px;
-        border-radius: 5px;
-        font-size:10px;
-        font-weight: 950;
-        background: #e8f1f8;
-        color: #07579f;
-        white-space: nowrap;
-        margin-left: auto;
-        text-transform: uppercase;
-    }
-
-    /* Seçili koşu / analiz bekleniyor paneli ana tablo ile aynı genişlikte. */
-    .race-info-compact + .horse-title {
-        margin-top: 0 !important;
-    }
-
-    /* Gerçek veri tabloları: yatay scrollbar yok, başlık tek sıra ve 15 mm. */
-    .ri-real-table-wrap {
-        width: 100%;
-        overflow: hidden !important;
-        border: 1px solid rgba(80,100,130,.35);
-        border-radius: 7px;
-    }
-    table.ri-real-table {
-        width: 100% !important;
-        table-layout: fixed;
-        border-collapse: collapse;
-        font-size: 11px;
-    }
-    table.ri-real-table thead th {
-        height: 15mm;
-        min-height: 15mm;
-        padding: 6px 5px;
-        background: #0868c9;
-        color: #ffffff;
-        font-weight: 950;
-        text-align: center;
-        vertical-align: middle;
-        border: 1px solid rgba(255,255,255,.25);
-        white-space: nowrap;
-    }
-    table.ri-real-table tbody td {
-        padding: 6px 5px;
-        border: 1px solid rgba(100,120,140,.18);
-        text-align: center;
-        vertical-align: middle;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        font-weight: 800;
-    }
-    table.ri-real-table tbody tr:nth-child(odd) td {
-        background: #ffffff;
-        color: #17212b;
-    }
-    table.ri-real-table tbody tr:nth-child(even) td {
-        background: #f1f3f5;
-        color: #17212b;
-    }
-    .tjk-detail-table-wrap {
-        width:100%; overflow-x:auto; border:0; border-radius:0; background:#0b1320;
-        margin:0 !important; padding:0 !important;
-    }
-    table.tjk-detail-table {
-        width:100%; min-width:1450px; border-collapse:collapse; table-layout:auto;
-        font-size:14px; background:#0b1320; color:#f4f7fb;
-    }
-    table.tjk-detail-table thead th {
-        height:44px; padding:0 10px; background:#aeb5c2; color:#0a1423;
-        border-right:1px solid #8f98a8; border-bottom:1px solid #687486;
-        font-weight:900; text-align:center; white-space:nowrap;
-    }
-    table.tjk-detail-table tbody td {
-        height:42px; padding:5px 10px; background:#0d1727; color:#f5f7fa;
-        border-right:1px solid #263346; border-bottom:1px solid #2a3749;
-        text-align:center; vertical-align:middle; white-space:nowrap; font-weight:600;
-    }
-    table.tjk-detail-table tbody tr:nth-child(even) td { background:#202b3b; }
-    table.tjk-detail-table tbody tr:hover td { background:#26364a; }
-    table.tjk-detail-table td:nth-child(1), table.tjk-detail-table td:nth-child(2) { color:#eef3fb; }
-    table.tjk-detail-table td:nth-child(8), table.tjk-detail-table td:nth-child(9) { color:#f2f6ff; }
-    table.tjk-detail-table td:nth-child(14) { text-align:left; line-height:1.05; }
-    table.tjk-detail-table .row-action {
-        width:28px; min-width:28px; padding:0 !important; color:#8994a5 !important;
-        font-size:13px; font-weight:900;
-    }
-    table.workout-detail { min-width:1100px; }
-    table.workout-detail tbody td:nth-child(3) { color:#9fc8ff; }
-    table.workout-detail tbody td:nth-child(4),
-    table.workout-detail tbody td:nth-child(5),
-    table.workout-detail tbody td:nth-child(6),
-    table.workout-detail tbody td:nth-child(7),
-    table.workout-detail tbody td:nth-child(8) { font-variant-numeric:tabular-nums; }
-
-    .real-section-title {
-        margin-top: 5px !important;
-        margin-bottom: 4px !important;
-        font-size: 17px;
-        font-weight: 950;
-    }
-
-    .horse-title {
-        margin-top: 10 !important;
-        margin-bottom: 1px !important;
-        line-height: 1.0 !important;
-    }
-
-    .analysis-badge {
-        display:inline-block;
-        padding:7px 12px;
-        border-radius:5px;
-        font-size:17px;
-        font-weight:950;
-        margin:1px 0 4px 0;
-        border:1px solid rgba(20,80,130,.35);
-        text-transform:uppercase;
-    }
-    .analysis-waiting { background:#eaf3fb; color:#075b9f; }
-    .analysis-active { background:#e7f6ec; color:#147a35; }
-
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# BAŞLIK — TJK YENİ YAPI
-# ============================================================
-
-st.markdown(
-    """
-    <div class="ri-header">
-        <div>
-            <div class="ri-title">🏇 RACE INTELLIGENCE</div>
-            <div class="ri-subtitle">
-                Gerçek TJK geçmişi + galop + analiz motoru
-            </div>
-        </div>
-        <div class="ri-clock">TJK YENİ YAPI</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# CANLI MODEL AYARLARI — SAYFANIN ÜSTÜ
-# ============================================================
-
-def _reset_model_weights():
-    for criterion, value in DEFAULT_WEIGHTS.items():
-        st.session_state[WEIGHT_KEYS[criterion]] = value
-    st.session_state["analysis_mode"] = "Gerçek veri"
-    st.session_state["real_analysis_requested"] = True
-    st.session_state["real_analysis_done"] = False
-
-
-def _request_real_analysis():
-    st.session_state["analysis_mode"] = "Gerçek veri"
-    st.session_state["real_analysis_requested"] = True
-    st.session_state["real_analysis_done"] = False
-
-
-def _request_manual_analysis():
-    st.session_state["analysis_mode"] = "Manuel"
-    st.session_state["real_analysis_requested"] = False
-    st.session_state["real_analysis_done"] = True
-
-
-if st.session_state.pop("_reset_model_next_run", False):
-    for criterion, value in DEFAULT_WEIGHTS.items():
-        st.session_state[WEIGHT_KEYS[criterion]] = value
-
-# CANLI MODEL SAYFANIN EN ÜSTÜNDE
-current_mode = st.session_state.get("analysis_mode", "Gerçek veri")
-with st.expander("⚙️ CANLI MODEL AYARLARI", expanded=False):
-    st.caption(
-        "Ağırlıkları değiştirdiğinde yeni TJK isteği yapılmaz; mevcut gerçek verilerle skor yeniden hesaplanır."
-    )
-    weight_items = list(DEFAULT_WEIGHTS.items())
-    cols = st.columns(4)
-    for idx, (criterion, default_value) in enumerate(weight_items):
-        key = WEIGHT_KEYS[criterion]
-        with cols[idx % 4]:
-            st.slider(criterion, min_value=0, max_value=40, key=key, step=1)
-
-    ANALYSIS_WEIGHTS = current_weights()
-    weight_total = sum(ANALYSIS_WEIGHTS.values())
-    normalized = {
-        k: (v * 100.0 / weight_total if weight_total else 0.0)
-        for k, v in ANALYSIS_WEIGHTS.items()
-    }
-    st.markdown(
-        f"<div class='ri-model-summary'><b>Ham toplam:</b> {weight_total} &nbsp;•&nbsp; <b>Normalize:</b> 100</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(" • ".join(f"{k} %{normalized[k]:.1f}" for k in ANALYSIS_WEIGHTS))
-    st.caption(f"Aktif analiz modu: **{current_mode}**")
-
-# Fonksiyonlar CANLI MODEL AYARLARININ DIŞINDA
-btn1, btn2, btn3, mode_col = st.columns([1.15, 1.15, 1.15, 0.65])
-with btn1:
-    st.markdown("<span class='ri-reset-marker'></span>", unsafe_allow_html=True)
-    st.button(
-        "↩️ VARSAYILANA DÖN",
-        key="reset_model_button_top",
-        use_container_width=True,
-        on_click=_reset_model_weights,
-    )
-with btn2:
-    st.markdown("<span class='ri-real-marker'></span>", unsafe_allow_html=True)
-    st.button(
-        "🔎 GERÇEK VERİ İLE ANALİZ ET",
-        key="real_analysis_button_top",
-        use_container_width=True,
-        on_click=_request_real_analysis,
-        type="primary",
-    )
-with btn3:
-    st.markdown("<span class='ri-manual-marker'></span>", unsafe_allow_html=True)
-    st.button(
-        "🧠 MANUEL ANALİZ",
-        key="manual_analysis_button_top",
-        use_container_width=True,
-        on_click=_request_manual_analysis,
-        type="secondary",
-    )
-with mode_col:
-    current_mode = st.session_state.get("analysis_mode", "Gerçek veri")
-    badge = "Gerçek veri" if current_mode == "Gerçek veri" else "Manuel"
-    st.markdown(
-        f"<div class='ri-mode-badge'>Mod: <b>{badge}</b></div>",
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# TJK VERİ DURUMU
-# ============================================================
-
-def fetch_program_with_status(selected_date, selected_city, label):
-    """Programı alır; eski status/expander panelini ekrana basmaz."""
-    try:
-        return load_program(selected_date, selected_city)
-    except Exception as exc:
-        raise RuntimeError(f"{label}: {exc}") from exc
-
-# ============================================================
-# PROGRAM GETİRME
-# ============================================================
-
-@st.cache_data(
-    ttl=900,
-    show_spinner=False,
-)
-def load_program(
-    selected_date: date,
-    city: str,
-) -> Dict[str, Any]:
-
-    return get_program(
-        selected_date,
-        city,
-    )
-
-
-# ============================================================
-# SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
-# ============================================================
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_active_cities(selected_date: date) -> List[str]:
-    """
-    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
-
-    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
-    yeni Worker dosyası veya yeni API gerekmez.
-    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
-    """
-    active = []
-
-    def check_city(city: str):
-        try:
-            data = get_program(selected_date, city)
-            races = data.get("races", []) if isinstance(data, dict) else []
-            return city if isinstance(races, list) and len(races) > 0 else None
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
-        for future in as_completed(futures):
-            city = future.result()
-            if city:
-                active.append(city)
-
-    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
-    return [city for city in ALL_CITIES if city in active]
-
-
-# ============================================================
-# YARDIMCI FONKSİYONLAR
-# ============================================================
-
-def display_value(
-    value: Any,
-    default: str = "-",
-) -> str:
-
-    if value is None:
-        return default
-
-    text = str(value).strip()
-
-    if not text:
-        return default
-
-    return text
-
-
-def get_race_number(
-    race: Dict[str, Any],
-    fallback: int,
-) -> int:
-
-    value = race.get(
-        "race_number",
-        fallback,
-    )
-
-    try:
-        return int(value)
-    except Exception:
-        return fallback
-
-
-def get_horse_name(
-    horse: Dict[str, Any],
-) -> str:
-    """At adını TJK/YB hücrelerinden temizleyerek döndürür."""
-    raw = display_value(
-        horse.get("at_ismi")
-        or horse.get("At İsmi")
-        or horse.get("name")
-        or horse.get("horseName")
-    )
-    if not raw or raw == "-":
-        return raw
-
-    raw = re.sub(r"\s*Image.*$", "", raw, flags=re.I).strip()
-
-    # Program numarası adın içine gömülmüşse çıkar:
-    # FRANKI CHA CHA (2) -> FRANKI CHA CHA
-    raw = re.sub(r"\s*\(\d{1,2}\)\s*", " ", raw).strip()
-
-    # Orijin alanındaki baba adı ad hücresine de taşınmışsa ayır.
-    origin = display_value(
-        horse.get("origin")
-        or horse.get("orijin")
-        or horse.get("Orijin")
-        or horse.get("pedigree")
-        or horse.get("baba_anne"),
-        "",
-    )
-    if origin:
-        sire = re.split(r"\s+-\s+", origin, maxsplit=1)[0].strip()
-        if sire:
-            raw = re.sub(
-                r"\s+" + re.escape(sire) + r"\s*$",
-                "",
-                raw,
-                flags=re.I,
-            ).strip()
-
-    # Orijin alanı boş kaldığında "... AUTHORIZED (IRE)" gibi
-    # baba bilgisinin ad hücresine gömüldüğü kayıtları ayır.
-    raw = re.sub(
-        r"\s+[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'/&-]{2,}\s+\([A-Z]{2,3}\)\s*$",
-        "",
-        raw,
-    ).strip()
-
-    return raw
-
-
-def _split_origin(origin: Any) -> tuple[str, str]:
-    """TJK Orijin alanını güvenli biçimde Baba / Anne olarak dönüştürür.
-
-    Worker bazı günlük program kayıtlarında takı kodunu orijin metninin
-    sonuna ekleyebiliyor (örn. ``AUTHORIZED (IRE) RC``). Takı orijinden
-    ayrılır; gerçek ``Baba - Anne`` yapısı korunur.
-    """
-    text = display_value(origin, "")
-    if not text:
-        return "", ""
-    text = re.sub(r"\s+", " ", text).strip()
-
-    # Orijinin sonuna yanlışlıkla eklenmiş TJK takı kodlarını temizle.
-    # Yalnızca tek başına/son ek konumundaki bilinen kısa kodları hedefle.
-    text = re.sub(
-        r"\s+(?:DB|KG|SKG|SK|GKR|TT|SGK|K|G|D|B|H|M)(?=\s*$)",
-        "",
-        text,
-        flags=re.I,
-    ).strip()
-
-    parts = re.split(r"\s+-\s+", text, maxsplit=1)
-    if len(parts) == 2:
-        sire = parts[0].strip()
-        dam = parts[1].strip()
-        return sire, dam
-
-    # Bazı kayıtlarda tire HTML temizliği sonrası kaybolabiliyor.
-    # Eğik çizgi ile gelen ikinci bölüm varsa onu anne olarak koru.
-    slash = re.match(r"^(.*?)\s*/\s*(.+)$", text)
-    if slash:
-        return slash.group(1).strip(), slash.group(2).strip()
-    return text, ""
-
-
-def get_horse_origin(
-    horse: Dict[str, Any],
-) -> str:
-    """Baba / anne orijinini TJK alanından, gerekirse ad hücresinden al."""
-    origin = display_value(
-        horse.get("origin")
-        or horse.get("orijin")
-        or horse.get("Orijin")
-        or horse.get("pedigree")
-        or horse.get("baba_anne"),
-        "",
-    )
-    if origin:
-        return origin
-
-    # Bazı günlük program cevaplarında Orijin kolonu boş, ancak At İsmi hücresinde
-    # "AT ADI (No) BABA - ANNE / ANNE BABASI" biçimi geliyor.
-    raw = display_value(
-        horse.get("at_ismi")
-        or horse.get("At İsmi")
-        or horse.get("name")
-        or horse.get("horseName"),
-        "",
-    )
-    m = re.match(r"^.+?\s*\(\d{1,2}\)\s+(.+)$", raw)
-    return m.group(1).strip() if m else ""
-
-
-def _extract_equipment_from_text(text: Any) -> str:
-    """TJK takı kodlarını, isim hücresine gömülmüşse de yakalar."""
-    value = display_value(text, "")
-    if not value:
-        return ""
-    # Takı kodları TJK'da boşlukla ayrılabilir: DB SK, KG SK, KG K GKR vb.
-    m = re.search(
-        r"(?:^|\s)((?:DB|KG|K|SKG|SK|GKR|G|D|B|H|TT|M|SGK)(?:\s+(?:DB|KG|K|SKG|SK|GKR|G|D|B|H|TT|M|SGK)){0,5})$",
-        value,
-        flags=re.I,
-    )
-    return m.group(1).upper().strip() if m else ""
-
-
-def get_horse_equipment(horse: Dict[str, Any]) -> str:
-    """Bugünkü programdaki gerçek Takı bilgisini alır."""
-    direct = (
-        horse.get("equipment")
-        or horse.get("taki")
-        or horse.get("Takı")
-        or horse.get("takı")
-    )
-    if direct:
-        return display_value(direct, "")
-    # Bazı TJK sürümlerinde takı, At İsmi hücresinin içinde gelir.
-    return _extract_equipment_from_text(
-        horse.get("name") or horse.get("at_ismi") or horse.get("At İsmi")
-    )
-
-
-def get_horse_number(
-    horse: Dict[str, Any],
-    fallback: int,
-) -> int:
-    """TJK'nın gerçek at numarasını sayısal olarak döndürür.
-
-    No sütununun Streamlit tarafından METİN olarak değil SAYI olarak
-    sıralanabilmesi için burada daima int döndürülür. Böylece örneğin
-    1, 2, 3 ... 14 sıralaması lexicographic (1, 10, 11...) olmaz.
-    """
-    value = (
-        horse.get("numara")
-        or horse.get("no")
-        or horse.get("number")
-        or horse.get("N")
-        or horse.get("No")
-        or horse.get("horseNo")
-        or horse.get("horse_number")
-    )
-
-    if value is not None:
-        # "9", "9.0", "9 -" gibi TJK/Worker varyasyonlarını güvenli biçimde çöz.
-        m = re.search(r"\d+", str(value))
-        if m:
-            try:
-                return int(m.group(0))
-            except Exception:
-                pass
-
-    return int(fallback)
-
-
-def get_horse_age(
-    horse: Dict[str, Any],
-) -> str:
-    """
-    TJK yaş kodunu okunabilir biçime çevirir.
-
-    Örnek:
-        3yde -> 3y Dişi İngiliz
-        3yke -> 3y Erkek İngiliz
-        3yda -> 3y Dişi Arap
-        3yka -> 3y Erkek Arap
-    """
-    value = horse.get("yas") or horse.get("Yaş") or horse.get("age") or ""
-    text = display_value(value)
-    if text == "-":
-        return "-"
-
-    # Worker/TJK bazı satırlarda kodları boşluklu verir (ör. "3y k d").
-    # Kodu yorumlayıp yanlış cinsiyet/ırk üretmek yerine yaş kısmını normalize ediyor,
-    # TJK'nın geri kalan kodlarını aynen koruyoruz. Böylece veri uydurulmuyor.
-    m = re.match(r"^(\d+)\s*y(?:\s+(.*))?$", text, flags=re.I)
-    if m:
-        age = m.group(1)
-        rest = (m.group(2) or "").strip()
-        return f"{age}y" + (f" {rest}" if rest else "")
-
-    return text
-
-def get_race_condition(race: Dict[str, Any]) -> str:
-    """Koşu şartını Worker V1 meta.detail/meta.raceName üzerinden alır."""
-    direct = race.get("condition")
-    if direct:
-        return display_value(direct)
-
-    meta = race.get("meta")
-    if isinstance(meta, dict):
-        detail = meta.get("detail") or meta.get("raceName") or ""
-        if detail:
-            return display_value(detail)
-
-    return "-"
-
-def _weight_parts(value: Any) -> tuple[str, str]:
-    text = display_value(value, "")
-    if not text:
-        return "-", ""
-
-    # TJK programlarında örn. "53 +1.20 Fazla Kilo" / "53,5" gibi
-    # biçimler görülebilir. Ana kilo ilk satırda, fazla kilo ikinci satırda
-    # gösterilir; veri kaybedilmez.
-    m = re.match(
-        r"^\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
-        text,
-        flags=re.I,
-    )
-    if not m:
-        return text, ""
-
-    base = m.group(1).replace(",", ".")
-    # 52.5 -> 52,5 gösterimi; TJK'nın kilo yazımına daha yakın görünür.
-    if "." in base:
-        base = base.replace(".", ",")
-    rest = (m.group(2) or "").strip()
-    if not rest:
-        return base, ""
-
-    # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
-    fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
-    if fm:
-        extra_value = fm.group(1).replace(" ", "").replace(".", ",")
-        return base, extra_value
-    return base, rest
-
-
-def get_horse_weight(
-    horse: Dict[str, Any],
-) -> str:
-    base, extra = _weight_parts(
-        horse.get("siklet")
-        or horse.get("Sıklet")
-        or horse.get("weight")
-    )
-    # Ana tabloda kullanıcı istediği biçim: "52 +1.5".
-    # Fazla kilo değeri gerçek veriden gelir; burada yalnızca gösterim normalize edilir.
-    return f"{base} {extra.replace(',', '.')}" if extra else base
-
-
-def get_horse_jockey(
-    horse: Dict[str, Any],
-) -> str:
-    """Jokeyi TJK gösterimine dönüştürür; apranti ibaresini ``Ap`` yapar."""
-    text = display_value(
-        horse.get("jokey")
-        or horse.get("Jokey")
-        or horse.get("jockey")
-    , "")
-    if not text:
-        return "-"
-
-    # TJK kaynaklarında AP / AP Apranti / Apranti varyasyonlarını tek forma
-    # dönüştür. Ana tablo iki satırlı gösterir: E.AKPINAR / Ap.
-    m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
-    if m:
-        return f"{m.group(1).strip()}\nAp"
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def get_horse_hp(
-    horse: Dict[str, Any],
-) -> str:
-
-    return display_value(
-        horse.get("hp")
-        or horse.get("HP")
-    )
-
-
-def get_horse_agf(
-    horse: Dict[str, Any],
-) -> str:
-
-    return display_value(
-        horse.get("agf")
-        or horse.get("AGF")
-    )
-
-
-def get_horse_start(
-    horse: Dict[str, Any],
-) -> str:
-
-    return display_value(
-        horse.get("st")
-        or horse.get("St")
-    )
-
-
-def get_horse_kgs(
-    horse: Dict[str, Any],
-) -> str:
-
-    return display_value(
-        horse.get("kgs")
-        or horse.get("KGS")
-    )
-
-
-def get_horse_form(
-    horse: Dict[str, Any],
-) -> str:
-
-    return display_value(
-        horse.get("form")
-        or horse.get("Forma")
-    )
-
-
-
-
-# ============================================================
-# GERÇEK VERİ ZENGİNLEŞTİRME
-# ============================================================
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_horse_enrichment(
-    at_id: str,
-    horse_name: str,
-    target_date: str = "",
-    target_city: str = "",
-    target_distance: str = "",
-    target_surface: str = "",
-    target_class: str = "",
-) -> Dict[str, Any]:
-    try:
-        return get_horse_enrichment(
-            at_id,
-            horse_name,
-            target_date=target_date,
-            target_city=target_city,
-            target_distance=target_distance,
-            target_surface=target_surface,
-            target_class=target_class,
-        )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": str(exc),
-        }
-
-
-def enrich_race_horses(
-    horses: List[Dict[str, Any]],
-    target_date: Any = None,
-    target_city: str = "",
-    target_distance: Any = None,
-    target_surface: str = "",
-    target_class: str = "",
-) -> List[Dict[str, Any]]:
-    enriched = [dict(h) for h in horses if isinstance(h, dict)]
-
-    def one(item):
-        # TJK programında kimlik alanı farklı isimlerle gelebilir.
-        # At numarasını (no) ID olarak kullanmıyoruz; yalnızca gerçek at
-        # kimliği alanlarını kabul ediyoruz.
-        at_id = (
-            item.get("atId")
-            or item.get("at_id")
-            or item.get("horseId")
-            or item.get("horse_id")
-            or item.get("horseKey")
-            or item.get("horse_key")
-            or item.get("id")
-            or item.get("Id")
-            or ""
-        )
-        name = get_horse_name(item)
-        if not at_id:
-            item["_history"] = []
-            item["_workouts"] = []
-            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
-            return item
-        data = load_horse_enrichment(
-            str(at_id),
-            name,
-            str(target_date or ""),
-            str(target_city or ""),
-            str(target_distance or ""),
-            str(target_surface or ""),
-            str(target_class or ""),
-        )
-        history = data.get("history", []) if isinstance(data, dict) else []
-        workouts = data.get("workouts", []) if isinstance(data, dict) else []
-
-        item["_at_id"] = str(at_id)
-        item["_history"] = history if isinstance(history, list) else []
-        item["_workouts"] = workouts if isinstance(workouts, list) else []
-        if isinstance(data, dict) and data.get("error"):
-            item["_enrichment_error"] = str(data.get("error"))
-
-        # V34: sahip / antrenör / bu yıl kazanç geçmiş gerçek yarışlardan.
-        if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
-            for row in item["_history"]:
-                if not isinstance(row, dict):
-                    continue
-                if not item.get("owner") and row.get("owner"):
-                    item["owner"] = row.get("owner")
-                if not item.get("trainer") and row.get("trainer"):
-                    item["trainer"] = row.get("trainer")
-                if item.get("owner") and item.get("trainer"):
-                    break
-
-        # Son gerçek yarış: hedef tarihten önceki ilk geçerli kayıt.
-        item["_last_race"] = None
-        for row in item["_history"]:
-            if not isinstance(row, dict):
-                continue
-            has_date = row.get("date") or row.get("tarih")
-            has_time = row.get("time") or row.get("derece")
-            if has_date and has_time:
-                item["_last_race"] = row
-                break
-
-        # Bu yılki kazanç: gerçek geçmişteki prize alanlarının toplamı.
-        # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
-        return item
-
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(enriched)))) as executor:
-        futures = [executor.submit(one, h) for h in enriched]
-        return [f.result() for f in futures]
-
-
-def _history_year(date_text: Any) -> int | None:
-    m = re.search(r"(20\d{2})", str(date_text or ""))
-    return int(m.group(1)) if m else None
-
-
-def _money_number(value: Any) -> float:
-    """TJK para alanını Türkçe binlik/ondalık gösterimiyle doğru parse eder.
-
-    Örnek:
-      292.000   -> 292000
-      3.655.200 -> 3655200
-      2.500,50  -> 2500.50
-    """
-    if value is None:
-        return 0.0
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-
-    text = str(value).strip()
-    if not text or text == "-":
-        return 0.0
-
-    text = text.replace("₺", "").replace("TL", "").replace("tl", "")
-    text = re.sub(r"\s+", "", text)
-    text = re.sub(r"[^0-9,.-]", "", text)
-    if not text:
-        return 0.0
-
-    if "," in text:
-        if "." in text:
-            text = text.replace(".", "").replace(",", ".")
-        else:
-            tail = text.rsplit(",", 1)[-1]
-            if len(tail) in (1, 2):
-                text = text.replace(",", ".")
-            else:
-                text = text.replace(",", "")
-    elif "." in text:
-        parts = text.split(".")
-        # TJK'da 292.000 / 3.655.200 biçimi binlik ayırıcıdır.
-        if all(part.isdigit() for part in parts) and len(parts[-1]) == 3:
-            text = "".join(parts)
-        elif len(parts) > 2:
-            text = "".join(parts)
-
-    try:
-        return float(text)
-    except ValueError:
-        return 0.0
-
-
-def _format_tl(value: float) -> str:
-    """Tabloda TJK görünümü: 3.655.200 ₺."""
-    try:
-        n = int(round(float(value)))
-    except Exception:
-        n = 0
-    return f"{n:,}".replace(",", ".") + " ₺"
-
-
-def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK geçmişindeki İkramiye toplamını hesaplar.
-
-    TJK At Bilgileri ekranındaki "Kazanç" değeri yalnızca koşu
-    ikramiyelerinin toplamı değildir; At Sahibi Primi de eklenir.
-    Verilen FRANKI CHA CHA örneğinde 3.046.000 TL ikramiye + %20
-    At Sahibi Primi = 3.655.200 TL olduğundan uygulamada resmi
-    "Kazanç" karşılığı olarak ikramiye toplamı x 1,20 kullanılır.
-    """
-    total = 0.0
-    for row in horse.get("_history", []):
-        if not isinstance(row, dict):
-            continue
-        if target_year is not None and _history_year(
-            row.get("date") or row.get("tarih")
-        ) != target_year:
-            continue
-        total += _money_number(
-            row.get("prize")
-            or row.get("ikramiye")
-            or row.get("Ikramiye")
-        )
-    return total
-
-
-def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK "Kazanç": ikramiye + At Sahibi Primi (%20)."""
-    return round(_race_prize_total(horse) * 1.20, 2)
-
-
-def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    """TJK yıllık "Kazanç": o yılın ikramiyesi + %20 At Sahibi Primi."""
-    return round(_race_prize_total(horse, target_year) * 1.20, 2)
-
-
-def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
-    workouts = horse.get("_workouts", [])
-    if not isinstance(workouts, list):
-        return None
-    for w in workouts:
-        if not isinstance(w, dict):
-            continue
-        if any(
-            str(w.get(k) or "").strip()
-            for k in (
-                "m400", "m600", "m800", "m1000", "m1200",
-                "400", "600", "800", "1000", "1200",
-                "time", "derece",
-            )
-        ):
-            return w
-    return None
-
-
-def workout_display(horse: Dict[str, Any]) -> str:
-    w = latest_workout(horse)
-    if not w:
-        return "-"
-    for keys, label in (
-        (("m1200", "1200"), "1200"),
-        (("m1000", "1000"), "1000"),
-        (("m800", "800"), "800"),
-        (("m600", "600"), "600"),
-        (("m400", "400"), "400"),
-        (("time", "derece"), ""),
-    ):
-        value = _first_value(w, list(keys))
-        value = display_value(value, "")
-        if value:
-            if label:
-                return f"{value} ({label}m)"
-            distance = display_value(_first_value(w, ["distance", "msf", "mesafe"]), "")
-            return f"{value} ({distance}m)" if distance else value
-    return "-"
-
-
-def last_race_display(horse: Dict[str, Any]) -> str:
-    """Ana tabloda SON KOŞU sütununda yalnızca gerçek dereceyi gösterir."""
-    row = horse.get("_last_race")
-    if not isinstance(row, dict):
-        return "-"
-    return display_value(
-        _first_value(row, ["time", "derece", "Derece"]),
-        "-",
-    )
-
-
-def last_race_surface(horse: Dict[str, Any]) -> str:
-    row = horse.get("_last_race")
-    if not isinstance(row, dict):
-        return ""
-    return display_value(_first_value(row, ["surface", "pist"]), "")
-
-
-def best_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
-    """TJK günlük programındaki En İyi D. tooltip bilgilerinin görünür karşılığı."""
-    best = display_value(horse.get("bestTime"), "")
-    if not best:
-        return {}
-    return {
-        "Derece": best,
-        "Hipodrom": display_value(horse.get("bestCity"), "-"),
-        "Tarih": display_value(horse.get("bestDate"), "-"),
-        "Mesafe": display_value(horse.get("bestDistance"), "-"),
-        "Bilgi": display_value(horse.get("bestInfo"), "-"),
-    }
-
-
-def last_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
-    row = horse.get("_last_race")
-    if not isinstance(row, dict):
-        return {}
-    return {
-        "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
-        "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
-        "Mesafe": display_value(_first_value(row, ["distance", "msf", "mesafe"])),
-        "Pist": display_value(_first_value(row, ["surface", "pist"])),
-        "Sıra": display_value(_first_value(row, ["place", "sira", "S"])),
-        "Derece": display_value(_first_value(row, ["time", "derece", "Derece"])),
-        "Sıklet": display_value(_first_value(row, ["weight", "kilo", "siklet"])),
-        "Jokey": display_value(_first_value(row, ["jockey", "jokey"])),
-        "HP": display_value(_first_value(row, ["hp", "HP"])),
-        "Koşu": display_value(_first_value(row, ["raceName", "race_name", "kosu"])),
-        "Sınıf": display_value(_first_value(row, ["className", "class", "sinif"])),
-        "İkramiye": display_value(_first_value(row, ["prize", "ikramiye", "Ikramiye"])),
-    }
-
-
-def _first_value(row: Dict[str, Any], keys: List[str]) -> Any:
-    for key in keys:
-        value = row.get(key)
-        if value not in (None, ""):
-            return value
-    return ""
-
-
-def _html_real_table(df: pd.DataFrame, widths=None) -> None:
-    """Gerçek TJK verisini tek başlık satırında, yatay kaydırmasız gösterir."""
-    if df.empty:
-        return
-    safe = df.copy().replace({None: "-", "": "-"}).fillna("-")
-    html = safe.to_html(
-        index=False,
-        escape=True,
-        classes="ri-real-table",
-        border=0,
-    )
-    if widths:
-        # Kolon sayısı fazla olduğunda table-layout fixed ile taşmayı engeller.
-        pass
-    st.markdown(
-        f"<div class='ri-real-table-wrap'>{html}</div>",
-        unsafe_allow_html=True,
-    )
-
-
-def _safe_video_url(row: Dict[str, Any]) -> str:
-    """TJK'nin gerçek yarış video URL'sini döndürür; URL yoksa boş bırakır."""
-    value = _first_value(row, [
-        "videoUrl", "video_url", "video", "videoLink", "video_link",
-        "urlVideo", "videoURL", "raceVideoUrl", "race_video_url",
-    ])
-    text = display_value(value, "")
-    if text.startswith("http://") or text.startswith("https://"):
-        return text
-    return ""
-
-
-def _history_tables(history: List[Dict[str, Any]]) -> None:
-    """TJK gerçek koşu geçmişi: sıralanabilir başlıklar + gerçek video bağlantısı."""
-    if not history:
-        st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
-        return
-
-    rows = []
-    for row in history:
-        if not isinstance(row, dict):
-            continue
-        owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
-        trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
-        owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
-        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
-        prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
-        rows.append({
-            "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
-            "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
-            "Msf": display_value(_first_value(row, ["distance", "msf", "mesafe", "Msf"])),
-            "Pist": display_value(_first_value(row, ["surface", "pist", "Pist"])),
-            "Sonuç": display_value(_first_value(row, ["place", "sira", "Sıra", "S"])),
-            "K Cinsi": display_value(_first_value(row, ["className", "class", "kcins", "K Cinsi", "raceType"])),
-            "Grup": display_value(_first_value(row, ["group", "grup", "Grup"])),
-            "Derece": display_value(_first_value(row, ["time", "derece", "Derece"])),
-            "Jokey": display_value(_first_value(row, ["jockey", "jokey", "Jokey"])),
-            "Kilo": display_value(_first_value(row, ["weight", "kilo", "siklet", "Sıklet"])),
-            "Takı": display_value(_first_value(row, ["equipment", "taki", "takı", "Takı"])),
-            "St": display_value(_first_value(row, ["post", "st", "start", "St"])),
-            "HP": display_value(_first_value(row, ["hp", "HP"])),
-            "Sahip / Antr.": owner_trainer,
-            "AGF": display_value(_first_value(row, ["agf", "AGF"])),
-            "Gny": display_value(_first_value(row, ["odds", "gny", "Gny"])),
-            "İkramiye": prize,
-            "Video": _safe_video_url(row),
-        })
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        st.warning("TJK geçmişinde gösterilecek kayıt bulunamadı.")
-        return
-
-    # Native Streamlit DataFrame kullanılır: sütun başlıklarına tıklayınca
-    # artan/azalan sıralama çalışır. Video sütunu gerçek URL'yi yeni sekmede açar.
-    column_config = {
-        "Tarih": st.column_config.TextColumn("Tarih", width=90),
-        "Şehir": st.column_config.TextColumn("Şehir", width=95),
-        "Msf": st.column_config.TextColumn("Msf", width=65),
-        "Pist": st.column_config.TextColumn("Pist", width=90),
-        "Sonuç": st.column_config.TextColumn("Sonuç", width=65),
-        "K Cinsi": st.column_config.TextColumn("K Cinsi", width=110),
-        "Grup": st.column_config.TextColumn("Grup", width=65),
-        "Derece": st.column_config.TextColumn("Derece", width=80),
-        "Jokey": st.column_config.TextColumn("Jokey", width=105),
-        "Kilo": st.column_config.TextColumn("Kilo", width=65),
-        "Takı": st.column_config.TextColumn("Takı", width=70),
-        "St": st.column_config.TextColumn("St", width=45),
-        "HP": st.column_config.TextColumn("HP", width=50),
-        "Sahip / Antr.": st.column_config.TextColumn("Sahip / Antr.", width=155),
-        "AGF": st.column_config.TextColumn("AGF", width=65),
-        "Gny": st.column_config.TextColumn("Gny", width=65),
-        "İkramiye": st.column_config.TextColumn("İkramiye", width=100),
-        "Video": st.column_config.LinkColumn("Video", width=55, display_text="▶"),
-    }
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-        height=min(760, 54 + len(df) * 43),
-        row_height=42,
-        key="history_detail_table",
-    )
-
-
-def _workout_tables(workouts: List[Dict[str, Any]]) -> None:
-    """TJK gerçek galopları: sıralanabilir başlıklar + varsa gerçek video bağlantısı."""
-    if not workouts:
-        st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
-        return
-
-    rows = []
-    for row in workouts:
-        if not isinstance(row, dict):
-            continue
-        rows.append({
-            "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
-            "Şehir": display_value(_first_value(row, ["city", "track", "hipodrom", "şehir", "Sehir"])),
-            "İ.Jokey": display_value(_first_value(row, ["jockey", "jokey", "rider", "binici"])),
-            "1200": display_value(_first_value(row, ["m1200", "1200", "time1200"])),
-            "1000": display_value(_first_value(row, ["m1000", "1000", "time1000"])),
-            "800": display_value(_first_value(row, ["m800", "800", "time800"])),
-            "600": display_value(_first_value(row, ["m600", "600", "time600"])),
-            "400": display_value(_first_value(row, ["m400", "400", "time400"])),
-            "Çalışma": display_value(_first_value(row, ["type", "tur", "Tür", "note", "not"])),
-            "Pist": display_value(_first_value(row, ["surface", "pist"])),
-            "Video": _safe_video_url(row),
-        })
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        st.warning("TJK galop verisinde gösterilecek kayıt bulunamadı.")
-        return
-
-    column_config = {
-        "Tarih": st.column_config.TextColumn("Tarih", width=90),
-        "Şehir": st.column_config.TextColumn("Şehir", width=95),
-        "İ.Jokey": st.column_config.TextColumn("İ.Jokey", width=100),
-        "1200": st.column_config.TextColumn("1200", width=65),
-        "1000": st.column_config.TextColumn("1000", width=65),
-        "800": st.column_config.TextColumn("800", width=65),
-        "600": st.column_config.TextColumn("600", width=65),
-        "400": st.column_config.TextColumn("400", width=65),
-        "Çalışma": st.column_config.TextColumn("Çalışma", width=90),
-        "Pist": st.column_config.TextColumn("Pist", width=90),
-        "Video": st.column_config.LinkColumn("Video", width=55, display_text="▶"),
-    }
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-        height=min(760, 54 + len(df) * 43),
-        row_height=42,
-        key="workout_detail_table",
-    )
-
-def _number(value: Any) -> float | None:
-    if value is None:
-        return None
-    text = str(value).strip().replace(',', '.')
-    if not text:
-        return None
-    m = re.search(r"-?\d+(?:\.\d+)?", text)
-    if not m:
-        return None
-    try:
-        return float(m.group(0))
-    except Exception:
-        return None
-
-
-def _time_seconds(value: Any) -> float | None:
-    if value is None:
-        return None
-    text = str(value).strip().replace(',', '.')
-    m = re.search(r"(\d+):(\d+(?:\.\d+)?)", text)
-    if m:
-        try:
-            return float(m.group(1)) * 60.0 + float(m.group(2))
-        except Exception:
-            return None
-    n = _number(text)
-    return n
-
-
-def _relative_scores(values: List[float | None], higher_is_better: bool = True) -> List[float]:
-    usable = [v for v in values if v is not None]
-    if len(usable) < 2 or max(usable) == min(usable):
-        return [50.0 if v is None else 100.0 for v in values]
-    lo, hi = min(usable), max(usable)
-    out = []
-    for v in values:
-        if v is None:
-            out.append(50.0)
-        elif higher_is_better:
-            out.append(100.0 * (v - lo) / (hi - lo))
-        else:
-            out.append(100.0 * (hi - v) / (hi - lo))
-    return out
-
-
-def _form_score(value: Any) -> float:
-    digits = [int(x) for x in re.findall(r"[1-9]", str(value or ""))]
-    if not digits:
-        return 50.0
-    # TJK formunda soldaki sonuç daha günceldir; güncele biraz daha fazla ağırlık ver.
-    weights = [1.50, 1.30, 1.15, 1.00, 0.90, 0.80]
-    used = digits[:6]
-    w = weights[:len(used)]
-    avg = sum(a * b for a, b in zip(used, w)) / sum(w)
-    return max(0.0, min(100.0, 100.0 * (9.0 - avg) / 8.0))
-
-
-def _pist_mesafe_score(horse: Dict[str, Any], race: Dict[str, Any], city: str) -> float:
-    meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
-    target_distance = _number(race.get("distance") or meta.get("distance"))
-    target_surface = str(race.get("surface") or meta.get("surface") or "").strip().lower()
-
-    history = horse.get("_history", [])
-    matching = []
-    for row in history:
-        if not isinstance(row, dict):
-            continue
-        d = _number(row.get("distance"))
-        s = str(row.get("surface") or "").strip().lower()
-        if target_distance is not None and d == target_distance and target_surface:
-            if target_surface.split()[0] in s:
-                matching.append(row)
-
-    places = [_number(x.get("place")) for x in matching]
-    places = [x for x in places if x is not None and x > 0]
-    if places:
-        return sum(max(0.0, 100.0 - (p - 1.0) * 10.0) for p in places) / len(places)
-
-    # Aynı pistte yakın mesafe varsa ikinci seviye.
-    nearby = []
-    for row in history:
-        if not isinstance(row, dict):
-            continue
-        d = _number(row.get("distance"))
-        s = str(row.get("surface") or "").strip().lower()
-        if d is None or target_distance is None:
-            continue
-        if abs(d - target_distance) <= 100 and target_surface and target_surface.split()[0] in s:
-            p = _number(row.get("place"))
-            if p is not None and p > 0:
-                nearby.append(p)
-    if nearby:
-        return sum(max(0.0, 90.0 - (p - 1.0) * 10.0) for p in nearby) / len(nearby)
-
-    return 50.0
-
-
-
-def _class_level_from_text(value: Any) -> float | None:
-    """TJK geçmişindeki koşu sınıfını tek bir sınıf seviyesine dönüştürür.
-
-    Bu değer BİZİM SKOR veya ŞART UYUMU değildir.
-    Amaç yalnızca atın son gerçek koşularında hangi sınıf seviyelerinde
-    koştuğunu ölçmek ve bunu GÜNCEL SINIF olarak göstermek.
-
-    Öncelik: açık sınıf > KV > Şartlı > Handikap.
-    Handikaplarda H numarası doğrudan kullanılır.
-    Şartlı koşularda Şartlı 1-5 sırası kullanılır.
-    """
-    text = str(value or "").upper().strip()
-    if not text or text == "-":
-        return None
-
-    # Açık sınıf koşular
-    for pat, score in (
-        (r"\bG\s*1\b", 100.0),
-        (r"\bG\s*2\b", 97.0),
-        (r"\bG\s*3\b", 94.0),
-        (r"\bAÇIK\b", 90.0),
-    ):
-        if re.search(pat, text):
-            return score
-
-    # Kısa vadeli / KV koşuları. KV numarası yükseldikçe sınıf seviyesi yükselir.
-    m = re.search(r"\bKV\s*[- ]?\s*(\d+)\b", text)
-    if m:
-        n = int(m.group(1))
-        return min(89.0, 70.0 + n * 2.0)
-
-    # Şartlı 1-5.
-    m = re.search(r"ŞARTLI\s*([1-5])\b|ŞART\s*([1-5])\b", text)
-    if m:
-        n = int(m.group(1) or m.group(2))
-        return 35.0 + n * 7.0
-
-    # Handikap H1-H18. H numarası sınıf seviyesini doğrudan temsil eder.
-    m = re.search(r"\bH\s*(\d{1,2})\b", text)
-    if m:
-        n = int(m.group(1))
-        return min(86.0, 30.0 + n * 3.0)
-
-    # Satış / Maiden gibi diğer yarışlar.
-    if "SATIŞ" in text or "SATIS" in text:
-        m = re.search(r"(?:SATIŞ|SATIS)\s*[- ]?(\d+)", text)
-        return 25.0 + (int(m.group(1)) if m else 1) * 3.0
-    if "MAIDEN" in text:
-        return 25.0
-
-    return None
-
-
-def _history_class_text(row: Dict[str, Any]) -> str:
-    """Geçmiş yarış kaydındaki gerçek TJK sınıf/koşu adını al."""
-    return display_value(_first_value(row, [
-        "className", "class", "sinif", "Sınıf",
-        "raceName", "race_name", "kosu", "Koşu",
-    ]), "")
-
-
-# ============================================================
-# TJK-ONLY ŞART UYUMU ENDEKSİ
-# ============================================================
-# Bu skor yalnızca TJK'dan gelen koşu şartları ve TJK geçmiş
-# koşu kayıtları üzerinden hesaplanır.
-#
-# KULLANILMAZ:
-#   AGF / galop / jokey / Son 6 / Bizim Skor
-#
-# KULLANILIR:
-#   Yarış tipi, sınıf, ırk, yaş, pist, mesafe, HP, kilo,
-#   geçmiş koşu sonucu.
-# ============================================================
-
-def _su_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return (
-        str(value).strip().upper()
-        .replace("İ", "I")
-        .replace("Ğ", "G")
-        .replace("Ü", "U")
-        .replace("Ş", "S")
-        .replace("Ö", "O")
-        .replace("Ç", "C")
-    )
-
-
-def _su_number(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    s = str(value).strip().replace(",", ".")
-    m = re.search(r"-?\d+(?:\.\d+)?", s)
-    return float(m.group()) if m else None
-
-
-def _su_class(value: Any) -> int | None:
-    if value is None:
-        return None
-    s = _su_text(value)
-    m = re.search(r"(?:H|SARTLI|KV)\s*[-/]?\s*(\d+)", s)
-    return int(m.group(1)) if m else None
-
-
-def _su_family(value: Any) -> str:
-    s = _su_text(value).replace(" ", "").replace("-", "").replace("/", "")
-    if s.startswith("H"):
-        return "HANDIKAP"
-    if "SARTLI" in s:
-        return "SARTLI"
-    if s.startswith("KV"):
-        return "KV"
-    if "MAIDEN" in s:
-        return "MAIDEN"
-    if s.startswith("G1"):
-        return "G1"
-    if s.startswith("G2"):
-        return "G2"
-    if s.startswith("G3"):
-        return "G3"
-    return s
-
-
-def _su_race_type_score(past_type: Any, today_type: Any) -> float:
-    p = _su_text(past_type).replace(" ", "").replace("-", "").replace("/", "")
-    t = _su_text(today_type).replace(" ", "").replace("-", "").replace("/", "")
-    if p == t and p:
-        return 100.0
-
-    pf = _su_family(p)
-    tf = _su_family(t)
-
-    if pf == tf:
-        return 82.0
-
-    if {pf, tf} <= {"HANDIKAP", "SARTLI"}:
-        return 58.0
-
-    if {pf, tf} <= {"KV", "G1", "G2", "G3"}:
-        return 65.0
-
-    return 30.0
-
-
-def _su_class_score(past_class: Any, today_class: Any) -> float:
-    if past_class is None or today_class is None:
-        return 50.0
-    d = abs(int(past_class) - int(today_class))
-    if d == 0:
-        return 100.0
-    if d == 1:
-        return 92.0
-    if d == 2:
-        return 82.0
-    if d == 3:
-        return 70.0
-    if d == 4:
-        return 58.0
-    if d <= 6:
-        return 42.0
-    return 25.0
-
-
-def _su_distance_score(past_distance: Any, today_distance: Any) -> float:
-    p = _su_number(past_distance)
-    t = _su_number(today_distance)
-    if p is None or t is None:
-        return 50.0
-    d = abs(p - t)
-    if d == 0:
-        return 100.0
-    if d <= 100:
-        return 95.0
-    if d <= 200:
-        return 86.0
-    if d <= 300:
-        return 74.0
-    if d <= 400:
-        return 60.0
-    if d <= 500:
-        return 45.0
-    if d <= 700:
-        return 28.0
-    return 10.0
-
-
-def _su_weight_score(past_weight: Any, today_weight: Any) -> float:
-    p = _su_number(past_weight)
-    t = _su_number(today_weight)
-    if p is None or t is None:
-        return 50.0
-    d = abs(p - t)
-    if d == 0:
-        return 100.0
-    if d <= 1:
-        return 97.0
-    if d <= 2:
-        return 92.0
-    if d <= 3:
-        return 85.0
-    if d <= 4:
-        return 76.0
-    if d <= 5:
-        return 65.0
-    if d <= 6:
-        return 52.0
-    if d <= 8:
-        return 38.0
-    return 25.0
-
-
-def _su_hp_score(past_hp: Any, today_hp: Any) -> float:
-    p = _su_number(past_hp)
-    t = _su_number(today_hp)
-    if p is None or t is None:
-        return 50.0
-    d = abs(p - t)
-    if d == 0:
-        return 100.0
-    if d <= 2:
-        return 97.0
-    if d <= 4:
-        return 92.0
-    if d <= 7:
-        return 84.0
-    if d <= 10:
-        return 74.0
-    if d <= 15:
-        return 58.0
-    if d <= 20:
-        return 42.0
-    return 25.0
-
-
-def _su_finish_score(value: Any) -> float:
-    p = _su_number(value)
-    if p is None:
-        return 50.0
-    p = int(p)
-    if p == 1:
-        return 100.0
-    if p == 2:
-        return 96.0
-    if p == 3:
-        return 92.0
-    if p == 4:
-        return 86.0
-    if p == 5:
-        return 78.0
-    if p == 6:
-        return 68.0
-    if p == 7:
-        return 57.0
-    if p == 8:
-        return 47.0
-    if p == 9:
-        return 37.0
-    return 25.0
-
-
-def _su_parse_today(race: Dict[str, Any]) -> Dict[str, Any]:
-    meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
-
-    race_type = (
-        race.get("condition")
-        or meta.get("detail")
-        or meta.get("raceName")
-        or ""
-    )
-
-    distance = _su_number(
-        race.get("distance") or meta.get("distance")
-    )
-
-    surface = (
-        race.get("surface")
-        or meta.get("surface")
-        or ""
-    )
-
-    class_no = (
-        race.get("class_no")
-        or race.get("class")
-        or _su_class(race_type)
-    )
-
-    breed = (
-        race.get("breed")
-        or race.get("irk")
-        or meta.get("breed")
-        or meta.get("irk")
-        or ""
-    )
-
-    age_text = _su_text(
-        race.get("age")
-        or race.get("yas")
-        or meta.get("age")
-        or ""
-    )
-
-    ages = [int(x) for x in re.findall(r"\d+", age_text)]
-
-    return {
-        "race_type": race_type,
-        "class_no": int(class_no) if class_no is not None else None,
-        "breed": breed,
-        "surface": surface,
-        "distance": distance,
-        "age_min": min(ages) if ages else None,
-    }
-
-
-def _su_history_row_match(
-    horse: Dict[str, Any],
-    row: Dict[str, Any],
-    today: Dict[str, Any],
-) -> float | None:
-
-    if not isinstance(row, dict):
-        return None
-
-    # TJK geçmiş kaydındaki alan adlarını kullan.
-    past_type = (
-        row.get("raceName")
-        or row.get("race_name")
-        or row.get("kosu")
-        or row.get("condition")
-        or row.get("className")
-        or row.get("class")
-        or ""
-    )
-
-    past_class = (
-        row.get("className")
-        or row.get("class")
-        or row.get("sinif")
-        or _su_class(past_type)
-    )
-
-    past_breed = (
-        row.get("breed")
-        or row.get("irk")
-        or row.get("horseType")
-        or row.get("horse_type")
-        or ""
-    )
-
-    today_breed = _su_text(today["breed"])
-
-    # Geçmiş kaydında ırk açıkça varsa ve farklıysa kullanma.
-    if past_breed and today_breed:
-        if _su_text(past_breed) != today_breed:
-            return None
-
-    past_surface = (
-        row.get("surface")
-        or row.get("pist")
-        or ""
-    )
-
-    today_surface = _su_text(today["surface"])
-
-    # Aynı pist şartı zorunlu.
-    if past_surface and today_surface:
-        if _su_text(past_surface) != today_surface:
-            return None
-
-    past_distance = (
-        row.get("distance")
-        or row.get("msf")
-        or row.get("mesafe")
-    )
-
-    past_weight = (
-        row.get("weight")
-        or row.get("kilo")
-        or row.get("siklet")
-    )
-
-    past_hp = (
-        row.get("hp")
-        or row.get("HP")
-        or row.get("rating")
-    )
-
-    place = (
-        row.get("place")
-        or row.get("sira")
-        or row.get("S")
-    )
-
-    today_weight = (
-        horse.get("weight")
-        or horse.get("siklet")
-        or horse.get("Sıklet")
-    )
-
-    today_hp = (
-        horse.get("hp")
-        or horse.get("HP")
-        or horse.get("rating")
-    )
-
-    scores = {
-        "race_type": _su_race_type_score(
-            past_type,
-            today["race_type"]
-        ),
-        "class": _su_class_score(
-            _su_class(past_class),
-            today["class_no"]
-        ),
-        "distance": _su_distance_score(
-            past_distance,
-            today["distance"]
-        ),
-        "weight": _su_weight_score(
-            past_weight,
-            today_weight
-        ),
-        "hp": _su_hp_score(
-            past_hp,
-            today_hp
-        ),
-        "finish": _su_finish_score(place),
-    }
-
-    # Eksik değerler 50 ile nötr kalır.
-    # Pist + ırk eşleşmesi yukarıda filtrelenir.
-    return (
-        scores["race_type"] * 0.20
-        + scores["class"] * 0.20
-        + scores["distance"] * 0.20
-        + scores["weight"] * 0.15
-        + scores["hp"] * 0.15
-        + scores["finish"] * 0.10
-    )
-
-
-def calculate_sart_uyumu(
-    horse: Dict[str, Any],
-    race: Dict[str, Any],
-) -> Dict[str, Any]:
-
-    today = _su_parse_today(race)
-
-    history = horse.get("_history", [])
-
-    if not isinstance(history, list):
-        history = []
-
-    matches = []
-
-    for row in history:
-
-        score = _su_history_row_match(
-            horse,
-            row,
-            today
-        )
-
-        if score is None:
-            continue
-
-        matches.append({
-            "score": score,
-            "date": (
-                row.get("date")
-                or row.get("tarih")
-                or ""
-            ),
-            "race": (
-                row.get("raceName")
-                or row.get("race_name")
-                or row.get("kosu")
-                or ""
-            ),
-            "distance": (
-                row.get("distance")
-                or row.get("msf")
-                or row.get("mesafe")
-                or ""
-            ),
-            "surface": (
-                row.get("surface")
-                or row.get("pist")
-                or ""
-            ),
-            "weight": (
-                row.get("weight")
-                or row.get("kilo")
-                or row.get("siklet")
-                or ""
-            ),
-            "hp": (
-                row.get("hp")
-                or row.get("HP")
-                or ""
-            ),
-            "finish": (
-                row.get("place")
-                or row.get("sira")
-                or row.get("S")
-                or ""
-            ),
-        })
-
-    matches.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    # En güçlü gerçek TJK şart eşleşmelerini kullan.
-    selected = matches[:5]
-
-    if not selected:
-        return {
-            "score": 50.0,
-            "confidence": 0.0,
-            "sample": 0,
-            "matches": [],
-        }
-
-    # En iyi eşleşme daha belirleyicidir.
-    rank_weights = [0.40, 0.25, 0.15, 0.12, 0.08]
-
-    total = 0.0
-    weight_sum = 0.0
-
-    for i, item in enumerate(selected):
-        w = rank_weights[i]
-        total += item["score"] * w
-        weight_sum += w
-
-    score = total / weight_sum
-
-    # Güven: gerçek TJK şart eşleşmesi sayısına göre.
-    sample = len(matches)
-
-    if sample >= 10:
-        confidence = 100.0
-    elif sample >= 7:
-        confidence = 90.0
-    elif sample >= 5:
-        confidence = 80.0
-    elif sample >= 3:
-        confidence = 65.0
-    elif sample >= 2:
-        confidence = 45.0
-    else:
-        confidence = 30.0
-
-    # Tek eşleşmenin skoru gereğinden fazla yükseltmesini önle.
-    if sample == 1:
-        score = score * 0.75 + 50.0 * 0.25
-    elif sample == 2:
-        score = score * 0.85 + 50.0 * 0.15
-
-    return {
-        "score": round(max(0.0, min(100.0, score)), 1),
-        "confidence": confidence,
-        "sample": sample,
-        "matches": selected,
-    }
-
-
-def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
-    """Atın son gerçek TJK yarışlarından güncel sınıf seviyesini hesaplar.
-
-    - Galop, AGF, jokey, bugünkü kilo ve bugünkü HP kullanılmaz.
-    - Yalnızca atın gerçek geçmiş yarışlarındaki sınıf/koşu bilgisi kullanılır.
-    - En yeni yarış daha yüksek ağırlıklıdır.
-    - Sınıf bilgisi olmayan kayıtlar puana dahil edilmez.
-    """
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return 50.0
-
-    parsed = []
-    for row in history:
-        if not isinstance(row, dict):
-            continue
-        class_text = _history_class_text(row)
-        level = _class_level_from_text(class_text)
-        if level is None:
-            continue
-        parsed.append((row, level))
-        if len(parsed) >= max_races:
-            break
-
-    if not parsed:
-        return 50.0
-
-    # TJK geçmişi yeni -> eski sıralı geliyor. Değilse tarih üzerinden sıralamayı
-    # zorlamıyoruz; Worker'ın verdiği gerçek sıra korunuyor.
-    weights = [1.00, 0.85, 0.70, 0.55, 0.40]
-    used = weights[:len(parsed)]
-    weighted = sum(level * w for (_, level), w in zip(parsed, used)) / sum(used)
-    return round(max(0.0, min(100.0, weighted)), 1)
-
-
-def calculate_ranking(
-    horses: List[Dict[str, Any]],
-    race: Dict[str, Any],
-    city: str,
-) -> List[Dict[str, Any]]:
-    if not horses:
-        return []
-
-    hp_values = [_number(h.get("hp")) for h in horses]
-    weight_values = [_number(h.get("weight") or h.get("siklet")) for h in horses]
-
-    hp_scores = _relative_scores(hp_values, True)
-    weight_scores = _relative_scores(weight_values, False)
-
-    results = []
-    for i, horse in enumerate(horses):
-        pist = _pist_mesafe_score(horse, race, city)
-
-        # Gerçek ortak rakip: aynı tarih + şehir + mesafe üzerinden geçmiş yarış kayıtları.
-        common_scores = []
-        for other in horses:
-            if other is horse:
-                continue
-            for a in horse.get("_history", []):
-                if not isinstance(a, dict):
-                    continue
-                for b in other.get("_history", []):
-                    if not isinstance(b, dict):
-                        continue
-                    if (
-                        str(a.get("date")) == str(b.get("date"))
-                        and str(a.get("city")).lower() == str(b.get("city")).lower()
-                        and str(a.get("distance")) == str(b.get("distance"))
-                    ):
-                        pa = _number(a.get("place"))
-                        pb = _number(b.get("place"))
-                        if pa is not None and pb is not None:
-                            common_scores.append(100.0 if pa < pb else 0.0 if pa > pb else 50.0)
-        ortak = sum(common_scores) / len(common_scores) if common_scores else 50.0
-
-        sinif = hp_scores[i]
-        form = _form_score(horse.get("form") or horse.get("last6"))
-        kilo = weight_scores[i]
-
-        # Gerçek geçmişteki derece / aynı pist normalize.
-        times = []
-        meta = race.get("meta") if isinstance(race.get("meta"), dict) else {}
-        target_surface = str(race.get("surface") or meta.get("surface") or "").lower()
-        for row in horse.get("_history", []):
-            if not isinstance(row, dict):
-                continue
-            sec = _time_seconds(row.get("time"))
-            dist = _number(row.get("distance"))
-            surf = str(row.get("surface") or "").lower()
-            if sec and dist and target_surface and target_surface.split()[0] in surf:
-                times.append(sec / (dist / 1000.0))
-        derece = 50.0
-        if times:
-            avg = sum(times) / len(times)
-            derece = max(0.0, min(100.0, 100.0 - (avg - min(times)) / max(0.001, max(times) - min(times)) * 100.0)) if len(times) > 1 else 70.0
-
-        w = latest_workout(horse)
-        workout_values = []
-        if w:
-            for key in ("m1200", "m1000", "m800", "m600", "m400", "m200"):
-                sec = _time_seconds(w.get(key))
-                if sec is not None:
-                    workout_values.append(sec)
-        galop_raw = min(workout_values) if workout_values else None
-        galop = 50.0 if galop_raw is None else max(0.0, min(100.0, 100.0 - galop_raw))
-
-        last = horse.get("_last_race")
-        hiz = 50.0
-        if isinstance(last, dict):
-            sec = _time_seconds(last.get("time"))
-            dist = _number(last.get("distance"))
-            if sec and dist:
-                hiz = dist / sec * 3.6
-
-        components = {
-            "Pist / Mesafe": pist,
-            "Ortak Rakip": ortak,
-            "Sınıf / HP": sinif,
-            "Güncel Form": form,
-            "Kilo": kilo,
-            "Derece": derece,
-            "Galop / Tempo": galop,
-            "Ham Hız": hiz,
-        }
-
-        weights = current_weights()
-        total_w = sum(weights.values())
-        ham = sum(components[k] * weights[k] for k in weights)
-        final_score = ham / total_w if total_w else 0.0
-
-        results.append({
-            "horse_index": i,
-            "score": round(final_score, 2),
-            "components": components,
-            "son_hiz": hiz,
-            "galop": workout_display(horse),
-        })
-
-    results.sort(key=lambda x: (-x["score"], x["horse_index"]))
-    for rank, item in enumerate(results, 1):
-        item["rank"] = rank
-        score = item["score"]
-        item["label"] = (
-            "Çok Güçlü" if score >= 75 else
-            "Güçlü" if score >= 65 else
-            "Şanslı" if score >= 55 else
-            "Sürpriz" if score >= 45 else
-            "Zayıf"
-        )
-    return results
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.title("🏇 Yarış Programı")
-
-# Gün değiştiğinde önceki Streamlit widget state'inin (örn. 12/09)
-# yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
-# farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
-# otomatik olarak bugüne geçilir.
-# Türkiye yerel tarihi: sunucu UTC olsa bile gün değişimini Europe/Istanbul
-# üzerinden belirle. Böylece 00:00 sonrası tarih otomatik 13/09 gibi yeni güne geçer.
-try:
-    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date() if ZoneInfo else date.today()
-except Exception:
-    _today = date.today()
-if st.session_state.get("_date_auto_sync_day") != _today:
-    st.session_state["selected_date_widget"] = _today
-    st.session_state["_date_auto_sync_day"] = _today
-
-selected_date = st.sidebar.date_input(
-    "Tarih",
-    key="selected_date_widget",
-)
-
-
-# ============================================================
-# HİPODROM
-# ============================================================
-
-with st.sidebar:
-    with st.spinner("TJK'daki aktif hipodromlar kontrol ediliyor..."):
-        active_cities = load_active_cities(selected_date)
-
-if not active_cities:
-    st.sidebar.warning(
-        f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
-    )
-    st.info(
-        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
-    )
-    st.stop()
-
-if st.session_state.loaded_city in active_cities:
-    default_city_index = active_cities.index(
-        st.session_state.loaded_city
-    )
-else:
-    default_city_index = 0
-
-selected_city = st.sidebar.selectbox(
-    "Hipodrom",
-    active_cities,
-    index=default_city_index,
-)
-
-# ============================================================
-# PROGRAMI GETİR
-# ============================================================
-
-get_program_clicked = st.sidebar.button(
-    "📥 PROGRAMI GETİR",
-    key="program_get_button",
-    use_container_width=True,
-)
-
-# Program özeti, program verisi alındıktan sonra sol panelde gösterilir.
-
-if get_program_clicked:
-
-    # Önce eski programı temizle
-    st.session_state.program_data = None
-
-    st.session_state.loaded_date = None
-    st.session_state.loaded_city = None
-
-    try:
-
-        result = fetch_program_with_status(
-            selected_date,
-            selected_city,
-            "PROGRAM GETİR",
-        )
-
-        st.session_state.program_data = result
-        st.session_state.loaded_date = selected_date
-        st.session_state.loaded_city = selected_city
-        st.session_state.selected_race = 1
-
-    except Exception as exc:
-
-        st.error(
-            "Program alınırken hata oluştu."
-        )
-
-        st.code(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# OTOMATİK PROGRAM YÜKLE
-# ============================================================
-
-program_data = st.session_state.program_data
-
-
-if program_data is None:
-
-    try:
-
-        program_data = fetch_program_with_status(
-            selected_date,
-            selected_city,
-            "PROGRAM HAZIRLANIYOR",
-        )
-
-        st.session_state.program_data = program_data
-        st.session_state.loaded_date = selected_date
-        st.session_state.loaded_city = selected_city
-        st.session_state.selected_race = 1
-
-    except Exception as exc:
-
-        st.error(
-            "Beklenmeyen hata oluştu."
-        )
-
-        st.code(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# PROGRAM GEÇERLİ Mİ?
-# ============================================================
-
-if not isinstance(
-    program_data,
-    dict,
-):
-
-    st.error(
-        "TJK'dan gelen program verisi geçersiz."
-    )
-
-    st.stop()
-
-
-# ============================================================
-# TARİH / HİPODROM DEĞİŞİKLİĞİ KONTROLÜ
-# ============================================================
-
-loaded_date = st.session_state.loaded_date
-loaded_city = st.session_state.loaded_city
-
-
-if (
-    loaded_date != selected_date
-    or loaded_city != selected_city
-):
-
-    try:
-
-        program_data = fetch_program_with_status(
-            selected_date,
-            selected_city,
-            "PROGRAM YENİLENİYOR",
-        )
-
-        st.session_state.program_data = program_data
-        st.session_state.loaded_date = selected_date
-        st.session_state.loaded_city = selected_city
-        st.session_state.selected_race = 1
-
-    except Exception as exc:
-
-        st.error(
-            "Program yenilenirken hata oluştu."
-        )
-
-        st.code(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# KOŞULAR
-# ============================================================
-
-races = program_data.get(
-    "races",
-    [],
-)
-
-
-if not isinstance(
-    races,
-    list,
-):
-
-    races = []
-
-# Program özeti races tanımlandıktan sonra gösterilir.
-st.sidebar.markdown(
-    f"<div class='sidebar-program-status'>"
-    f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-    f"{len(races)} koşu bulundu.<br>"
-    f"<b>✓ {len(races)} koşu • "
-    f"{sum(len(r.get('horses', [])) for r in races if isinstance(r, dict))} at verisi alındı</b>"
-    f"</div>",
-    unsafe_allow_html=True,
-)
-
-
-if not races:
-
-    st.warning(
-        f"{selected_city} — "
-        f"{selected_date.strftime('%d/%m/%Y')} "
-        "için koşu bulunamadı."
-    )
-
-    st.info(
-        "TJK'dan bu tarih ve hipodrom için "
-        "koşu verisi alınamadı."
-    )
-
-    # Debug göster
-    with st.expander(
-        "🔧 Teknik Debug"
-    ):
-
-        st.json(
-            program_data
-        )
-
-    st.stop()
-
-
-# ============================================================
-# PROGRAM BİLGİSİ
-# ============================================================
-
-# Üstteki yeşil program bilgi bandı bilinçli olarak kaldırıldı.
-# Program bilgisi yalnızca sol panelde, PROGRAMI GETİR butonunun altında gösterilir.
-
-
-# ============================================================
-# KOŞU SEÇİMİ
-# ============================================================
-
-st.subheader("Koşular")
-
-
-# Koşu butonları pist türüne göre V34 renk düzeninde boyanır.
-_race_css = ["<style>"]
-for _idx, _race in enumerate(races):
-    _surface = str(_race.get("surface") or (_race.get("meta") or {}).get("surface") or "").lower()
-    _is_dirt = "kum" in _surface
-    _bg = "#b77a2b" if _is_dirt else "#239447"
-    _race_css.append(
-        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button'
-        f'{{background:{_bg};border-color:{_bg};color:#fff;font-weight:800;}}'
-    )
-    _race_css.append(
-        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button:hover'
-        f'{{filter:brightness(1.08);color:#fff;}}'
-    )
-_race_css.append("</style>")
-st.markdown("\n".join(_race_css), unsafe_allow_html=True)
-
-race_columns = st.columns(
-    len(races)
-)
-
-
-for index, race in enumerate(races):
-
-    race_number = get_race_number(
-        race,
-        index + 1,
-    )
-
-    race_time = display_value(
-        race.get("race_time")
-    )
-
-    if race_time != "-":
-
-        label = (
-            f"{race_number}. KOŞU {race_time}"
-        )
-
-    else:
-
-        label = str(race_number)
-
-    selected = (
-        st.session_state.selected_race
-        == race_number
-    )
-
-    with race_columns[index]:
-
-        if st.button(
-            label,
-            key=f"race_button_{race_number}",
-            use_container_width=True,
-            type=(
-                "primary"
-                if selected
-                else "secondary"
-            ),
-        ):
-
-            st.session_state.selected_race = (
-                race_number
-            )
-
-            st.rerun()
-
-
-# ============================================================
-# SEÇİLEN KOŞUYU BUL
-# ============================================================
-
-selected_race = None
-
-
-for index, race in enumerate(races):
-
-    race_number = get_race_number(
-        race,
-        index + 1,
-    )
-
-    if (
-        race_number
-        == st.session_state.selected_race
-    ):
-
-        selected_race = race
-
-        break
-
-
-# Eğer seçilen koşu bulunamazsa ilk koşuyu göster
-if selected_race is None:
-
-    selected_race = races[0]
-
-    st.session_state.selected_race = (
-        get_race_number(
-            selected_race,
-            1,
-        )
-    )
-
-
-# Koşu değiştiğinde eski at seçimini ve eski analiz durumunu temizle.
-_current_race_signature = (
-    str(st.session_state.get("loaded_date")),
-    str(st.session_state.get("loaded_city")),
-    int(st.session_state.get("selected_race", 1)),
-)
-if st.session_state.get("_last_race_signature") != _current_race_signature:
-    st.session_state.selected_horse_no = None
-    st.session_state.selected_horse_index = None
-    # GERÇEK VERİ modu varsayılandır: yeni koşu seçildiğinde geçmiş
-    # yarış/galop verisini otomatik olarak hazırla. Aksi halde ŞART UYUMU
-    # ve GÜNCEL SINIF, veri gelmeden zorunlu olarak 50.0 gösterirdi.
-    st.session_state.real_analysis_requested = True
-    st.session_state.real_analysis_done = False
-    st.session_state["_last_race_signature"] = _current_race_signature
-
-# ============================================================
-# KOŞU BİLGİLERİ
-# ============================================================
-
-race_number = get_race_number(selected_race, 1)
-race_time = display_value(selected_race.get("race_time"))
-distance = display_value(selected_race.get("distance"))
-surface = display_value(selected_race.get("surface"))
-condition = get_race_condition(selected_race)
-
-st.markdown(
-    f"""<div class='race-info-compact'>
-        <div class='race-title-panel'>
-            <span class='race-title-main'>{race_time if race_time != '-' else ''}</span>
-            <span class='race-condition'>{condition}</span>
-            <span class='race-distance'>{distance} {surface}</span>
-        </div>
-    </div>""",
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# AT LİSTESİ
-# ============================================================
-
-# ============================================================
-# AT LİSTESİ
-# ============================================================
-
-horses = selected_race.get(
-    "horses",
-    [],
-)
-
-
-if not isinstance(
-    horses,
-    list,
-):
-
-    horses = []
-
-
-if not horses:
-
-    st.warning(
-        "Seçilen koşuya ait at verisi henüz alınmadı."
-    )
-
-else:
-
-    # GERÇEK VERİYLE ANALİZ: Worker V1'in mevcut /api/tjk/horsedata
-    # endpointi üzerinden her koşan atın geçmiş + galop verisini al.
-    if st.session_state.get("real_analysis_requested"):
-        # "GERÇEK VERİ İLE ANALİZ ET" her basıldığında yeni TJK isteği yapılabilsin.
-        # Önceki başarısız/boş cevap cache'de tutulursa buton tekrar basıldığında
-        # Worker'a hiç gitmeden aynı boş sonuç dönebilir.
-        try:
-            load_horse_enrichment.clear()
-        except Exception:
-            pass
-
-        real_status = st.status(
-            "🔄 TJK gerçek verileri çekiliyor...",
-            expanded=True,
-        )
-        real_status.write(
-            f"📡 {len(horses)} koşan at için gerçek koşu geçmişi + galop sorgulanıyor..."
-        )
-        real_status.write(
-            f"🎯 Hedef: {selected_city} • {distance} • {surface} • {condition}"
-        )
-        try:
-            horses = enrich_race_horses(
-                horses,
-                target_date=selected_date,
-                target_city=selected_city,
-                target_distance=distance,
-                target_surface=surface,
-                target_class=condition,
-            )
-            history_count = sum(
-                len(h.get("_history", []))
-                for h in horses
-                if isinstance(h, dict)
-            )
-            workout_count = sum(
-                len(h.get("_workouts", []))
-                for h in horses
-                if isinstance(h, dict)
-            )
-            st.session_state.real_analysis_done = True
-            real_status.update(
-                label=(
-                    f"✅ Gerçek TJK verileri alındı • "
-                    f"{history_count} koşu kaydı • {workout_count} galop kaydı"
-                ),
-                state="complete",
-                expanded=False,
-            )
-        except Exception as exc:
-            real_status.update(
-                label="❌ Gerçek TJK veri analizi başarısız",
-                state="error",
-                expanded=True,
-            )
-            real_status.write(str(exc))
-            st.error(f"Gerçek veri analizi sırasında hata: {exc}")
-        selected_race["horses"] = horses
-        st.session_state.real_analysis_requested = False
-
-    ranking = calculate_ranking(horses, selected_race, selected_city)
-    # Analiz sonucu horse_index üzerinden eşlenir.
-    # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
-    by_index = {item["horse_index"]: item for item in ranking}
-
-    # ========================================================
-    # TJK YENİ ANA TABLO — TIKLANABİLİR SATIR + SIRALAMA/FİLTRE
-    # ========================================================
-    target_year = selected_date.year
-    table_rows = []
-
-    for horse_index, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-
-        form = get_horse_form(horse)
-        form_digits = "".join(re.findall(r"[0-9Xx-]", form)) if form != "-" else "-"
-        r = by_index.get(
-            horse_index,
-            {"rank": "-", "score": 0.0, "label": "-", "components": {}},
-        )
-
-        owner = horse.get("owner") or ""
-        trainer = horse.get("trainer") or ""
-        for hist in horse.get("_history", []):
-            if not isinstance(hist, dict):
-                continue
-            if not owner and hist.get("owner"):
-                owner = hist.get("owner")
-            if not trainer and hist.get("trainer"):
-                trainer = hist.get("trainer")
-            if owner and trainer:
-                break
-
-        comps = r.get("components", {})
-        # GÜNCEL SINIF artık Güncel Form bileşeninden alınmaz.
-        # Gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
-        current_class = calculate_guncel_sinif(horse)
-        sart_result = calculate_sart_uyumu(horse, selected_race)
-        sart_uyumu = float(sart_result.get("score", 50.0))
-
-        table_rows.append({
-            "_horse_index": horse_index,
-            "_horse_no": int(get_horse_number(horse, horse_index + 1)),
-            "_rank": int(r["rank"]) if str(r["rank"]).isdigit() else 999999,
-            # No = TJK'nın gerçek programdaki AT NUMARASI.
-            # Analiz sırası ile at numarasını birbirine karıştırma.
-            "No": int(get_horse_number(horse, horse_index + 1)),
-            "At İsmi": "\n".join([x for x in (get_horse_name(horse), get_horse_equipment(horse)) if x]),
-            "Yaş": get_horse_age(horse),
-            "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
-            "Kilo": get_horse_weight(horse),
-            "Jokey": get_horse_jockey(horse),
-            "Sahip / Antrenör": "\n".join([x for x in (owner, trainer) if x]) or "-",
-            "St": get_horse_start(horse),
-            "HP": get_horse_hp(horse),
-            "Son 6 Y.": form_digits,
-            "KGS": get_horse_kgs(horse),
-            "s20": display_value(horse.get("s20")),
-            "EİD": display_value(horse.get("bestTime")),
-            "Gny": display_value(horse.get("odds")),
-            "AGF": get_horse_agf(horse),
-            "BİZİM SKOR": r["score"],
-            "ŞART UYUMU": sart_uyumu,
-            "GÜNCEL SINIF": current_class,
-            "SON GALOP": workout_display(horse),
-            "SON KOŞU": last_race_display(horse),
-            "_SON_KOSU_PIST": last_race_surface(horse),
-            "BU YIL KAZANÇ": _format_tl(year_earnings(horse, target_year)),
-            "TOPLAM KAZANÇ": _format_tl(total_earnings(horse)),
-            "_ORIGIN_SIRE": _split_origin(get_horse_origin(horse))[0],
-            "_ORIGIN_DAM": _split_origin(get_horse_origin(horse))[1],
-            "_JOCKEY_NAME": get_horse_jockey(horse).split("\n", 1)[0],
-            "_JOCKEY_AP": (get_horse_jockey(horse).split("\n", 1)[1] if "\n" in get_horse_jockey(horse) else ""),
-            "_OWNER": owner or "-",
-            "_TRAINER": trainer or "-",
-            "_WEIGHT_BASE": _weight_parts(horse.get("siklet") or horse.get("Sıklet") or horse.get("weight"))[0],
-            "_WEIGHT_EXTRA": _weight_parts(horse.get("siklet") or horse.get("Sıklet") or horse.get("weight"))[1],
-            "_EID_RAW": display_value(horse.get("bestTime")),
-            "_CELL_CLICK": "",
-            "Sahip": owner or "-",
-            "Antrenör": trainer or "-",
-        })
-
-    # Ekran sırası TJK programındaki gerçek AT NUMARASIDIR.
-    # Analiz sırası (_rank) yalnızca BİZİM SKOR / analiz özetinde kullanılır.
-    # Böylece program 1,2,3,4... şeklinde gelir; 3,2,4,9 gibi skor sıralaması
-    # ana program tablosunun düzenini bozmaz.
-    table_rows.sort(key=lambda row: (
-        int(row.get("_horse_no", 999999)),
-        int(row.get("_horse_index", 999999)),
-    ))
-
-    df = pd.DataFrame(table_rows)
-    display_columns = [
-        "No", "At İsmi", "Yaş", "Orijin (Baba-Anne)", "Kilo", "Jokey",
-        "Sahip / Antrenör", "St", "HP", "Son 6 Y.", "KGS", "s20", "EİD", "Gny", "AGF",
-        "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF",
-        "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "TOPLAM KAZANÇ",
-    ]
-    df_display = df[display_columns].copy()
-    # Kritik: No kesinlikle numeric dtype olmalı. Böylece başlığa tıklanınca
-    # Streamlit gerçek sayısal sıralama yapar: 1,2,3...14 / 14,13,12...1.
-    df_display["No"] = pd.to_numeric(df_display["No"], errors="coerce").fillna(0).astype(int)
-
-    column_config = {
-        "No": st.column_config.NumberColumn("No", format="%d", width=32, pinned=True),
-        "At İsmi": st.column_config.TextColumn("At İsmi", width=110, pinned=True),
-        "Yaş": st.column_config.TextColumn("Yaş", width=40),
-        "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=155),
-        "Kilo": st.column_config.TextColumn("Kilo", width=58),
-        "Jokey": st.column_config.TextColumn("Jokey", width=92),
-        "Sahip / Antrenör": st.column_config.TextColumn("Sahip / Antrenör", width=135),
-        "St": st.column_config.TextColumn("St", width=30),
-        "HP": st.column_config.TextColumn("Hp", width=34),
-        "Son 6 Y.": st.column_config.TextColumn("Son 6", width=38),
-        "KGS": st.column_config.TextColumn("KGS", width=38),
-        "s20": st.column_config.TextColumn("s20", width=38),
-        "EİD": st.column_config.TextColumn("EİD", width=52),
-        "Gny": st.column_config.TextColumn("Gny", width=40),
-        "AGF": st.column_config.TextColumn("AGF", width=47),
-        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f", width=67),
-        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f", width=67),
-        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f", width=70),
-        "SON GALOP": st.column_config.TextColumn("SON GALOP", width=70),
-        "SON KOŞU": st.column_config.TextColumn("SON KOŞU", width=60),
-        "BU YIL KAZANÇ": st.column_config.TextColumn("BU YIL KAZANÇ", width=84),
-        "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=90),
-    }
-
-    # ========================================================
-    # GELİŞMİŞ TJK GRID — FİLTRE + SABİT SÜTUN + HÜCRE OLAYLARI
-    # ========================================================
-    # Native st.dataframe bu isteklerin tamamını aynı anda veremediği için
-    # ana program tablosu AG Grid'e geçirilmiştir. Veri kaynağı ve analiz
-    # hesapları aynıdır; yalnızca tablo render katmanı değişmiştir.
-    if AgGrid is None:
-        st.error("Tablo bileşeni yüklenemedi. requirements.txt içinde streamlit-aggrid-v2==0.3.4 bulunmalıdır.")
-        if AGGRID_IMPORT_ERROR:
-            st.caption(f"AgGrid import hatası: {AGGRID_IMPORT_ERROR}")
-        st.stop()
-
-    selected_horse_index = st.session_state.get("selected_horse_index")
-
-    # AG Grid'de gösterilecek veri. Teknik alanlar gizlenir ama seçim/olay
-    # sonrasında gerçek horse_index'i kaybetmemek için DataFrame'de tutulur.
-    _grid_hidden_columns = [
-        "_horse_index", "_horse_no", "_SON_KOSU_PIST",
-        "_ORIGIN_SIRE", "_ORIGIN_DAM", "_JOCKEY_NAME", "_JOCKEY_AP",
-        "_OWNER", "_TRAINER", "_WEIGHT_BASE", "_WEIGHT_EXTRA",
-        "_EID_RAW", "_CELL_CLICK",
-    ]
-    # df kullanılır; df_display yalnızca görünür kolonları içerdiğinden
-    # teknik alanlar selection/event dönüşünde kaybolmamalıdır.
-    grid_df = df[display_columns + _grid_hidden_columns].copy()
-
-    # Zengin hücre render'ları: Baba/Anne, Jokey/Ap, Sahip/Antrenör,
-    # Kilo ve EİD tek hücre içinde ayrı renklerle gösterilir.
-    origin_renderer = JsCode(r"""
-    function(params) {
-        const sire = params.data._ORIGIN_SIRE || '';
-        const dam = params.data._ORIGIN_DAM || '';
-        return `<div style="line-height:1.15;white-space:normal">
-          <div style="color:#1976d2;font-weight:800">${sire}</div>
-          <div style="color:#111;font-weight:700">${dam}</div>
-        </div>`;
-    }
-    """)
-    jockey_renderer = JsCode(r"""
-    function(params) {
-        const name = params.data._JOCKEY_NAME || '';
-        const ap = params.data._JOCKEY_AP || '';
-        return `<div style="line-height:1.15;white-space:normal">
-          <div style="color:#17212b;font-weight:800">${name}</div>
-          ${ap ? `<div style="color:#e53935;font-weight:900">${ap}</div>` : ''}
-        </div>`;
-    }
-    """)
-    owner_renderer = JsCode(r"""
-    function(params) {
-        const owner = params.data._OWNER || '';
-        const trainer = params.data._TRAINER || '';
-        return `<div style="line-height:1.15;white-space:normal">
-          <div style="color:#1976d2;font-weight:800">${owner}</div>
-          <div style="color:#e53935;font-weight:800">${trainer}</div>
-        </div>`;
-    }
-    """)
-    weight_renderer = JsCode(r"""
-    function(params) {
-        const base = params.data._WEIGHT_BASE || params.value || '';
-        const extra = params.data._WEIGHT_EXTRA || '';
-        return `<div style="line-height:1.15;white-space:normal;font-weight:900">
-          <span style="color:#17212b">${base}</span>${extra ? ` <span style="color:#e53935">+${extra.replace('+','')}</span>` : ''}
-        </div>`;
-    }
-    """)
-    eid_renderer = JsCode(r"""
-    function(params) {
-        const value = params.data._EID_RAW || params.value || '-';
-        return `<span title="Tıkla: EİD bilgisini aç/kapat" style="color:#c62828;font-weight:900;cursor:pointer;text-decoration:underline;text-decoration-style:dotted">${value}</span>`;
-    }
-    """)
-    horse_renderer = JsCode(r"""
-    function(params) {
-        const value = String(params.value || '');
-        const parts = value.split('\\n');
-        const name = parts[0] || '';
-        const equipment = parts.slice(1).join(' ');
-        return `<div style="line-height:1.12;white-space:normal">
-          <div style="font-weight:900;color:#17212b">${name}</div>
-          ${equipment ? `<div style="font-weight:800;color:#e53935">${equipment}</div>` : ''}
-        </div>`;
-    }
-    """)
-    last_race_renderer = JsCode(r"""
-    function(params) {
-        const value = params.value || '-';
-        const surf = String(params.data._SON_KOSU_PIST || '').toLowerCase();
-        const green = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
-        return `<span style="font-weight:900;color:${green ? '#16833b' : '#17212b'}">${value}</span>`;
-    }
-    """)
-    row_style = JsCode(r"""
-    function(params) {
-        if (params.node && params.node.isSelected()) {
-            return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'800'};
-        }
-        return null;
-    }
-    """)
-    # EİD tıklamasını Python'a event_data olarak döndürmek için hücre tıklama
-    # olayında teknik alanı güncelliyoruz. AG Grid v2 cellClicked olayını
-    # Streamlit'e geri iletebiliyor.
-    cell_click = JsCode(r"""
-    function(params) {
-        params.data._CELL_CLICK = String(params.colDef.field || '') + '|' + String(params.node.rowIndex);
-        if (params.colDef.field === 'EİD') {
-            params.node.setSelected(true);
-        }
-    }
-    """)
-
-    gb = GridOptionsBuilder.from_dataframe(grid_df)
-    gb.configure_default_column(
-        sortable=True,
-        filter=True,
-        floatingFilter=True,
-        resizable=True,
-        wrapText=True,
-        autoHeight=False,
-        minWidth=55,
-    )
-    gb.configure_selection(
-        selection_mode="single",
-        use_checkbox=True,
-        header_checkbox=False,
-    )
-    gb.configure_grid_options(
-        rowSelection="single",
-        suppressRowClickSelection=False,
-        getRowStyle=row_style,
-        onCellClicked=cell_click,
-        rowHeight=44,
-        headerHeight=36,
-        floatingFiltersHeight=30,
-        animateRows=False,
-        suppressColumnVirtualisation=False,
-        alwaysShowHorizontalScroll=True,
-    )
-
-    # No + At İsmi solda sabit. Diğer tüm sütunlar yatay kayar.
-    gb.configure_column("No", header_name="No", pinned="left", width=48, minWidth=48, maxWidth=60, filter="agNumberColumn")
-    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=155, minWidth=145, cellRenderer=horse_renderer)
-    gb.configure_column("Yaş", width=58, minWidth=52)
-    gb.configure_column("Orijin (Baba-Anne)", width=180, minWidth=165, cellRenderer=origin_renderer)
-    gb.configure_column("Kilo", width=75, minWidth=68, cellRenderer=weight_renderer)
-    gb.configure_column("Jokey", width=115, minWidth=105, cellRenderer=jockey_renderer)
-    gb.configure_column("Sahip / Antrenör", width=165, minWidth=150, cellRenderer=owner_renderer)
-    gb.configure_column("St", width=48, minWidth=44, filter="agNumberColumn")
-    gb.configure_column("HP", width=52, minWidth=48, filter="agNumberColumn")
-    gb.configure_column("Son 6 Y.", width=72, minWidth=65)
-    gb.configure_column("KGS", width=55, minWidth=50, filter="agNumberColumn")
-    gb.configure_column("s20", width=55, minWidth=50, filter="agNumberColumn")
-    gb.configure_column("EİD", width=78, minWidth=70, cellRenderer=eid_renderer, filter="agTextColumn")
-    gb.configure_column("Gny", width=65, minWidth=58, filter="agNumberColumn")
-    gb.configure_column("AGF", width=65, minWidth=58, filter="agTextColumn")
-    gb.configure_column("BİZİM SKOR", width=90, minWidth=82, filter="agNumberColumn")
-    gb.configure_column("ŞART UYUMU", width=90, minWidth=82, filter="agNumberColumn")
-    gb.configure_column("GÜNCEL SINIF", width=95, minWidth=88, filter="agNumberColumn")
-    gb.configure_column("SON GALOP", width=90, minWidth=82)
-    gb.configure_column("SON KOŞU", width=82, minWidth=75, cellRenderer=last_race_renderer)
-    gb.configure_column("BU YIL KAZANÇ", width=105, minWidth=95)
-    gb.configure_column("TOPLAM KAZANÇ", width=110, minWidth=100)
-
-    for _hidden in [
-        "_horse_index", "_horse_no", "_SON_KOSU_PIST",
-        "_ORIGIN_SIRE", "_ORIGIN_DAM", "_JOCKEY_NAME", "_JOCKEY_AP",
-        "_OWNER", "_TRAINER", "_WEIGHT_BASE", "_WEIGHT_EXTRA",
-        "_EID_RAW", "_CELL_CLICK",
-    ]:
-        gb.configure_column(_hidden, hide=True)
-
-    grid_options = gb.build()
-    # Teknik alanlar yalnızca olay/selection geri dönüşünde kullanılır.
-    grid_options["sideBar"] = False
-
-    st.markdown("""
-    <style>
-    .ri-aggrid-wrap { border:1px solid #c8cdd4; border-radius:6px; overflow:hidden; }
-    div[data-testid="stAgGrid"] { width:100% !important; }
-    .ag-root-wrapper { border:0 !important; }
-    .ag-header-cell-label { font-weight:900 !important; }
-    .ag-floating-filter { background:#eef1f5 !important; }
-    .ag-floating-filter-input { font-size:11px !important; }
-    .ag-row-selected { background:#dceeff !important; }
-    .ag-row-selected .ag-cell { color:#062b55 !important; }
-    .ag-checkbox-input-wrapper.ag-checked { --ag-checkbox-checked-color:#1976d2 !important; }
-    .ag-checkbox-input-wrapper { --ag-checkbox-checked-color:#1976d2 !important; }
-    .ag-center-cols-viewport, .ag-body-viewport { overflow-x:auto !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    try:
-        grid_response = AgGrid(
-            grid_df,
-            gridOptions=grid_options,
-            height=table_height,
-            theme="quartz",
-            update_on=["selectionChanged", "cellClicked"],
-            data_return_mode=DataReturnMode.AS_INPUT,
-            allow_unsafe_jscode=True,
-            key="horse_table_aggrid",
-        )
-    except TypeError:
-        # Eski API ile de çalışabilmesi için güvenli geri dönüş.
-        grid_response = AgGrid(
-            grid_df,
-            gridOptions=grid_options,
-            height=table_height,
-            theme="quartz",
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            data_return_mode=DataReturnMode.AS_INPUT,
-            allow_unsafe_jscode=True,
-            key="horse_table_aggrid",
-        )
-
-    selected_rows_data = getattr(grid_response, "selected_rows", None)
-    if selected_rows_data is None and isinstance(grid_response, dict):
-        selected_rows_data = grid_response.get("selected_rows")
-    if hasattr(selected_rows_data, "to_dict"):
-        selected_records = selected_rows_data.to_dict("records")
-    elif isinstance(selected_rows_data, list):
-        selected_records = selected_rows_data
-    else:
-        selected_records = []
-
-    event_data = getattr(grid_response, "event_data", None)
-    if event_data is None and isinstance(grid_response, dict):
-        event_data = grid_response.get("event_data")
-    if hasattr(event_data, "to_dict"):
-        try:
-            event_data = event_data.to_dict("records")[-1]
-        except Exception:
-            event_data = {}
-    if not isinstance(event_data, dict):
-        event_data = {}
-
-    # Seçilen satır: gerçek TJK at numarası üzerinden değil, gizli horse_index
-    # üzerinden eşlenir; böylece 1,2,3... numarası ile analiz sırası karışmaz.
-    if selected_records:
-        selected_record = selected_records[0]
-        try:
-            selected_horse_index = int(selected_record.get("_horse_index"))
-        except Exception:
-            selected_horse_index = None
-        if selected_horse_index is not None and 0 <= selected_horse_index < len(horses):
-            selected_horse = horses[selected_horse_index]
-            st.session_state.selected_horse_index = selected_horse_index
-            st.session_state.selected_horse_no = get_horse_number(
-                selected_horse, selected_horse_index + 1
-            )
-
-    # EİD tıklaması: aynı hücreye tekrar tıklamak bilgi kutusunu kapatır.
-    clicked_field = str(event_data.get("colId") or event_data.get("column") or "")
-    clicked_row = event_data.get("rowIndex")
-    if not clicked_field:
-        raw_click = str(event_data.get("_CELL_CLICK") or "")
-        if "|" in raw_click:
-            clicked_field = raw_click.split("|", 1)[0]
-            try:
-                clicked_row = int(raw_click.split("|", 1)[1])
-            except Exception:
-                pass
-    if clicked_field == "EİD":
-        try:
-            clicked_row = int(clicked_row)
-        except Exception:
-            clicked_row = -1
-        if 0 <= clicked_row < len(grid_df):
-            clicked_index = int(grid_df.iloc[clicked_row]["_horse_index"])
-            current_key = (clicked_index, "EİD")
-            if st.session_state.get("_eid_info_key") == current_key and st.session_state.get("_eid_info_open", False):
-                st.session_state._eid_info_open = False
-                st.session_state._eid_info_key = None
-            else:
-                st.session_state._eid_info_open = True
-                st.session_state._eid_info_key = current_key
-
-    # EİD hücresine tıklanınca gerçek program verisinden bilgi alanı açılır/kapanır.
-    if st.session_state.get("_eid_info_open", False):
-        try:
-            eid_key = st.session_state.get("_eid_info_key")
-            eid_horse_index = int(eid_key[0]) if eid_key else -1
-            if 0 <= eid_horse_index < len(horses):
-                eid_horse = horses[eid_horse_index]
-                eid_value = display_value(eid_horse.get("bestTime"))
-                st.markdown(
-                    f"<div style='margin:6px 0 10px;padding:9px 12px;border:1px solid #e53935;"
-                    f"border-radius:6px;background:#fff5f5;color:#7f1d1d;font-weight:800;'>"
-                    f"EİD BİLGİSİ — {get_horse_number(eid_horse, eid_horse_index + 1)} {get_horse_name(eid_horse)}"
-                    f"<br><span style='font-size:16px;color:#c62828;'>En İyi Derece: {eid_value}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-        except Exception:
-            pass
-
-    selected_no = st.session_state.get("selected_horse_no")
-    if selected_no is not None:
-        selected_horse = next(
-            (
-                h for h in horses
-                if str(get_horse_number(h, 0)) == str(selected_no)
-            ),
-            None,
-        )
-
-        if selected_horse:
-            st.markdown("---")
-            st.subheader(
-                f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
-            )
-
-            st.markdown("<div class='selected-horse-card'>"
-                        f"<div class='selected-horse-name'>{get_horse_name(selected_horse)}</div>"
-                        f"<div class='selected-horse-origin'>{_split_origin(get_horse_origin(selected_horse))[0]}"
-                        f"<br>{_split_origin(get_horse_origin(selected_horse))[1]}</div>"
-                        "</div>", unsafe_allow_html=True)
-
-            tab_all, tab_first, tab_stats, tab_work = st.tabs([
-                "Tüm Yarışları", "1.'likleri", "İstatistikler", "Galoplar"
-            ])
-
-            history = selected_horse.get("_history", [])
-            workouts = selected_horse.get("_workouts", [])
-
-            if selected_horse.get("_enrichment_error"):
-                st.warning(
-                    "TJK gerçek veri sorgusu: "
-                    + str(selected_horse.get("_enrichment_error"))
-                )
-            else:
-                st.caption(
-                    f"Gerçek TJK veri: {len(history)} koşu kaydı • "
-                    f"{len(workouts)} galop kaydı"
-                )
-
-            with tab_all:
-                _history_tables(history)
-
-            with tab_first:
-                firsts = []
-                for h in history:
-                    if not isinstance(h, dict):
-                        continue
-                    place = str(_first_value(h, ["place", "sira", "S"])).strip()
-                    if re.match(r"^1(?:\.0)?$", place):
-                        firsts.append(h)
-                _history_tables(firsts) if firsts else st.info("TJK geçmişinde 1.'lik kaydı bulunamadı.")
-
-            with tab_stats:
-                total = len([h for h in history if isinstance(h, dict)])
-                first = second = third = 0
-                total_prize = 0.0
-                year_prize = 0.0
-                for h in history:
-                    if not isinstance(h, dict):
-                        continue
-                    place = str(_first_value(h, ["place", "sira", "S"])).strip().replace(".", "")
-                    if place == "1": first += 1
-                    elif place == "2": second += 1
-                    elif place == "3": third += 1
-                    pv = _money_number(_first_value(h, ["prize", "ikramiye"]))
-                    total_prize += pv
-                    if _history_year(h) == selected_date.year:
-                        year_prize += pv
-                stat_rows = pd.DataFrame([
-                    {"Gösterge":"TOPLAM KOŞU", "Değer":total},
-                    {"Gösterge":"1.'lik", "Değer":first},
-                    {"Gösterge":"2.'lik", "Değer":second},
-                    {"Gösterge":"3.'lük", "Değer":third},
-                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
-                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
-                ])
-                st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
-                    "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
-                    "Değer": st.column_config.TextColumn("Değer", width=180),
-                })
-
-            with tab_work:
-                _workout_tables(workouts)
-
-
-    # Analiz özeti
-    if ranking:
-        top = ranking[0]
-        top_horse = horses[top["horse_index"]]
-        st.success(
-            f"🏆 1. Sıra: {get_horse_number(top_horse, top['horse_index'] + 1)} "
-            f"- {get_horse_name(top_horse)} • {top['score']:.2f} puan • {top['label']}"
-        )
-        if len(ranking) >= 3:
-            summary = "  |  ".join(
-                f"{x['rank']}. {get_horse_name(horses[x['horse_index']])} ({x['score']:.2f})"
-                for x in ranking[:3]
-            )
-            st.caption(summary)
-
-        with st.expander("📊 Puan kırılımını göster"):
-            breakdown_rows = []
-            for item in ranking:
-                horse = horses[item["horse_index"]]
-                row = {
-                    "Sıra": item["rank"],
-                    "No": get_horse_number(horse, item["horse_index"] + 1),
-                    "At": get_horse_name(horse),
-                    "Puan": item["score"],
-                }
-                row.update({k: round(v, 1) for k, v in item["components"].items()})
-                breakdown_rows.append(row)
-            st.dataframe(
-                pd.DataFrame(breakdown_rows),
-                use_container_width=True,
-                hide_index=True,
-                column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
-            )
-            st.caption(
-                "Not: Günlük Worker verisinde ortak rakip geçmişi ayrı bir veri kümesi olarak gelmediği için "
-                "Ortak Rakip kriteri şu aşamada nötr (%50) tutulur. Eksik veriye puan uydurulmaz. "
-                "Ağırlık değişiklikleri üstteki canlı model ayarlarından uygulanır."
-            )
-
-    agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
-    if agf_values and all(v == "-" for v in agf_values):
-        st.caption("AGF: TJK program kaynağında bu koşu için henüz değer yok; '-' gösteriliyor. Değer uydurulmaz.")
-
-
-# ============================================================
-# MODEL DURUMU
-# ============================================================
-
-st.markdown("---")
-st.markdown(
-    f"**CANLI MODEL:** Ham {sum(ANALYSIS_WEIGHTS.values())} • Normalize 100 • "
-    f"Seçili koşu: {race_number}. koşu",
-)
-st.caption(
-    "Model ağırlıkları üstteki CANLI MODEL AYARLARI bölümünden değiştirilebilir."
-)
-
-# ============================================================
-# SİSTEM DURUMU
-# ============================================================
-
-st.markdown("---")
-
-
-st.subheader(
-    "⚙️ Sistem Durumu"
-)
-
-
-total_horses = 0
-
-
-for race in races:
-
-    race_horses = race.get(
-        "horses",
-        [],
-    )
-
-    if isinstance(
-        race_horses,
-        list,
-    ):
-
-        total_horses += len(
-            race_horses
-        )
-
-
-status1, status2, status3, status4 = (
-    st.columns(4)
-)
-
-
-with status1:
-
-    st.metric(
-        "TJK bağlantısı",
-        "OK",
-    )
-
-
-with status2:
-
-    st.metric(
-        "Koşu sayısı",
-        len(races),
-    )
-
-
-with status3:
-
-    st.metric(
-        "Toplam at",
-        total_horses,
-    )
-
-
-with status4:
-
-    st.metric(
-        "Seçili hipodrom",
-        selected_city,
-    )
-
-
-# ============================================================
-# TEKNİK DEBUG
-# ============================================================
-
-with st.expander(
-    "🔧 Teknik Debug"
-):
-
-    debug = program_data.get(
-        "debug",
-        {},
-    )
-
-
-    st.write(
-        "Program özeti:"
-    )
-
-
-    st.json(
-        {
-            "ok": program_data.get(
-                "ok"
-            ),
-
-            "source": program_data.get(
-                "source"
-            ),
-
-            "date": program_data.get(
-                "date"
-            ),
-
-            "city": program_data.get(
-                "city"
-            ),
-
-            "race_count": program_data.get(
-                "race_count"
-            ),
-
-            "total_horses": program_data.get(
-                "total_horses"
-            ),
-        }
-    )
-
-
-    st.write(
-        "Parser debug:"
-    )
-
-
-    st.json(
-        debug
-    )
-
-
-    st.write(
-        "Koşu bazında at sayıları:"
-    )
-
-
-    race_horse_counts = {}
-
-
-    for index, race in enumerate(
-        races
-    ):
-
-        number = get_race_number(
-            race,
-            index + 1,
-        )
-
-        race_horses = race.get(
-            "horses",
-            [],
-        )
-
-        if not isinstance(
-            race_horses,
-            list,
-        ):
-
-            race_horses = []
-
-
-        race_horse_counts[
-            str(number)
-        ] = len(
-            race_horses
-        )
-
-
-    st.json(
-        race_horse_counts
-    )
-
-
-# ============================================================
-# HAM AT VERİSİ
-# ============================================================
-
-show_raw_horses = st.checkbox(
-    "Seçilen koşunun ham at verisini göster"
-)
-
-
-if show_raw_horses:
-
-    st.json(
-        horses
-    )
-
-
-# V7 son güvenlik CSS'i: başlık alanı hiçbir üst konteyner tarafından kırpılmasın.
-st.markdown("""
-<style>
-section.main,
-section.main > div,
-section.main [data-testid="stMainBlockContainer"] {
-    overflow: visible !important;
+      ...x,score:Number(score.toFixed(2)),coverage:total,
+      criteria:Object.fromEntries(parts.map(p=>[p[0],p[2]])),
+      // Türkçe alan: frontend Son Hız kolonunu doğrudan okuyabilir.
+      sonHizPuan:parts.find(p=>p[0]==='speed')?.[2]??null,
+      sameTrackCount:x._same.length,commonCount:x._commonCount,
+      history:x._hist.slice(0,8),workouts:(workouts[x.name]||[]).slice(0,5)
+    };
+  }).sort((a,b)=>b.score-a.score);
+
+  return final;
 }
-div.ri-header {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: visible !important;
+
+function ybDatePath(s){
+  const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m?`${m[3]}-${m[2]}-${m[1]}`:'';
 }
-div.ri-title {
-    display: block !important;
-    visibility: visible !important;
-    color: #FFFFFF !important;
-    font-size: 40px !important;
-    font-weight: 950 !important;
-    line-height: 1.15 !important;
-    white-space: nowrap !important;
-    text-align: center !important;
-    width: 100% !important;
-    margin-top: 5mm !important;
+function ybSurface(v){
+  const x=clean(v||'');
+  if(/çim|turf/i.test(x))return 'Çim';
+  if(/sentetik|synthetic|polytrack|kum\s*\(\s*sen\s*\)/i.test(x))return 'Sentetik';
+  if(/kum|sand/i.test(x))return 'Kum';
+  return '';
 }
-div.ri-subtitle {
-    display: block !important;
-    visibility: visible !important;
+function ybSpeed(v){
+  const x=clean(v||'');
+  const m=x.match(/\(\s*(-?\d+)\s*\)|^\s*(-?\d+)\s*$/);
+  if(!m)return null;
+  const n=Number(m[1]??m[2]);
+  return Number.isFinite(n)?n:null;
 }
-</style>
-""", unsafe_allow_html=True)
+function ybActualDate(v){
+  const m=clean(v||'').match(/(\d{2})[./](\d{2})[./](\d{4})/);
+  return m?`${m[1]}.${m[2]}.${m[3]}`:'';
+}
+function ybDistance(v){
+  const m=clean(v||'').match(/\b(\d{3,4})\b/);
+  return m?Number(m[1]):null;
+}
+function ybNormName(s){
+  return normName(String(s||'').replace(/\s*\^\{[^}]*\}/g,'').replace(/\s*Image.*$/i,''));
+}
+function parseYbHorseLinks(html){
+  const out=new Map();
+  const re=/<a\b[^>]*href=["'](\/at\/\d+\/[^"'#?]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while((m=re.exec(String(html||'')))){
+    const href=m[1], idm=href.match(/^\/at\/(\d+)\/([^/?#]+)/i); if(!idm)continue;
+    let label=clean(m[2]).replace(/\s*Image.*$/i,'').trim();
+    if(!label)label=decodeURIComponent(idm[2]).replace(/-/g,' ');
+    const key=ybNormName(label);
+    if(!key)continue;
+    out.set(key,{ybId:idm[1],slug:idm[2],url:YB+href,name:label});
+  }
+  return out;
+}
+async function fetchYbDayMap(date,city){
+  const path=ybDatePath(date), slug=YB_CITY_SLUG[city]||String(city||'').toLocaleLowerCase('tr-TR');
+  if(!path||!slug)return {ok:false,error:'YB tarih/şehir çözülemedi',map:new Map(),url:'',sources:[]};
+  const key=`${path}|${slug}`;
+  const hit=YB_DAY_CACHE.get(key);
+  if(hit && Date.now()-hit.ts<10*60*1000)return hit;
+
+  // Yenibeygir gün/şehir sayfası zaman zaman /sonuclar uzantısıyla veya
+  // güncel gün için ana sayfadan yayınlanıyor. Tek URL'ye güvenme.
+  const candidates=[
+    `${YB}/${path}/${slug}`,
+    `${YB}/${path}/${slug}/sonuclar`
+  ];
+  const now=new Date();
+  const today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  if(String(date)===today)candidates.push(YB+'/');
+
+  const merged=new Map(), sources=[], errors=[];
+  for(const url of [...new Set(candidates)]){
+    try{
+      const r=await fetchTGeneric(url,'https://yenibeygir.com/');
+      sources.push({url,status:r.status,length:r.text.length});
+      if(r.status>=400){errors.push(`HTTP ${r.status}: ${url}`);continue;}
+      const map=parseYbHorseLinks(r.text);
+      for(const [k,v] of map) if(!merged.has(k)) merged.set(k,v);
+      // En az bir gerçek /at/ profili bulunduysa diğer URL'yi de okumaya gerek yok.
+      if(merged.size>0)break;
+    }catch(e){errors.push(`${url}: ${String(e?.message||e)}`)}
+  }
+  const v={ok:merged.size>0,map:merged,url:sources[0]?.url||candidates[0],sources,error:errors.join(' | '),ts:Date.now()};
+  YB_DAY_CACHE.set(key,v);
+  return v;
+}
+function parseYbHistory(html){
+  const out=[];
+  for(const t of tables(html)){
+    let hi=-1, headers=[];
+    for(let i=0;i<t.rows.length;i++){
+      const row=t.rows[i].map(x=>clean(x));
+      if(row.some(x=>/^Tarih$/i.test(x)) && row.some(x=>/^Hız$/i.test(x)) && row.some(x=>/Msf\/Pist/i.test(x))){hi=i;headers=row;break;}
+    }
+    if(hi<0)continue;
+    const ix=(re)=>headers.findIndex(x=>re.test(x));
+    const dateI=ix(/^Tarih$/i), cityI=ix(/^Şehir$/i), raceI=ix(/K\. Cinsi/i), groupI=ix(/^Gr\.$/i), mpI=ix(/Msf\/Pist/i), timeI=ix(/^Derece$/i), speedI=ix(/^Hız$/i), placeI=ix(/^S$/i), weightI=ix(/^Kilo$/i), hpI=ix(/^Hnd$/i);
+    if(dateI<0||mpI<0||speedI<0)continue;
+    for(let i=hi+1;i<t.rows.length;i++){
+      const c=t.rows[i].map(x=>clean(x));
+      if(!c[dateI]||!c[mpI])continue;
+      const date=ybActualDate(c[dateI]);
+      const distance=ybDistance(c[mpI]);
+      const speed=ybSpeed(c[speedI]);
+      if(!date||!distance)continue;
+      out.push({date,city:cityI>=0?c[cityI]:'',raceName:raceI>=0?c[raceI]:'',group:groupI>=0?c[groupI]:'',distance,surface:ybSurface(c[mpI]),distanceText:c[mpI],time:timeI>=0?c[timeI]:'',ybHiz:speed,place:placeI>=0?c[placeI]:'',weight:weightI>=0?c[weightI]:'',hp:hpI>=0?c[hpI]:''});
+    }
+  }
+  const seen=new Set();
+  return out.filter(x=>{const k=[x.date,x.city,x.distance,x.surface,x.time,x.place].join('|');if(seen.has(k))return false;seen.add(k);return true;})
+    .sort((a,b)=>parseDmyForWorker(b.date)-parseDmyForWorker(a.date));
+}
+function ybComparable(history,targetDate,targetDistance,targetSurface){
+  const td=parseDmyForWorker(targetDate||'');
+  const valid=(history||[]).filter(x=>x.ybHiz!=null && (!td || parseDmyForWorker(x.date)<td));
+  const dist=Number(targetDistance);
+  const surf=String(targetSurface||'').toLocaleLowerCase('tr-TR');
+  const same=(arr)=>arr.filter(x=>Number(x.distance)===dist && (!surf || String(x.surface||'').toLocaleLowerCase('tr-TR')===surf));
+  const exact=same(valid);
+  const sameSurf=valid.filter(x=>!surf || String(x.surface||'').toLocaleLowerCase('tr-TR')===surf);
+  const sameDist=valid.filter(x=>Number(x.distance)===dist);
+  const pick=a=>a.length?a[0]:null;
+  return {exact:pick(exact),sameSurface:pick(sameSurf),sameDistance:pick(sameDist),latest:pick(valid),bestExact:exact.length?exact.reduce((a,b)=>b.ybHiz>a.ybHiz?b:a):null,exactCount:exact.length};
+}
+async function fetchTGeneric(url,referer='https://yenibeygir.com/'){
+  const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(),25000);
+  try{
+    const r=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36","Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8","Accept-Language":"tr-TR,tr;q=0.9,en;q=0.8","Referer":referer},signal:ctrl.signal});
+    return {status:r.status,text:await r.text()};
+  }finally{clearTimeout(timer);}
+}
+function ybNameKey(s){
+  return ybNormName(s)
+    .replace(/[İI]/g,'I').replace(/Ğ/g,'G').replace(/Ü/g,'U').replace(/Ş/g,'S').replace(/Ö/g,'O').replace(/Ç/g,'C')
+    .replace(/[^A-Z0-9]/g,'');
+}
+function findYbHorseLink(map,horse){
+  const exact=map.get(ybNormName(horse));
+  if(exact)return exact;
+  const k=ybNameKey(horse);
+  if(!k)return null;
+  let found=null;
+  for(const v of map.values()){
+    if(ybNameKey(v.name)===k){
+      if(found && found.ybId!==v.ybId)return null;
+      found=v;
+    }
+  }
+  return found;
+}
+async function fetchYbHorse(horse,date,city,targetDate,targetDistance,targetSurface){
+  const day=await fetchYbDayMap(date,city);
+  const link=findYbHorseLink(day.map,horse);
+  if(!link){
+    return {ok:false,found:false,error:'Yenibeygir günlük/sonuç sayfasında at profili bulunamadı',dayUrl:day.url,daySources:day.sources||[],dayMapSize:day.map.size,ybHistory:[],ybHiz:null};
+  }
+  const cacheKey=link.ybId;
+  let h=YB_HORSE_CACHE.get(cacheKey);
+  if(!h || Date.now()-h.ts>15*60*1000){
+    const r=await fetchTGeneric(link.url,day.url);
+    if(r.status>=400)return {ok:false,found:true,ybId:link.ybId,ybUrl:link.url,error:`Yenibeygir HTTP ${r.status}`,ybHistory:[],ybHiz:null};
+    h={...link,status:r.status,history:parseYbHistory(r.text),length:r.text.length,ts:Date.now()};
+    YB_HORSE_CACHE.set(cacheKey,h);
+  }
+  const c=ybComparable(h.history,targetDate,targetDistance,targetSurface);
+  const exact=c.exact;
+  const chosen=exact||c.sameSurface||c.sameDistance||c.latest;
+  const mode=exact?'sameDistanceSurface':c.sameSurface?'sameSurface':c.sameDistance?'sameDistance':c.latest?'latest':'none';
+  return {
+    ok:true,found:true,ybId:h.ybId,ybUrl:h.url,name:h.name,history:h.history.slice(0,100),
+    ybHiz:exact?.ybHiz??null,
+    ybHizMode:mode,
+    ybHizExact:exact?.ybHiz??null,
+    ybHizSameSurface:c.sameSurface?.ybHiz??null,
+    ybHizSameDistance:c.sameDistance?.ybHiz??null,
+    ybHizLatest:c.latest?.ybHiz??null,
+    ybHizBestExact:c.bestExact?.ybHiz??null,
+    ybHizExactCount:c.exactCount,
+    ybSelectedRace:chosen||null,
+    ybDayUrl:day.url,ybDaySources:day.sources||[],ybDayMapSize:day.map.size,ybStatus:h.status
+  };
+}
+
+async function fetchT(url){
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),25000);
+  try{
+    const r=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36","Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8","Accept-Language":"tr-TR,tr;q=0.9,en;q=0.8","Referer":"https://www.tjk.org/"},signal:ctrl.signal});
+    return {status:r.status,text:await r.text()};
+  }finally{clearTimeout(timer);}
+}
+
+async function discoverCitiesForDate(date){
+  // Şehirleri tek tek seri sorgulamak yerine tek turda paralel kontrol et.
+  // Eski sürüm aynı şehri iki kez sorguluyordu; bu da CPU limitini gereksiz
+  // biçimde tüketiyordu.
+  const entries=Object.entries(CITY_IDS).map(([name,id])=>({name,id}));
+  const results=await Promise.all(entries.map(async ({name,id})=>{
+    try{
+      const d=await fetchDaily(date,name);
+      return d.races.length?{name,id,raceCount:d.races.length,status:d.status,sourceUrl:d.url}:null;
+    }catch(e){ return null; }
+  }));
+  const active=results.filter(Boolean);
+  return active.length?active:entries;
+}
+async function fetchDaily(date,city){
+  const cacheKey=`${date}|${city}`;
+  const cached=DAILY_CACHE.get(cacheKey);
+  if(cached && (Date.now()-cached.ts)<DAILY_CACHE_TTL) return cached.value;
+
+  const d=encodeURIComponent(dateTR(date)), c=encodeURIComponent(city);
+  const id=CITY_IDS[city]||9;
+  // Öncelik: TJK Günlük Yarış Programı. Bu sayfa jokey, sahip, antrenör,
+  // St, KGS, s20, En İyi D., Gny, AGF ve İdm dahil tam program sütunlarını
+  // içeriyor. Önce Kayıtlar kullanıldığında bu sütunların bir kısmı boş kalıyordu.
+  const urls=[
+    `${TJK}/TR/YarisSever/Info/Page/GunlukYarisProgrami?QueryParameter_Tarih=${d}&SehirAdi=${c}&SehirId=${id}`,
+    `${TJK}/TR/YarisSever/Info/Sehir/GunlukYarisProgrami?QueryParameter_Tarih=${d}&SehirAdi=${c}&SehirId=${id}`,
+    `${TJK}/TR/YarisSever/Info/Page/GunlukYarisProgrami?1=1&Era=today&QueryParameter_Tarih=${d}&SehirAdi=${c}`,
+    `${TJK}/TR/YarisSever/Info/Sehir/GunlukYarisProgrami?Era=today&QueryParameter_Tarih=${d}&SehirAdi=${c}&SehirId=${id}`
+  ];
+  let last={status:0,url:urls[0]};
+  for(const url of urls){
+    try{
+      const r=await fetchT(url); last={status:r.status,url};
+      if(r.status>=400) continue;
+      const races=parseDaily(r.text);
+      if(races.length){
+        // Normal günlük program zaten Sahip/Antrenör bilgisini taşıyor.
+        // Kayıtlar parserını her istekte çalıştırmak çok pahalı olduğu için
+        // yalnızca gerçekten eksik alan varsa fallback olarak çalıştır.
+        const needsAux=races.some(rr=>(rr.horses||[]).some(h=>!String(h.owner||'').trim()||!String(h.trainer||'').trim()));
+        if(needsAux){
+          try{
+            const aux=parseKayitlar(r.text);
+            const auxMap=new Map();
+            for(const rr of aux)for(const hh of (rr.horses||[])){
+              const k=normName(hh.name);
+              if(k)auxMap.set(k,hh);
+            }
+            for(const rr of races)for(const hh of (rr.horses||[])){
+              const a=auxMap.get(normName(hh.name));
+              if(a){
+                if(!String(hh.owner||'').trim()&&String(a.owner||'').trim())hh.owner=a.owner;
+                if(!String(hh.trainer||'').trim()&&String(a.trainer||'').trim())hh.trainer=a.trainer;
+              }
+            }
+          }catch(_e){}
+        }
+        const result={races,status:r.status,url,source:"GunlukYarisProgrami"};
+        DAILY_CACHE.set(cacheKey,{ts:Date.now(),value:result});
+        return result;
+      }
+    }catch(e){ last={status:0,url,error:String(e.message||e)}; }
+  }
+  // Günlük program ayrıştırılamazsa Kayıtlar son çare olarak kullanılır.
+  // Bu fallback programın tamamen kaybolmasını önler; ancak tam sütunlar için
+  // Günlük Yarış Programı tercih edilir.
+  const kayitUrls=[
+    `${TJK}/TR/YarisSever/Info/Sehir/Kayitlar?Era=today&QueryParameter_Tarih=${d}&SehirAdi=${c}&SehirId=${id}`,
+    `${TJK}/TR/Yarissever/Info/Sehir/Kayitlar?Era=today&QueryParameter_Tarih=${d}&SehirAdi=${c}&SehirId=${id}`
+  ];
+  for(const url of kayitUrls){
+    try{
+      const r=await fetchT(url); last={status:r.status,url};
+      if(r.status>=400) continue;
+      const races=parseKayitlar(r.text);
+      if(races.length){ const result={races,status:r.status,url,source:"Kayitlar"}; DAILY_CACHE.set(cacheKey,{ts:Date.now(),value:result}); return result; }
+    }catch(e){ last={status:0,url,error:String(e.message||e)}; }
+  }
+  return {races:[],status:last.status,url:last.url};
+}
+export default {async fetch(req){
+  if(req.method==="OPTIONS")return new Response("",{headers:CORS});
+  const u=new URL(req.url), p=u.pathname, q=u.searchParams;
+  try{
+    if(p==="/api/health")return out({ok:true,service:"Race Intelligence TJK Gateway",version:"54.2-YB-HIZ-FIX",worker:"fragrant-hat-ae48",time:new Date().toISOString()});
+
+    if(p==="/api/tjk/cities"){
+      const date=q.get("date")||new Date().toISOString().slice(0,10);
+      const entries=Object.entries(CITY_IDS).map(([name,id])=>({name,id}));
+      const results=await Promise.all(entries.map(async ({name,id})=>{
+        try{
+          const d=await fetchDaily(date,name);
+          return {name,id,raceCount:d.races.length,horseCount:d.races.reduce((a,r)=>a+r.horses.length,0),status:d.status,sourceUrl:d.url};
+        }catch(e){return {name,id,raceCount:0,horseCount:0,status:0,error:String(e.message||e)};}
+      }));
+      return out({ok:true,date,cities:results.filter(x=>x.raceCount>0),checked:results});
+    }
+
+    if(p==="/api/tjk/data"){
+      const date=q.get("date")||new Date().toISOString().slice(0,10), city=q.get("city")||"Kocaeli";
+      const daily=await fetchDaily(date,city), races=daily.races;
+      return out({ok:true,source:"TJK Günlük Yarış Programı",date,city,status:daily.status,sourceUrl:daily.url,raceCount:races.length,horseCount:races.reduce((a,r)=>a+r.horses.length,0),withAtId:races.reduce((a,r)=>a+r.horses.filter(h=>h.atId).length,0),races});
+    }
+
+    if(p==="/api/tjk/horse"){
+      const atId=q.get("atId"); if(!atId)return out({ok:false,error:"atId gerekli"},400);
+      const url=`${TJK}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`;
+      const r=await fetchT(url); const history=attachClassScores(parseHistory(r.text));
+      return out({ok:r.status<400,status:r.status,atId,history,classAnalysis:classAnalysis(history)});
+    }
+
+    if(p==="/api/tjk/workouts"){
+      const horse=q.get("horse"); if(!horse)return out({ok:false,error:"horse gerekli"},400);
+      const url=`${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_ATADI=${encodeURIComponent(horse)}`;
+      const r=await fetchT(url); let workouts=parseWorkouts(r.text);
+      if(workouts.some(x=>x.horse)){const hn=normName(horse); const f=workouts.filter(x=>normName(x.horse)===hn); if(f.length) workouts=f;}
+      if(!workouts.length){
+        try{
+          const hurl=`${TJK}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&Era=today&QueryParameter_AtId=${encodeURIComponent(q.get("atId")||"")}`;
+          const hr=await fetchT(hurl);
+          workouts=await fetchWorkoutsFromHistory(q.get("atId")||"",horse,parseHistory(hr.text));
+        }catch(e){}
+      }
+      return out({ok:r.status<400,status:r.status,horse,workouts});
+    }
+
+    if(p==="/api/tjk/horsedata"){
+      const atId=q.get("atId"), horse=q.get("horse"), origin=q.get("origin")||"";
+      const targetDate=q.get("date")||"", targetCity=q.get("city")||"", targetDistance=q.get("distance")||"", targetSurface=q.get("surface")||"", targetClass=q.get("raceClass")||"";
+      if(!atId || !horse)return out({ok:false,error:"atId ve horse gerekli"},400);
+      const historyUrls=[
+        `${TJK}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&Era=today&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/map/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/YarisSever/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`
+      ];
+      const workoutUrls=[
+        `${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_ATADI=${encodeURIComponent(horse)}`,
+        `${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_AtAdi=${encodeURIComponent(horse)}`
+      ];
+      const result={ok:true,atId,horse,origin,history:[],workouts:[],errors:{},historyAttempts:[],workoutAttempts:[]};
+      const historyCandidates=[];
+      for(const url of historyUrls){
+        try{
+          const r=await fetchT(url); const parsed=parseHistory(r.text);
+          const metaScore=parsed.reduce((n,x)=>n+(x.surface?2:0)+(x.jockey?1:0)+(x.raceName?1:0)+(x.hp?1:0),0);
+          historyCandidates.push({parsed,metaScore,status:r.status,source:url});
+          result.historyAttempts.push({status:r.status,length:r.text.length,source:url,markers:{Tarih:/Tarih/i.test(r.text),Derece:/Derece/i.test(r.text),AtAdi:/At\s*(?:Adı|Adi|İsmi|Ismi)/i.test(r.text),Pist:/Pist/i.test(r.text)},parsedCount:parsed.length,metadataScore:metaScore});
+        }catch(e){result.historyAttempts.push({status:0,length:0,source:url,error:String(e?.message||e)});result.errors.history=String(e?.message||e)}
+      }
+      if(historyCandidates.length){historyCandidates.sort((a,b)=>b.metaScore-a.metaScore);const best=historyCandidates[0];result.history=best.parsed;result.historyStatus=best.status;result.historySource=best.source;}
+      result.history=attachClassScores(result.history);
+      result.classAnalysis=classAnalysis(result.history,targetClass,targetDate);
+      let historyWorkoutFallback=[];
+      try{ historyWorkoutFallback=await fetchWorkoutsFromHistory(atId,horse,result.history); }catch(e){}
+      const workoutCandidates=[];
+      if(historyWorkoutFallback.length){
+        const hs=historyWorkoutFallback.reduce((n,x)=>n+(x.track?5:0)+(x.surface?3:0)+(x.m1200?1:0)+(x.m1000?1:0)+(x.m800?1:0)+(x.m600?1:0)+(x.m400?1:0),0);
+        workoutCandidates.push({parsed:historyWorkoutFallback,score:hs+20,status:200,source:"TJK İdman Bilgileri / KosuKodu"});
+      }
+      for(const url of workoutUrls){
+        try{
+          const r=await fetchT(url); let parsed=parseWorkouts(r.text);
+          if(parsed.some(x=>x.horse)){const hn=normName(horse); const f=parsed.filter(x=>normName(x.horse)===hn); if(f.length) parsed=f;}
+          const score=parsed.reduce((n,x)=>n+(x.track?5:0)+(x.surface?3:0)+(x.type?1:0)+(x.m1200?1:0)+(x.m1000?1:0)+(x.m800?1:0)+(x.m600?1:0)+(x.m400?1:0)+(x.m200?1:0),0);
+          workoutCandidates.push({parsed,score,status:r.status,source:url});
+          result.workoutAttempts.push({status:r.status,length:r.text.length,source:url,markers:{Tarih:/Tarih/i.test(r.text),m400:/400\s*m|400m|400 metre/i.test(r.text),m800:/800\s*m|800m|800 metre/i.test(r.text),m1000:/1000\s*m|1000 metre|1000m/i.test(r.text),m1200:/1200\s*m|1200 metre|1200m/i.test(r.text),Hipodrom:/İ\.?\s*Hip|Hipodrom/i.test(r.text)},parsedCount:parsed.length,metadataScore:score});
+        }catch(e){result.workoutAttempts.push({status:0,length:0,source:url,error:String(e?.message||e)});result.errors.workouts=String(e?.message||e)}
+      }
+      if(workoutCandidates.length){workoutCandidates.sort((a,b)=>b.score-a.score);const best=workoutCandidates[0];result.workouts=best.parsed;result.workoutStatus=best.status;result.workoutSource=best.source;}
+      result.historyCount=result.history.length; result.workoutCount=result.workouts.length;
+      if(targetDate && targetCity){
+        try{
+          const yb=await fetchYbHorse(horse,targetDate,targetCity,targetDate,targetDistance,targetSurface);
+          result.yb=yb;
+          if(!yb.ok) result.errors.yenibeygir=yb.error||"YB Hız alınamadı";
+        }catch(e){
+          result.yb={ok:false,found:false,ybHiz:null,ybHistory:[],error:String(e?.message||e)};
+          result.errors.yenibeygir=String(e?.message||e);
+        }
+      }else{
+        result.yb={ok:false,found:false,ybHiz:null,ybHistory:[],error:"YB Hız için date ve city gerekli"};
+      }
+      result.partial=Object.keys(result.errors).length>0;
+      return out(result);
+    }
+
+    if(p==="/api/yb/horse"){
+      const horse=q.get("horse")||"", date=q.get("date")||"", city=q.get("city")||"", distance=q.get("distance")||"", surface=q.get("surface")||"";
+      if(!horse||!date||!city)return out({ok:false,error:"horse, date ve city gerekli"},400);
+      const yb=await fetchYbHorse(horse,date,city,date,distance,surface);
+      return out({ok:true,horse,date,city,distance,surface,yb});
+    }
+
+    if(p==="/api/tjk/horsedata-debug"){
+      const atId=q.get("atId"), horse=q.get("horse")||"";
+      if(!atId)return out({ok:false,error:"atId gerekli"},400);
+      const historyUrls=[
+        `${TJK}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&Era=today&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/map/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/YarisSever/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`
+      ];
+      const workoutUrls=[
+        `${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_AtId=${encodeURIComponent(atId)}`,
+        `${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_ATADI=${encodeURIComponent(horse)}`,
+        `${TJK}/TR/YarisSever/Query/Page/IdmanIstatistikleri?1=1&QueryParameter_AtAdi=${encodeURIComponent(horse)}`
+      ];
+      const hist=[]; for(const url of historyUrls){try{const r=await fetchT(url);hist.push({status:r.status,length:r.text.length,source:url,markers:{Tarih:/Tarih/i.test(r.text),Derece:/Derece/i.test(r.text),AtAdi:/At\s*(?:Adı|Adi|İsmi|Ismi)/i.test(r.text),mesafe:/Msf|Mesafe/i.test(r.text)},parsedCount:parseHistory(r.text).length});}catch(e){hist.push({status:0,length:0,source:url,error:String(e?.message||e)})}}
+      const work=[]; for(const url of workoutUrls){try{const r=await fetchT(url);work.push({status:r.status,length:r.text.length,source:url,markers:{Tarih:/Tarih/i.test(r.text),m400:/400\s*m|400m|400 metre/i.test(r.text),m800:/800\s*m|800m|800 metre/i.test(r.text),m1000:/1000\s*m|1000m|1000 metre/i.test(r.text),m1200:/1200\s*m|1200m|1200 metre/i.test(r.text),AtAdi:/At\s*(?:Adı|Adi|İsmi|Ismi)/i.test(r.text)},parsedCount:parseWorkouts(r.text).length});}catch(e){work.push({status:0,length:0,source:url,error:String(e?.message||e)})}}
+      return out({ok:true,version:"54.2-YB-HIZ-FIX",atId,horse,historyAttempts:hist,workoutAttempts:work});
+    }
+
+    if(p==="/api/tjk/analyze"){
+      return out({ok:false,error:"V34 istemci-tabanlı analiz kullanır. /api/tjk/data ve /api/tjk/horsedata endpointlerini kullanın."},410);
+    }
+
+    if(p==="/api/tjk/raw"){const url=q.get("url");if(!url||!url.startsWith(TJK))return out({ok:false,error:"Geçersiz url"},400);const r=await fetchT(url);return new Response(r.text,{status:r.status,headers:{"Content-Type":r.text.includes("<html")?"text/html; charset=utf-8":"text/plain; charset=utf-8",...CORS}})}
+    return out({ok:false,error:"Bilinmeyen endpoint",endpoints:["/api/health","/api/tjk/data","/api/tjk/horse","/api/tjk/workouts","/api/tjk/horsedata","/api/tjk/horsedata-debug","/api/yb/horse","/api/tjk/analyze","/api/tjk/raw"]},404);
+  }catch(e){return out({ok:false,error:String(e?.message||e)},500)}
+}}
