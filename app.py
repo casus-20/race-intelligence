@@ -1922,7 +1922,7 @@ else:
     # Satır yüksekliği önceki görünüme göre yaklaşık %30 azaltılmıştır.
     # Önceki 28 px satır yüksekliğinin %50 artırılmış hali.
     # Satır yüksekliği mevcut sürümün 2 katı.
-    table_row_height = 84
+    table_row_height = 54
     table_height = 56 + (len(df) * table_row_height) + 24
 
     st.markdown(
@@ -1945,9 +1945,9 @@ else:
             height: 16px !important;
         }
         div[data-testid="stDataFrame"] [role="gridcell"] {
-            min-height: 84px !important;
-            height: 84px !important;
-            line-height: 84px !important;
+            min-height: 54px !important;
+            height: 54px !important;
+            line-height: 54px !important;
         }
         div[data-testid="stDataFrame"] [role="columnheader"] {
             min-height: 15mm !important;
