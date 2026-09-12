@@ -253,65 +253,66 @@ st.markdown(
 
     .score-strong { font-weight:900; font-size:13px; }
     /* Ana içerik alanını mümkün olduğunca geniş kullan. */
-    section.main > div.block-container {
+    section.main > div.block-container,
+    div[data-testid="stMainBlockContainer"] {
         max-width: none !important;
         width: 100% !important;
-        padding-left: 18px !important;
-        padding-right: 18px !important;
+        padding-left: 6mm !important;
+        padding-right: 6mm !important;
     }
 
     .race-info-compact {
-        margin-top: 4px;
-        margin-bottom: 5px;
+        margin-top: 1px !important;
+        margin-bottom: 2px !important;
+        padding: 0 !important;
+        width: 100% !important;
     }
 
-    .race-info-card {
-        height: 58px;
-        border: 1px solid rgba(80,130,190,.30);
+    .race-title-panel {
+        width: 80% !important;
+        min-height: 56px;
+        border: 2px solid #8fd3ff;
         border-radius: 8px;
-        padding: 6px 10px;
-        display:flex;
-        flex-direction:column;
-        justify-content:center;
-        box-sizing:border-box;
+        background: #6fb7dc;
+        color: #ffffff;
+        padding: 7px 11px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        box-shadow: 0 0 7px rgba(143,211,255,.20);
     }
-    .race-info-card span {
-        font-size:11px;
-        opacity:.75;
-        font-weight:700;
-        line-height:1.05;
+    .race-title-panel .race-title-main {
+        font-size: 20px;
+        line-height: 1.1;
+        font-weight: 900;
+        white-space: nowrap;
     }
-    .race-info-card strong {
-        font-size:18px;
-        font-weight:900;
-        line-height:1.15;
-        margin-top:3px;
-        white-space:nowrap;
+    .race-title-panel .race-condition {
+        font-size: 11px;
+        line-height: 1.25;
+        font-weight: 800;
+        white-space: normal;
+        flex: 1 1 260px;
+        min-width: 0;
+    }
+    .race-title-panel .analysis-inline {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 5px;
+        font-size: 10px;
+        font-weight: 900;
+        background: #e8f4ff;
+        color: #07579f;
+        white-space: nowrap;
+        margin-left: auto;
     }
 
-    .race-title-inline {
-        min-height:58px;
-        display:flex;
-        align-items:center;
-        gap:10px;
-        flex-wrap:wrap;
-        font-size:19px;
-    }
-    .race-condition-inline {
-        font-size:11px;
-        font-weight:800;
-        opacity:.72;
-        white-space:nowrap;
-    }
-    .analysis-inline {
-        display:inline-block;
-        padding:4px 8px;
-        border-radius:5px;
-        font-size:10px;
-        font-weight:900;
-        background:#e8f4ff;
-        color:#07579f;
-        white-space:nowrap;
+    .horse-title {
+        margin-top: 1px !important;
+        margin-bottom: 2px !important;
+        line-height: 1.05 !important;
     }
 
     .analysis-badge {
@@ -1449,36 +1450,22 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
-st.markdown("<div class='race-info-compact'>", unsafe_allow_html=True)
+analysis_badge = (
+    "SKORLAMA AKTİF"
+    if st.session_state.get("real_analysis_done")
+    else "ANALİZ BEKLENİYOR"
+)
 
-info1, info2, info3, info4 = st.columns([1.05, 1.0, 1.0, 1.9])
-with info1:
-    st.markdown(
-        f"<div class='race-info-card'><span>Saat</span><strong>{race_time}</strong></div>",
-        unsafe_allow_html=True,
-    )
-with info2:
-    st.markdown(
-        f"<div class='race-info-card'><span>Mesafe</span><strong>{f'{distance} m' if distance != '-' and 'm' not in distance.lower() else distance}</strong></div>",
-        unsafe_allow_html=True,
-    )
-with info3:
-    st.markdown(
-        f"<div class='race-info-card'><span>Pist</span><strong>{surface}</strong></div>",
-        unsafe_allow_html=True,
-    )
-with info4:
-    analysis_badge = (
-        "SKORLAMA AKTİF"
-        if st.session_state.get("real_analysis_done")
-        else "ANALİZ BEKLENİYOR"
-    )
-    st.markdown(
-        f"<div class='race-title-inline'><b>{race_number}. KOŞU {race_time if race_time != '-' else ''}</b><span class='race-condition-inline'>{condition}</span><span class='analysis-inline'>{analysis_badge}</span></div>",
-        unsafe_allow_html=True,
-    )
-
-st.markdown("</div>", unsafe_allow_html=True)
+st.markdown(
+    f"""<div class='race-info-compact'>
+        <div class='race-title-panel'>
+            <span class='race-title-main'>{race_number}. KOŞU {race_time if race_time != '-' else ''}</span>
+            <span class='race-condition'>{condition}</span>
+            <span class='analysis-inline'>{analysis_badge}</span>
+        </div>
+    </div>""",
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
@@ -1730,6 +1717,10 @@ else:
         div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal {
             height: 16px !important;
         }
+        div[data-testid="stDataFrame"] [role="gridcell"],
+        div[data-testid="stDataFrame"] [role="columnheader"] {
+            min-width: 1.15em !important;
+        }
         div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb {
             background: #0878f9 !important;
             border-radius: 10px !important;
@@ -1740,11 +1731,7 @@ else:
             border-radius: 10px !important;
         }
 
-        /* Gerçek koşu ve galop tablolarında yatay kaydırma çubuğu yok. */
-        div.st-key-real_history_table div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal,
-        div.st-key-real_workouts_table div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal {
-            height: 0px !important;
-        }
+        /* Gerçek koşu ve galop kayıtları st.table ile çizilir; yatay scrollbar yoktur. */
         </style>
         """,
         unsafe_allow_html=True,
@@ -1849,26 +1836,48 @@ else:
             with st.expander("📋 GERÇEK KOŞU GEÇMİŞİ", expanded=True):
                 hist = selected_horse.get("_history", [])
                 if hist:
-                    st.dataframe(
-                        pd.DataFrame(hist),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=300,
-                        key="real_history_table",
-                    )
+                    hist_df = pd.DataFrame(hist)
+                    history_cols = [
+                        c for c in [
+                            "date", "city", "distance", "surface", "place",
+                            "time", "weight", "jockey", "hp", "raceName", "className"
+                        ] if c in hist_df.columns
+                    ]
+                    if history_cols:
+                        hist_df = hist_df[history_cols].copy()
+                    hist_df.columns = [
+                        {
+                            "date": "Tarih", "city": "Şehir", "distance": "Mesafe",
+                            "surface": "Pist", "place": "Derece/Sıra", "time": "Derece",
+                            "weight": "Kilo", "jockey": "Jokey", "hp": "HP",
+                            "raceName": "Koşu", "className": "Sınıf"
+                        }.get(c, c) for c in hist_df.columns
+                    ]
+                    st.table(hist_df)
                 else:
                     st.warning("Bu at için TJK gerçek koşu geçmişi gelmedi.")
 
             with st.expander("🏇 GERÇEK GALOP KAYITLARI", expanded=True):
                 workouts = selected_horse.get("_workouts", [])
                 if workouts:
-                    st.dataframe(
-                        pd.DataFrame(workouts),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=240,
-                        key="real_workouts_table",
-                    )
+                    work_df = pd.DataFrame(workouts)
+                    workout_cols = [
+                        c for c in [
+                            "date", "city", "distance", "surface", "time",
+                            "weight", "rider", "jockey", "type", "note"
+                        ] if c in work_df.columns
+                    ]
+                    if workout_cols:
+                        work_df = work_df[workout_cols].copy()
+                    work_df.columns = [
+                        {
+                            "date": "Tarih", "city": "Şehir", "distance": "Mesafe",
+                            "surface": "Pist", "time": "Derece", "weight": "Kilo",
+                            "rider": "Binici", "jockey": "Jokey", "type": "Tür",
+                            "note": "Not"
+                        }.get(c, c) for c in work_df.columns
+                    ]
+                    st.table(work_df)
                 else:
                     st.warning("Bu at için TJK gerçek galop kaydı gelmedi.")
 
