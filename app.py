@@ -3073,7 +3073,7 @@ else:
         rc = "selected" if sel else ("even" if ri % 2 == 0 else "odd")
         check = f"<a class='ri-check checked' href='?horse_no={no}'>✓</a>" if sel else f"<a class='ri-check' href='?horse_no={no}'>□</a>"
         td = [
-            check, f"<a class='ri-horse-link' href='?horse_no={no}'>{_esc(row.get('At İsmi', '-'))}</a>", _esc(row.get("Yaş", "-")),
+            check, _esc(no), f"<a class='ri-horse-link' href='?horse_no={no}'>{_esc(row.get('At İsmi', '-'))}</a>", _esc(row.get("Yaş", "-")),
             _origin_html(row.get("Orijin (Baba-Anne)", "-")), _weight_html(row.get("Kilo", "-")),
             _jockey_html(row.get("Jokey", "-")), _owner_html(row.get("Sahip / Antrenör", "-")),
             _esc(row.get("St", "-")), _esc(row.get("HP", "-")), _esc(row.get("Son 6 Y.", "-")),
@@ -3085,7 +3085,7 @@ else:
         ]
         trs.append(f"<tr class='{rc}'>" + "".join(f"<td class='c{i}'>{v}</td>" for i,v in enumerate(td)) + "</tr>")
 
-    st.html(f"""
+    st.markdown(f"""
     <style>
     .ri-table-wrap{{width:100%;overflow-x:auto;overflow-y:hidden;border:1px solid #9aa4b2;border-radius:5px;background:#121722;}}
     table.ri-table{{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2350px;width:max-content;font-size:11px;}}
