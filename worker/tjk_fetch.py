@@ -439,6 +439,23 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     )
 
+    # Gerçek TJK at kimliğini standartlaştır.
+    # ÖNEMLİ: program numarası (no) hiçbir zaman atId yerine kullanılmaz.
+    at_id = (
+        result.get("atId")
+        or result.get("at_id")
+        or result.get("horseId")
+        or result.get("horse_id")
+        or result.get("horseKey")
+        or result.get("horse_key")
+        or result.get("id")
+        or result.get("Id")
+        or ""
+    )
+    if at_id not in (None, ""):
+        result["atId"] = str(at_id)
+        result["at_id"] = str(at_id)
+
     # app.py'nin kullandığı V34 alan adları
     result["at_ismi"] = result["name"]
     result["numara"] = result["no"]
@@ -685,7 +702,7 @@ def get_horse_enrichment(
     horse: str,
     timeout: int = 45,
 ) -> Dict[str, Any]:
-    """Worker V1 /api/tjk/horsedata: geçmiş + galop tek çağrıda."""
+    """Worker /horsedata çağrısı + eksikse /horse ve /workouts fallback."""
     if at_id in (None, ""):
         return {
             "ok": False,
@@ -694,17 +711,21 @@ def get_horse_enrichment(
             "error": "atId yok",
         }
 
-    data = _worker_json(
-        API_HORSEDATA,
-        {
-            "atId": str(at_id),
-            "horse": normalize_text(horse),
-        },
-        timeout=timeout,
-    )
+    errors = []
+    data: Dict[str, Any] = {}
 
-    # Worker V1 bazı durumlarda /horsedata içinde geçmişi döndürüp galopu boş bırakabilir.
-    # Worker değiştirilmeden, mevcut /horse ve /workouts uçlarıyla eksik alanı tamamla.
+    try:
+        data = _worker_json(
+            API_HORSEDATA,
+            {
+                "atId": str(at_id),
+                "horse": normalize_text(horse),
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        errors.append(f"horsedata: {exc}")
+
     history = data.get("history") if isinstance(data.get("history"), list) else []
     workouts = data.get("workouts") if isinstance(data.get("workouts"), list) else []
 
@@ -713,20 +734,24 @@ def get_horse_enrichment(
             h = get_horse_history(at_id, timeout=timeout)
             if isinstance(h.get("history"), list):
                 history = h.get("history")
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"horse: {exc}")
 
     if not workouts:
         try:
             w = get_horse_workouts(horse, timeout=timeout)
             if isinstance(w.get("workouts"), list):
                 workouts = w.get("workouts")
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"workouts: {exc}")
 
-    data["history"] = history
-    data["workouts"] = workouts
-    return data
+    result = dict(data) if isinstance(data, dict) else {}
+    result["history"] = history
+    result["workouts"] = workouts
+    result["ok"] = bool(history or workouts) or bool(data.get("ok")) if isinstance(data, dict) else bool(history or workouts)
+    if errors and not (history or workouts):
+        result["error"] = " | ".join(errors)
+    return result
 
 # =========================================================
 # GERİYE DÖNÜK UYUMLULUK
