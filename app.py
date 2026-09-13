@@ -1026,6 +1026,7 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
@@ -1035,23 +1036,21 @@ def load_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    try:
-        return get_horse_enrichment(
-            at_id,
-            horse_name,
-            target_date=target_date,
-            target_city=target_city,
-            target_distance=target_distance,
-            target_surface=target_surface,
-            target_class=target_class,
-        )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": str(exc),
-        }
+    """Başarılı at verisini cache'ler; boş/başarısız sonucu cache'lemez."""
+    data = get_horse_enrichment(
+        at_id,
+        horse_name,
+        target_date=target_date,
+        target_city=target_city,
+        target_distance=target_distance,
+        target_surface=target_surface,
+        target_class=target_class,
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError("At verisi alınamadı.")
+    if not data.get("history") and not data.get("workouts"):
+        raise RuntimeError(str(data.get("error") or "At verisi boş döndü."))
+    return data
 
 
 def enrich_race_horses(
@@ -1152,7 +1151,7 @@ def enrich_race_horses(
         # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
         return item
 
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(enriched)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(2, max(1, len(enriched)))) as executor:
         futures = [executor.submit(one, h) for h in enriched]
         return [f.result() for f in futures]
 
