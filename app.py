@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -926,7 +926,7 @@ def _weight_parts(value: Any) -> tuple[str, str]:
     # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
     fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
     if fm:
-        return base, f"Fazla Kilo: {fm.group(1).replace(',', '.')}"
+        return base, fm.group(1).replace(',', '.').replace(" ", "")
     return base, rest
 
 
@@ -938,7 +938,7 @@ def get_horse_weight(
         or horse.get("Sıklet")
         or horse.get("weight")
     )
-    return f"{base}\n{extra.replace('Fazla Kilo: ', '')}" if extra else base
+    return f"{base}\n{extra}" if extra else base
 
 
 def get_horse_jockey(
@@ -1122,7 +1122,7 @@ def enrich_race_horses(
         # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
         return item
 
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(enriched)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(3, max(1, len(enriched)))) as executor:
         futures = [executor.submit(one, h) for h in enriched]
         return [f.result() for f in futures]
 
@@ -2304,7 +2304,11 @@ st.sidebar.title("🏇 Yarış Programı")
 # yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
 # farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
 # otomatik olarak bugüne geçilir.
-_today = date.today()
+try:
+    from zoneinfo import ZoneInfo
+    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+except Exception:
+    _today = date.today()
 if st.session_state.get("_date_auto_sync_day") != _today:
     st.session_state["selected_date_widget"] = _today
     st.session_state["_date_auto_sync_day"] = _today
@@ -2836,7 +2840,12 @@ else:
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
             "Kilo": get_horse_weight(horse),
             "Jokey": get_horse_jockey(horse),
-            "Sahip / Antrenör": "\n".join([x for x in (owner, trainer) if x]) or "-",
+            "Sahip / Antrenör": "\n".join(
+                [
+                    owner if owner else "",
+                    trainer if trainer else "",
+                ]
+            ).strip() or "-",
             "St": get_horse_start(horse),
             "HP": get_horse_hp(horse),
             "Son 6 Y.": form_digits,
@@ -2919,6 +2928,29 @@ else:
         styles = pd.DataFrame("", index=data.index, columns=data.columns)
         if "No" in data.columns:
             styles["No"] = "font-weight:900;text-align:center;"
+
+        # V3 — EİD tamamı kırmızı.
+        # Native st.dataframe hücre içinde kısmi metin rengi desteklemediği için
+        # Baba/Anne, Ap, Sahip/Antrenör ve fazla kilo aynı hücrede ayrı renklenemez.
+        # Metin yapısı korunur; EİD ve SON KOŞU hücre bazında renklendirilir.
+        if "EİD" in data.columns:
+            styles["EİD"] = "color:#d40000 !important;font-weight:900;"
+
+        # V4 — SON KOŞU: son yarış çim ise yeşil, diğer pistler siyah.
+        if "SON KOŞU" in data.columns:
+            for ridx in data.index:
+                try:
+                    hidx = int(df.iloc[int(ridx)]["_horse_index"])
+                    horse = horses[hidx]
+                    lr = horse.get("_last_race") if isinstance(horse, dict) else None
+                    surf = str((lr or {}).get("surface") or (lr or {}).get("pist") or "").lower()
+                    styles.at[ridx, "SON KOŞU"] = (
+                        "color:#138a36 !important;font-weight:900;" if "çim" in surf or "cim" in surf or "grass" in surf or "turf" in surf
+                        else "color:#111111 !important;font-weight:900;"
+                    )
+                except Exception:
+                    styles.at[ridx, "SON KOŞU"] = "color:#111111 !important;font-weight:900;"
+
         return styles
 
     _style_source = df.copy()
@@ -3120,6 +3152,16 @@ else:
 
         if selected_horse:
             st.markdown("---")
+            # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
+            # at için aç/kapatılabilir bilgi alanında göster.
+            eid_detail = best_race_detail(selected_horse)
+            if eid_detail:
+                with st.expander(f"🔴 EİD BİLGİSİ — {eid_detail.get('Derece', '-')}  •  aç / kapat", expanded=False):
+                    eid_cols = st.columns(4)
+                    eid_cols[0].metric("Derece", eid_detail.get("Derece", "-"))
+                    eid_cols[1].write(f"**Hipodrom:** {eid_detail.get('Hipodrom', '-')}\n\n**Tarih:** {eid_detail.get('Tarih', '-')}")
+                    eid_cols[2].write(f"**Mesafe:** {eid_detail.get('Mesafe', '-')}\n\n**Bilgi:** {eid_detail.get('Bilgi', '-')}")
+                    eid_cols[3].caption("TJK programındaki En İyi Derece kaydı")
             st.subheader(
                 f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
             )
