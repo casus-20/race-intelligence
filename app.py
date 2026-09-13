@@ -1,11 +1,7 @@
 import streamlit as st
 import pandas as pd
-try:
-    from zoneinfo import ZoneInfo
-except Exception:
-    ZoneInfo = None
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -758,37 +754,19 @@ def get_horse_name(
 
 
 def _split_origin(origin: Any) -> tuple[str, str]:
-    """TJK Orijin alanını güvenli biçimde Baba / Anne olarak dönüştürür.
+    """TJK Orijin alanını görseldeki Baba / Anne formatına ayırır.
 
-    Worker bazı günlük program kayıtlarında takı kodunu orijin metninin
-    sonuna ekleyebiliyor (örn. ``AUTHORIZED (IRE) RC``). Takı orijinden
-    ayrılır; gerçek ``Baba - Anne`` yapısı korunur.
+    Örn: AUTHORIZED (IRE) - ROYAL CHICK / KANEKO
+      -> AUTHORIZED (IRE)
+      -> ROYAL CHICK / KANEKO
     """
     text = display_value(origin, "")
     if not text:
         return "", ""
     text = re.sub(r"\s+", " ", text).strip()
-
-    # Orijinin sonuna yanlışlıkla eklenmiş TJK takı kodlarını temizle.
-    # Yalnızca tek başına/son ek konumundaki bilinen kısa kodları hedefle.
-    text = re.sub(
-        r"\s+(?:DB|KG|SKG|SK|GKR|TT|SGK|K|G|D|B|H|M)(?=\s*$)",
-        "",
-        text,
-        flags=re.I,
-    ).strip()
-
     parts = re.split(r"\s+-\s+", text, maxsplit=1)
     if len(parts) == 2:
-        sire = parts[0].strip()
-        dam = parts[1].strip()
-        return sire, dam
-
-    # Bazı kayıtlarda tire HTML temizliği sonrası kaybolabiliyor.
-    # Eğik çizgi ile gelen ikinci bölüm varsa onu anne olarak koru.
-    slash = re.match(r"^(.*?)\s*/\s*(.+)$", text)
-    if slash:
-        return slash.group(1).strip(), slash.group(2).strip()
+        return parts[0].strip(), parts[1].strip()
     return text, ""
 
 
@@ -941,9 +919,6 @@ def _weight_parts(value: Any) -> tuple[str, str]:
         return text, ""
 
     base = m.group(1).replace(",", ".")
-    # 52.5 -> 52,5 gösterimi; TJK'nın kilo yazımına daha yakın görünür.
-    if "." in base:
-        base = base.replace(".", ",")
     rest = (m.group(2) or "").strip()
     if not rest:
         return base, ""
@@ -951,8 +926,7 @@ def _weight_parts(value: Any) -> tuple[str, str]:
     # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
     fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
     if fm:
-        extra_value = fm.group(1).replace(" ", "").replace(".", ",")
-        return base, extra_value
+        return base, f"Fazla Kilo: {fm.group(1).replace(',', '.')}"
     return base, rest
 
 
@@ -970,7 +944,6 @@ def get_horse_weight(
 def get_horse_jockey(
     horse: Dict[str, Any],
 ) -> str:
-    """Jokeyi TJK gösterimine dönüştürür; apranti ibaresini ``Ap`` yapar."""
     text = display_value(
         horse.get("jokey")
         or horse.get("Jokey")
@@ -979,12 +952,13 @@ def get_horse_jockey(
     if not text:
         return "-"
 
-    # TJK kaynaklarında AP / AP Apranti / Apranti varyasyonlarını tek forma
-    # dönüştür. Ana tablo iki satırlı gösterir: E.AKPINAR / Ap.
+    # TJK'da AP bazı sayfalarda yalnız "AP", bazılarında "AP Apranti"
+    # olarak gelir. İkisini de görselde ikinci satıra taşırız.
     m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
     if m:
-        return f"{m.group(1).strip()}\nAp"
-    return re.sub(r"\s+", " ", text).strip()
+        label = "AP Apranti" if m.group(2).strip().upper() == "AP" else m.group(2).strip()
+        return f"{m.group(1).strip()}\n{label}"
+    return text
 
 
 def get_horse_hp(
@@ -1298,13 +1272,6 @@ def last_race_display(horse: Dict[str, Any]) -> str:
         _first_value(row, ["time", "derece", "Derece"]),
         "-",
     )
-
-
-def last_race_surface(horse: Dict[str, Any]) -> str:
-    row = horse.get("_last_race")
-    if not isinstance(row, dict):
-        return ""
-    return display_value(_first_value(row, ["surface", "pist"]), "")
 
 
 def best_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
@@ -2337,12 +2304,7 @@ st.sidebar.title("🏇 Yarış Programı")
 # yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
 # farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
 # otomatik olarak bugüne geçilir.
-# Türkiye yerel tarihi: sunucu UTC olsa bile gün değişimini Europe/Istanbul
-# üzerinden belirle. Böylece 00:00 sonrası tarih otomatik 13/09 gibi yeni güne geçer.
-try:
-    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date() if ZoneInfo else date.today()
-except Exception:
-    _today = date.today()
+_today = date.today()
 if st.session_state.get("_date_auto_sync_day") != _today:
     st.session_state["selected_date_widget"] = _today
     st.session_state["_date_auto_sync_day"] = _today
@@ -2888,7 +2850,6 @@ else:
             "GÜNCEL SINIF": current_class,
             "SON GALOP": workout_display(horse),
             "SON KOŞU": last_race_display(horse),
-            "_SON_KOSU_PIST": last_race_surface(horse),
             "BU YIL KAZANÇ": _format_tl(year_earnings(horse, target_year)),
             "TOPLAM KAZANÇ": _format_tl(total_earnings(horse)),
             "Sahip": owner or "-",
@@ -2958,23 +2919,6 @@ else:
         styles = pd.DataFrame("", index=data.index, columns=data.columns)
         if "No" in data.columns:
             styles["No"] = "font-weight:900;text-align:center;"
-        # EİD ana tabloda daima kırmızı vurgulanır.
-        if "EİD" in data.columns:
-            styles["EİD"] = "font-weight:900;color:#c62828 !important;"
-        # Kilo içindeki fazla kilo ikinci satırda ayrı gösterilir;
-        # native dataframe hücreyi tek renkte boyadığı için burada yalnız
-        # dönüşüm yapılır, renkli alt metin için mimari değiştirilmez.
-        # Son koşu çim ise derece hücresi yeşil, diğer pistler siyah kalır.
-        if "SON KOŞU" in data.columns:
-            for idx in data.index:
-                try:
-                    surf = str(df.iloc[int(idx)].get("_SON_KOSU_PIST", "")).lower()
-                    if "çim" in surf or "cim" in surf or "grass" in surf or "turf" in surf:
-                        styles.loc[idx, "SON KOŞU"] = "font-weight:900;color:#16833b !important;"
-                    else:
-                        styles.loc[idx, "SON KOŞU"] = "font-weight:900;color:#17212b !important;"
-                except Exception:
-                    pass
         return styles
 
     _style_source = df.copy()
@@ -3058,25 +3002,28 @@ else:
         border-color:#1565c0 !important;
     }
 
-    /* Ana işlem düğmeleri: ana buton tipinden bağımsız sabit renkler. */
-    .st-key-reset_model_button_top button {
-        background:#f2c230 !important; border-color:#d5a900 !important; color:#111 !important;
-        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
+    /* Ana işlem düğmeleri: varsayılan sarı, gerçek veri yeşil. */
+    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+        min-height:34px !important; font-size:10px !important; padding:4px 8px !important;
     }
-    .st-key-real_analysis_button_top button {
-        background:#20a34a !important; border-color:#17843a !important; color:#fff !important;
-        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
+    /* Birincil buton yeşil; Manuel Analiz artık secondary olduğundan kırmızı görünmez. */
+    button[kind="primary"] { background:#20a34a !important; border-color:#20a34a !important; color:#fff !important; }
+    /* Üst işlem butonlarının kesin renkleri */
+    div[data-testid="stHorizontalBlock"] div:has(.ri-reset-marker) button {
+        background:#c58a2b !important; border-color:#c58a2b !important; color:#fff !important;
     }
-    .st-key-manual_analysis_button_top button {
-        background:#e53935 !important; border-color:#c62828 !important; color:#fff !important;
-        min-height:34px !important; font-size:11px !important; font-weight:900 !important; padding:4px 8px !important;
+    div[data-testid="stHorizontalBlock"] div:has(.ri-real-marker) button {
+        background:#20a34a !important; border-color:#20a34a !important; color:#fff !important;
     }
-    .st-key-reset_model_button_top button:hover { filter:brightness(1.06); }
-    .st-key-real_analysis_button_top button:hover { filter:brightness(1.06); }
-    .st-key-manual_analysis_button_top button:hover { filter:brightness(1.06); }
-    .st-key-reset_model_button_top button,
-    .st-key-real_analysis_button_top button,
-    .st-key-manual_analysis_button_top button { border-radius:5px !important; }
+    div[data-testid="stHorizontalBlock"] div:has(.ri-manual-marker) button {
+        background:#ff4b4b !important; border-color:#ff4b4b !important; color:#fff !important;
+    }
+    /* Buton renkleri metne göre */
+    div[data-testid="stButton"]:has(button:has(span)) button { color:#fff !important; }
+    div[data-testid="stButton"]:has(button span) button { border-radius:5px !important; }
+    div[data-testid="stButton"]:has(button span) { }
+    /* Varsayılana dön: sarı */
+    button:has(span) { }
         </style>
     """, unsafe_allow_html=True)
 
