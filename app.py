@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from worker.tjk_fetch import get_program, get_horse_enrichment, get_horse_workouts
+from worker.tjk_fetch import get_program, get_horse_enrichment
 
 
 # ============================================================
@@ -639,50 +639,33 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
     """
-    Yalnızca SEÇİLEN TARİHTE gerçekten yarış programı dönen
-    hipodromları getirir.
+    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
 
-    ÖNEMLİ: Aktif hipodrom kontrolünde yarış programı istekleri
-    birbirine bindirilmez. Worker/TJK aynı anda çok sayıda /data
-    isteğinde bazı şehirleri 429/5xx ile döndürebildiği için bir
-    şehrin geçici hatası o şehrin listeden düşmesine neden olmaz.
+    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
+    yeni Worker dosyası veya yeni API gerekmez.
+    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
     """
-    active = set()
+    active = []
 
     def check_city(city: str):
-        # Her şehir için en fazla 3 deneme. Sadece gerçekten races
-        # listesi doluysa şehir aktif kabul edilir.
-        for _attempt in range(3):
-            try:
-                data = get_program(selected_date, city)
-                if not isinstance(data, dict):
-                    continue
-                races = data.get("races")
-                if isinstance(races, list) and len(races) > 0:
-                    return city
-            except Exception:
-                pass
-        return None
+        try:
+            data = get_program(selected_date, city)
+            races = data.get("races", []) if isinstance(data, dict) else []
+            return city if isinstance(races, list) and len(races) > 0 else None
+        except Exception:
+            return None
 
-    # 10 şehri tek tek kontrol etmek yerine kontrollü 2'li paralellik.
-    # Amaç: Worker'ı boğmadan o tarihteki tüm aktif hipodromları bulmak.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(check_city, city): city
-            for city in ALL_CITIES
-        }
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
-            try:
-                city = future.result()
-                if city:
-                    active.add(city)
-            except Exception:
-                pass
+            city = future.result()
+            if city:
+                active.append(city)
 
-    # Tam olarak ALL_CITIES sırasını koru.
+    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
     return [city for city in ALL_CITIES if city in active]
 
 
@@ -1073,13 +1056,15 @@ def enrich_race_horses(
     target_class: str = "",
     progress_callback=None,
 ) -> List[Dict[str, Any]]:
-    """Seçili koşudaki TÜM atları gerçek TJK verisiyle zenginleştirir.
+    """
+    Seçili koşudaki atların gerçek TJK koşu + galop verisini alır.
 
-    Ağır /horsedata endpoint'i kullanılmaz. Her at için mevcut hafif
-    /horse + /workouts akışı kullanılır. progress_callback yalnızca ana
-    Streamlit iş parçacığından, tamamlanan at sayısını bildirmek içindir.
+    progress_callback(done, total, horse_name) verilirse işlem ilerlemesini
+    ana Streamlit akışına bildirir. Sonuç sırası programdaki at sırasıdır.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
+    if not enriched:
+        return []
 
     def one(item):
         at_id = (
@@ -1094,26 +1079,6 @@ def enrich_race_horses(
             or ""
         )
         name = get_horse_name(item)
-
-        # atId yoksa geçmiş koşu sorgusu yapılamaz; ancak galop sorgusu
-        # at adıyla yine denenir. Böylece program kaydındaki eksik ID,
-        # galop verisinin tamamını engellemez.
-        if not at_id:
-            try:
-                workout_data = get_horse_workouts(name, timeout=20)
-            except Exception as exc:
-                workout_data = {"ok": False, "workouts": [], "error": str(exc)}
-            item["_at_id"] = ""
-            item["_history"] = []
-            item["_workouts"] = (
-                workout_data.get("workouts", [])
-                if isinstance(workout_data, dict)
-                else []
-            )
-            if not item["_workouts"]:
-                item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
-            return item
-
         data = load_horse_enrichment(
             str(at_id),
             name,
@@ -1126,13 +1091,11 @@ def enrich_race_horses(
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
 
-        item["_at_id"] = str(at_id)
+        item["_at_id"] = str(at_id) if at_id else ""
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
         if isinstance(data, dict) and data.get("error"):
             item["_enrichment_error"] = str(data.get("error"))
-        else:
-            item.pop("_enrichment_error", None)
 
         if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
             for row in item["_history"]:
@@ -1156,18 +1119,19 @@ def enrich_race_horses(
                 break
         return item
 
-    total = len(enriched)
-    completed = 0
-    # Kontrollü paralellik: Worker'ı kaynak limitine sokmadan tüm atları işler.
-    with ThreadPoolExecutor(max_workers=min(3, max(1, total))) as executor:
-        futures = [executor.submit(one, h) for h in enriched]
-        results = []
-        for future in futures:
-            results.append(future.result())
-            completed += 1
+    results = [None] * len(enriched)
+    with ThreadPoolExecutor(max_workers=min(3, len(enriched))) as executor:
+        future_map = {executor.submit(one, h): i for i, h in enumerate(enriched)}
+        done = 0
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            results[idx] = future.result()
+            done += 1
             if progress_callback:
-                progress_callback(completed, total)
-    return results
+                progress_callback(done, len(enriched), get_horse_name(results[idx]))
+
+    return [r for r in results if isinstance(r, dict)]
+
 
 def _history_year(date_text: Any) -> int | None:
     m = re.search(r"(20\d{2})", str(date_text or ""))
@@ -2716,8 +2680,9 @@ _current_race_signature = (
 if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
-    # Gerçek veri sorgusu kullanıcı GERÇEK VERİ İLE ANALİZ ET butonuna
-    # bastığında yapılır. Koşu değişince TJK at geçmişi otomatik sorgulanmaz.
+    # Yeni koşu seçildiğinde gerçek veri sorgusu OTOMATİK yapılmaz.
+    # Gerçek veri yalnızca kullanıcı "GERÇEK VERİ İLE ANALİZ ET" butonuna
+    # bastığında çekilir.
     st.session_state.real_analysis_requested = False
     st.session_state.real_analysis_done = False
     st.session_state["_last_race_signature"] = _current_race_signature
@@ -2774,9 +2739,7 @@ if not horses:
 
 else:
 
-    # GERÇEK VERİYLE ANALİZ
-    # Program önce gelir. Bu blok yalnızca GERÇEK VERİ İLE ANALİZ ET
-    # butonuna basıldıktan sonra çalışır ve seçili koşudaki tüm atları işler.
+    # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
         try:
             load_horse_enrichment.clear()
@@ -2787,19 +2750,10 @@ else:
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
         )
-        progress_bar = st.progress(0.0)
-        progress_text = st.empty()
-        progress_text.write(
-            f"📡 {selected_city} • {race_number}. koşu • {len(horses)} at işlenecek"
-        )
-        progress_bar.progress(0.0)
+        progress = st.progress(0, text=f"0/{len(horses)} at işlendi")
 
-        def _real_progress(done, total):
-            ratio = done / total if total else 1.0
-            progress_bar.progress(min(1.0, ratio))
-            progress_text.write(
-                f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... {done}/{total} at"
-            )
+        def _real_progress(done, total, horse_name):
+            progress.progress(done / total if total else 1.0, text=f"{done}/{total} at işlendi • {horse_name}")
             real_status.update(
                 label=f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... {done}/{total} at",
                 state="running",
@@ -2817,35 +2771,25 @@ else:
                 progress_callback=_real_progress,
             )
             selected_race["horses"] = horses
-            history_count = sum(
-                len(h.get("_history", [])) for h in horses if isinstance(h, dict)
-            )
-            workout_count = sum(
-                len(h.get("_workouts", [])) for h in horses if isinstance(h, dict)
-            )
+            history_count = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
+            workout_count = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
             st.session_state.real_analysis_done = True
+            progress.progress(1.0, text=f"{len(horses)}/{len(horses)} at işlendi")
             real_status.update(
-                label=(
-                    f"✅ Gerçek TJK verileri tamamlandı • {len(horses)}/{len(horses)} at • "
-                    f"{history_count} koşu kaydı • {workout_count} galop kaydı"
-                ),
+                label=f"✅ Gerçek TJK verileri tamamlandı • {len(horses)}/{len(horses)} at • {history_count} koşu • {workout_count} galop",
                 state="complete",
                 expanded=False,
             )
-            progress_text.write(
-                f"✅ Tamamlandı: {len(horses)}/{len(horses)} at işlendi. "
-                f"{history_count} koşu + {workout_count} galop kaydı alındı."
-            )
-            progress_bar.progress(1.0)
         except Exception as exc:
             real_status.update(
                 label="❌ Gerçek TJK veri analizi başarısız",
                 state="error",
                 expanded=True,
             )
-            real_status.write(str(exc))
             st.error(f"Gerçek veri analizi sırasında hata: {exc}")
-        st.session_state.real_analysis_requested = False
+        finally:
+            st.session_state.real_analysis_requested = False
+
 
     ranking = calculate_ranking(horses, selected_race, selected_city)
     # Analiz sonucu horse_index üzerinden eşlenir.
@@ -3110,6 +3054,7 @@ else:
     """)
 
     selected_horse_index = st.session_state.get("selected_horse_index")
+    selected_horse = None
 
     grid_options = {
         "rowHeight": 44,
@@ -3134,8 +3079,19 @@ else:
         """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
         "onRowClicked": JsCode("""
             function(params) {
+                if (params.node) params.node.setSelected(true);
                 if (params.data && params.data._horse_index !== undefined) {
                     window.__ri_selected_horse_index = params.data._horse_index;
+                }
+            }
+        """),
+        "onCellClicked": JsCode("""
+            function(params) {
+                if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
+                    params.node.setSelected(true);
+                    if (params.data && params.data._horse_index !== undefined) {
+                        window.__ri_selected_horse_index = params.data._horse_index;
+                    }
                 }
             }
         """),
@@ -3193,21 +3149,6 @@ else:
             }
         }
     """)
-    grid_options["onRowClicked"] = JsCode("""
-        function(params) {
-            if (params.node) params.node.setSelected(true);
-            if (params.data && params.data._horse_index !== undefined) {
-                window.__ri_selected_horse_index = params.data._horse_index;
-            }
-        }
-    """)
-    grid_options["onCellClicked"] = JsCode("""
-        function(params) {
-            if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
-                params.node.setSelected(true);
-            }
-        }
-    """)
 
     # Seçili atın başlangıçta vurgulanması.
     if selected_horse_index is not None:
@@ -3233,16 +3174,22 @@ else:
         key="horse_table_aggrid",
     )
 
-    selected_rows = []
+    raw_selected_rows = None
     try:
         raw_selected_rows = grid_response.get("selected_rows")
-        if isinstance(raw_selected_rows, pd.DataFrame):
-            selected_rows = raw_selected_rows.to_dict(orient="records")
-        elif isinstance(raw_selected_rows, list):
-            selected_rows = raw_selected_rows
-        elif raw_selected_rows is not None:
-            selected_rows = list(raw_selected_rows)
     except Exception:
+        raw_selected_rows = None
+
+    if isinstance(raw_selected_rows, pd.DataFrame):
+        selected_rows = raw_selected_rows.to_dict(orient="records")
+    elif isinstance(raw_selected_rows, list):
+        selected_rows = raw_selected_rows
+    elif raw_selected_rows is not None:
+        try:
+            selected_rows = list(raw_selected_rows)
+        except Exception:
+            selected_rows = []
+    else:
         selected_rows = []
 
     if selected_rows:
@@ -3259,10 +3206,7 @@ else:
             st.session_state.selected_horse_index = selected_horse_index
             _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if (
-                st.session_state.get("real_analysis_done")
-                and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
-            ):
+            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 try:
@@ -3274,7 +3218,7 @@ else:
                     f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
                     expanded=True,
                 )
-                horse_status.write("📡 TJK koşu geçmişi + galop verisi sorgulanıyor...")
+                horse_status.write("📡 TJK koşu geçmişi ve galop verisi sorgulanıyor...")
                 horse_status.write(
                     f"🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}"
                 )
@@ -3313,12 +3257,12 @@ else:
                     st.error(str(exc))
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
 
-    # AgGrid bazı sürümlerde selected_rows bilgisini bir sonraki rerun'da boş döndürebilir.
-    # Son seçimi session_state'ten koru.
+    # AgGrid bazı sürümlerde SELECTION_CHANGED sonucunu ilk tıklamada
+    # Streamlit'e geri taşımayabilir. Session state / JS seçiminden devam et.
     if selected_horse is None:
-        _saved_index = st.session_state.get("selected_horse_index")
-        if isinstance(_saved_index, int) and 0 <= _saved_index < len(horses):
-            selected_horse = horses[_saved_index]
+        fallback_index = st.session_state.get("selected_horse_index")
+        if isinstance(fallback_index, int) and 0 <= fallback_index < len(horses):
+            selected_horse = horses[fallback_index]
 
     selected_no = st.session_state.get("selected_horse_no")
     if selected_no is not None:
@@ -3395,7 +3339,7 @@ else:
                     if place == "1": first += 1
                     elif place == "2": second += 1
                     elif place == "3": third += 1
-                    pv = _money_number(_first_value(h, ["prize", "ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"]))
+                    pv = _money_number(_first_value(h, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"]))
                     total_prize += pv
                     if _history_year(h) == selected_date.year:
                         year_prize += pv
