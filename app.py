@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from worker.tjk_fetch import get_program, get_horse_enrichment
+from worker.tjk_fetch import get_program, get_horse_enrichment, get_horse_history, get_horse_workouts
 
 
 # ============================================================
@@ -639,41 +639,33 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
-    """Seçilen tarihte yarış programı bulunan tüm hipodromları getirir."""
-    active = set()
+    """
+    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
+
+    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
+    yeni Worker dosyası veya yeni API gerekmez.
+    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
+    """
+    active = []
 
     def check_city(city: str):
-        # Geçici Worker/TJK hatasında şehir yanlışlıkla elenmesin.
-        for _ in range(3):
-            try:
-                data = get_program(selected_date, city)
-                if not isinstance(data, dict):
-                    continue
+        try:
+            data = get_program(selected_date, city)
+            races = data.get("races", []) if isinstance(data, dict) else []
+            return city if isinstance(races, list) and len(races) > 0 else None
+        except Exception:
+            return None
 
-                races = data.get("races")
-                if isinstance(races, list) and len(races) > 0:
-                    return city
-            except Exception:
-                continue
-        return None
-
-    # Worker'a aynı anda aşırı istek göndermemek için kontrollü paralellik.
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(check_city, city): city
-            for city in ALL_CITIES
-        }
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
-            try:
-                city = future.result()
-                if city:
-                    active.add(city)
-            except Exception:
-                pass
+            city = future.result()
+            if city:
+                active.append(city)
 
-    # Sabit şehir sırasını koru.
+    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
     return [city for city in ALL_CITIES if city in active]
 
 
@@ -1026,7 +1018,6 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
@@ -1036,21 +1027,59 @@ def load_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """Başarılı at verisini cache'ler; boş/başarısız sonucu cache'lemez."""
-    data = get_horse_enrichment(
-        at_id,
-        horse_name,
-        target_date=target_date,
-        target_city=target_city,
-        target_distance=target_distance,
-        target_surface=target_surface,
-        target_class=target_class,
-    )
-    if not isinstance(data, dict):
-        raise RuntimeError("At verisi alınamadı.")
-    if not data.get("history") and not data.get("workouts"):
-        raise RuntimeError(str(data.get("error") or "At verisi boş döndü."))
-    return data
+    """At geçmişi + galopu, mevcut Worker'ın hafif endpointleriyle getirir.
+
+    Ana uygulamanın arayüzüne ve hipodrom keşfine dokunmadan yalnızca
+    zenginleştirme katmanını değiştirir. /horsedata ağır olduğu için burada
+    /horse ve /workouts ayrı, paralel ve kısa timeout ile kullanılır.
+    Boş/hatalı sonuçlar Streamlit cache'ine alınmaz.
+    """
+    if not at_id:
+        return {"ok": False, "history": [], "workouts": [], "error": "atId yok"}
+
+    history: List[Dict[str, Any]] = []
+    workouts: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    # Aynı at için iki hafif Worker endpointini paralel çağır.
+    def fetch_history():
+        try:
+            return get_horse_history(str(at_id), timeout=18)
+        except Exception as exc:
+            return {"ok": False, "history": [], "error": str(exc)}
+
+    def fetch_workouts():
+        try:
+            return get_horse_workouts(horse_name, timeout=18)
+        except Exception as exc:
+            return {"ok": False, "workouts": [], "error": str(exc)}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        fh = executor.submit(fetch_history)
+        fw = executor.submit(fetch_workouts)
+        try:
+            h = fh.result()
+            if isinstance(h, dict) and isinstance(h.get("history"), list):
+                history = h.get("history") or []
+            elif isinstance(h, dict) and h.get("error"):
+                errors.append(f"horse: {h.get('error')}")
+        except Exception as exc:
+            errors.append(f"horse: {exc}")
+        try:
+            w = fw.result()
+            if isinstance(w, dict) and isinstance(w.get("workouts"), list):
+                workouts = w.get("workouts") or []
+            elif isinstance(w, dict) and w.get("error"):
+                errors.append(f"workouts: {w.get('error')}")
+        except Exception as exc:
+            errors.append(f"workouts: {exc}")
+
+    return {
+        "ok": bool(history or workouts),
+        "history": history,
+        "workouts": workouts,
+        "error": " | ".join(errors) if errors and not (history or workouts) else "",
+    }
 
 
 def enrich_race_horses(
@@ -1065,17 +1094,10 @@ def enrich_race_horses(
 
     def one(item):
         # TJK programında kimlik alanı farklı isimlerle gelebilir.
-        # At numarasını (no) ID olarak kullanmıyoruz; yalnızca gerçek at
-        # kimliği alanlarını kabul ediyoruz.
+        # At numarasını (no) ID olarak kullanmıyoruz.
         at_id = (
             item.get("atId")
             or item.get("at_id")
-            or item.get("atID")
-            or item.get("AtId")
-            or item.get("AtID")
-            or item.get("ATID")
-            or item.get("AtKodu")
-            or item.get("at_kodu")
             or item.get("horseId")
             or item.get("horse_id")
             or item.get("horseKey")
@@ -1085,46 +1107,43 @@ def enrich_race_horses(
             or ""
         )
         name = get_horse_name(item)
-        # atId yoksa bile galoplar isim üzerinden alınabilir.
         if not at_id:
-            item["_at_id"] = ""
             item["_history"] = []
             item["_workouts"] = []
-            try:
-                fallback = get_horse_enrichment(
-                    "", name,
-                    target_date=target_date, target_city=target_city,
-                    target_distance=target_distance, target_surface=target_surface,
-                    target_class=target_class,
-                )
-                if isinstance(fallback, dict):
-                    item["_history"] = fallback.get("history", []) or []
-                    item["_workouts"] = fallback.get("workouts", []) or []
-            except Exception as exc:
-                item["_enrichment_error"] = str(exc)
+            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
             return item
 
-        # Tek istekte hızlı enrichment: /horse + /workouts paralel çalışır.
-        # Başarısız sonucu üç kez tekrar ederek toplam süreyi uzatmıyoruz.
-        try:
-            data = load_horse_enrichment(
-                str(at_id), name,
-                str(target_date or ""), str(target_city or ""),
-                str(target_distance or ""), str(target_surface or ""),
-                str(target_class or ""),
-            )
-        except Exception as exc:
-            data = {"history": [], "workouts": [], "error": str(exc)}
+        # Geçici Worker/TJK hatasında yalnızca bu atı tekrar dene.
+        data = load_horse_enrichment(
+            str(at_id), name, str(target_date or ""), str(target_city or ""),
+            str(target_distance or ""), str(target_surface or ""),
+            str(target_class or ""),
+        )
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
+
+        # Yalnızca eksik kalan tarafı bir kez tekrar dene.
+        # Böylece her at için ikinci kez iki endpoint birden çağrılmaz.
+        if not history:
+            try:
+                h_retry = get_horse_history(str(at_id), timeout=18)
+                if isinstance(h_retry, dict) and isinstance(h_retry.get("history"), list):
+                    history = h_retry.get("history") or []
+            except Exception as exc:
+                item["_enrichment_error"] = f"horse: {exc}"
+
+        if not workouts and name:
+            try:
+                w_retry = get_horse_workouts(name, timeout=18)
+                if isinstance(w_retry, dict) and isinstance(w_retry.get("workouts"), list):
+                    workouts = w_retry.get("workouts") or []
+            except Exception as exc:
+                item["_enrichment_error"] = f"workouts: {exc}"
 
         item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
-        if isinstance(data, dict) and data.get("error"):
-            item["_enrichment_error"] = str(data.get("error"))
 
-        # V34: sahip / antrenör / bu yıl kazanç geçmiş gerçek yarışlardan.
         if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
             for row in item["_history"]:
                 if not isinstance(row, dict):
@@ -1136,7 +1155,6 @@ def enrich_race_horses(
                 if item.get("owner") and item.get("trainer"):
                     break
 
-        # Son gerçek yarış: hedef tarihten önceki ilk geçerli kayıt.
         item["_last_race"] = None
         for row in item["_history"]:
             if not isinstance(row, dict):
@@ -1147,11 +1165,10 @@ def enrich_race_horses(
                 item["_last_race"] = row
                 break
 
-        # Bu yılki kazanç: gerçek geçmişteki prize alanlarının toplamı.
-        # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
         return item
 
-    with ThreadPoolExecutor(max_workers=min(2, max(1, len(enriched)))) as executor:
+    # Ana uygulamanın mevcut 3'lü paralelliğini koru; Worker'ı boğma.
+    with ThreadPoolExecutor(max_workers=min(3, max(1, len(enriched)))) as executor:
         futures = [executor.submit(one, h) for h in enriched]
         return [f.result() for f in futures]
 
@@ -1237,6 +1254,12 @@ def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> 
             row.get("prize")
             or row.get("ikramiye")
             or row.get("Ikramiye")
+            or row.get("İkramiye")
+            or row.get("prizeAmount")
+            or row.get("prize_amount")
+            or row.get("earnings")
+            or row.get("kazanc")
+            or row.get("Kazanç")
         )
     return total
 
@@ -3187,17 +3210,9 @@ else:
         key="horse_table_aggrid",
     )
 
-    # AgGrid sürümüne göre selected_rows liste veya DataFrame gelebilir.
-    # Her iki durumda da ilk seçili satırı güvenli biçimde sözlüğe çevir.
     selected_rows = []
     try:
-        raw_selected_rows = grid_response.get("selected_rows")
-        if isinstance(raw_selected_rows, pd.DataFrame):
-            selected_rows = raw_selected_rows.to_dict(orient="records")
-        elif isinstance(raw_selected_rows, list):
-            selected_rows = raw_selected_rows
-        elif raw_selected_rows is not None:
-            selected_rows = list(raw_selected_rows)
+        selected_rows = grid_response.get("selected_rows") or []
     except Exception:
         selected_rows = []
 
@@ -3266,108 +3281,101 @@ else:
                     st.error(str(exc))
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
 
-    # Seçim rerun sırasında AgGrid'den boş dönse bile session_state'deki
-    # seçili atı kullanmaya devam et. Böylece alt koşu/galop tabloları kaybolmaz.
-    selected_index_state = st.session_state.get("selected_horse_index")
-    selected_horse = None
-    if isinstance(selected_index_state, int) and 0 <= selected_index_state < len(horses):
-        selected_horse = horses[selected_index_state]
-
-    if selected_horse is None:
-        selected_no = st.session_state.get("selected_horse_no")
-        if selected_no is not None:
-            selected_horse = next(
-                (
-                    h for h in horses
-                    if str(get_horse_number(h, 0)) == str(selected_no)
-                ),
-                None,
-            )
-
-    if selected_horse:
-        st.markdown("---")
-        # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
-        # at için aç/kapatılabilir bilgi alanında göster.
-        eid_detail = best_race_detail(selected_horse)
-        if eid_detail:
-            with st.expander(f"🔴 EİD BİLGİSİ — {eid_detail.get('Derece', '-')}  •  aç / kapat", expanded=False):
-                eid_cols = st.columns(4)
-                eid_cols[0].metric("Derece", eid_detail.get("Derece", "-"))
-                eid_cols[1].write(f"**Hipodrom:** {eid_detail.get('Hipodrom', '-')}\n\n**Tarih:** {eid_detail.get('Tarih', '-')}")
-                eid_cols[2].write(f"**Mesafe:** {eid_detail.get('Mesafe', '-')}\n\n**Bilgi:** {eid_detail.get('Bilgi', '-')}")
-                eid_cols[3].caption("TJK programındaki En İyi Derece kaydı")
-        st.subheader(
-            f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
+    selected_no = st.session_state.get("selected_horse_no")
+    if selected_no is not None:
+        selected_horse = next(
+            (
+                h for h in horses
+                if str(get_horse_number(h, 0)) == str(selected_no)
+            ),
+            None,
         )
 
-        st.markdown("<div class='selected-horse-card'>"
-                    f"<div class='selected-horse-name'>{get_horse_name(selected_horse)}</div>"
-                    f"<div class='selected-horse-origin'>{_split_origin(get_horse_origin(selected_horse))[0]}"
-                    f"<br>{_split_origin(get_horse_origin(selected_horse))[1]}</div>"
-                    "</div>", unsafe_allow_html=True)
-
-        tab_all, tab_first, tab_stats, tab_work = st.tabs([
-            "Tüm Yarışları", "1.'likleri", "İstatistikler", "Galoplar"
-        ])
-
-        history = selected_horse.get("_history", [])
-        workouts = selected_horse.get("_workouts", [])
-
-        if selected_horse.get("_enrichment_error"):
-            st.warning(
-                "TJK gerçek veri sorgusu: "
-                + str(selected_horse.get("_enrichment_error"))
-            )
-        else:
-            st.caption(
-                f"Gerçek TJK veri: {len(history)} koşu kaydı • "
-                f"{len(workouts)} galop kaydı"
+        if selected_horse:
+            st.markdown("---")
+            # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
+            # at için aç/kapatılabilir bilgi alanında göster.
+            eid_detail = best_race_detail(selected_horse)
+            if eid_detail:
+                with st.expander(f"🔴 EİD BİLGİSİ — {eid_detail.get('Derece', '-')}  •  aç / kapat", expanded=False):
+                    eid_cols = st.columns(4)
+                    eid_cols[0].metric("Derece", eid_detail.get("Derece", "-"))
+                    eid_cols[1].write(f"**Hipodrom:** {eid_detail.get('Hipodrom', '-')}\n\n**Tarih:** {eid_detail.get('Tarih', '-')}")
+                    eid_cols[2].write(f"**Mesafe:** {eid_detail.get('Mesafe', '-')}\n\n**Bilgi:** {eid_detail.get('Bilgi', '-')}")
+                    eid_cols[3].caption("TJK programındaki En İyi Derece kaydı")
+            st.subheader(
+                f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
             )
 
-        with tab_all:
-            _history_tables(history)
+            st.markdown("<div class='selected-horse-card'>"
+                        f"<div class='selected-horse-name'>{get_horse_name(selected_horse)}</div>"
+                        f"<div class='selected-horse-origin'>{_split_origin(get_horse_origin(selected_horse))[0]}"
+                        f"<br>{_split_origin(get_horse_origin(selected_horse))[1]}</div>"
+                        "</div>", unsafe_allow_html=True)
 
-        with tab_first:
-            firsts = []
-            for h in history:
-                if not isinstance(h, dict):
-                    continue
-                place = str(_first_value(h, ["place", "sira", "S"])).strip()
-                if re.match(r"^1(?:\.0)?$", place):
-                    firsts.append(h)
-            _history_tables(firsts) if firsts else st.info("TJK geçmişinde 1.'lik kaydı bulunamadı.")
-
-        with tab_stats:
-            total = len([h for h in history if isinstance(h, dict)])
-            first = second = third = 0
-            total_prize = 0.0
-            year_prize = 0.0
-            for h in history:
-                if not isinstance(h, dict):
-                    continue
-                place = str(_first_value(h, ["place", "sira", "S"])).strip().replace(".", "")
-                if place == "1": first += 1
-                elif place == "2": second += 1
-                elif place == "3": third += 1
-                pv = _money_number(_first_value(h, ["prize", "ikramiye"]))
-                total_prize += pv
-                if _history_year(h) == selected_date.year:
-                    year_prize += pv
-            stat_rows = pd.DataFrame([
-                {"Gösterge":"TOPLAM KOŞU", "Değer":total},
-                {"Gösterge":"1.'lik", "Değer":first},
-                {"Gösterge":"2.'lik", "Değer":second},
-                {"Gösterge":"3.'lük", "Değer":third},
-                {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
-                {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
+            tab_all, tab_first, tab_stats, tab_work = st.tabs([
+                "Tüm Yarışları", "1.'likleri", "İstatistikler", "Galoplar"
             ])
-            st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
-                "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
-                "Değer": st.column_config.TextColumn("Değer", width=180),
-            })
 
-        with tab_work:
-            _workout_tables(workouts)
+            history = selected_horse.get("_history", [])
+            workouts = selected_horse.get("_workouts", [])
+
+            if selected_horse.get("_enrichment_error"):
+                st.warning(
+                    "TJK gerçek veri sorgusu: "
+                    + str(selected_horse.get("_enrichment_error"))
+                )
+            else:
+                st.caption(
+                    f"Gerçek TJK veri: {len(history)} koşu kaydı • "
+                    f"{len(workouts)} galop kaydı"
+                )
+
+            with tab_all:
+                _history_tables(history)
+
+            with tab_first:
+                firsts = []
+                for h in history:
+                    if not isinstance(h, dict):
+                        continue
+                    place = str(_first_value(h, ["place", "sira", "S"])).strip()
+                    if re.match(r"^1(?:\.0)?$", place):
+                        firsts.append(h)
+                _history_tables(firsts) if firsts else st.info("TJK geçmişinde 1.'lik kaydı bulunamadı.")
+
+            with tab_stats:
+                total = len([h for h in history if isinstance(h, dict)])
+                first = second = third = 0
+                total_prize = 0.0
+                year_prize = 0.0
+                for h in history:
+                    if not isinstance(h, dict):
+                        continue
+                    place = str(_first_value(h, ["place", "sira", "S"])).strip().replace(".", "")
+                    if place == "1": first += 1
+                    elif place == "2": second += 1
+                    elif place == "3": third += 1
+                    pv = _money_number(_first_value(h, ["prize", "ikramiye"]))
+                    total_prize += pv
+                    if _history_year(h) == selected_date.year:
+                        year_prize += pv
+                stat_rows = pd.DataFrame([
+                    {"Gösterge":"TOPLAM KOŞU", "Değer":total},
+                    {"Gösterge":"1.'lik", "Değer":first},
+                    {"Gösterge":"2.'lik", "Değer":second},
+                    {"Gösterge":"3.'lük", "Değer":third},
+                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
+                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
+                ])
+                st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
+                    "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
+                    "Değer": st.column_config.TextColumn("Değer", width=180),
+                })
+
+            with tab_work:
+                _workout_tables(workouts)
+
 
     # Analiz özeti
     if ranking:
