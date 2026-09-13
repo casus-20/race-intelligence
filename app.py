@@ -1071,6 +1071,12 @@ def enrich_race_horses(
         at_id = (
             item.get("atId")
             or item.get("at_id")
+            or item.get("atID")
+            or item.get("AtId")
+            or item.get("AtID")
+            or item.get("ATID")
+            or item.get("AtKodu")
+            or item.get("at_kodu")
             or item.get("horseId")
             or item.get("horse_id")
             or item.get("horseKey")
@@ -1099,22 +1105,17 @@ def enrich_race_horses(
                 item["_enrichment_error"] = str(exc)
             return item
 
-        data = {}
-        # Boş/başarısız cevap cache'lenmediği için her deneme gerçekten Worker'a gider.
-        for _attempt in range(3):
-            try:
-                data = load_horse_enrichment(
-                    str(at_id), name,
-                    str(target_date or ""), str(target_city or ""),
-                    str(target_distance or ""), str(target_surface or ""),
-                    str(target_class or ""),
-                )
-                history_try = data.get("history", []) if isinstance(data, dict) else []
-                workouts_try = data.get("workouts", []) if isinstance(data, dict) else []
-                if history_try or workouts_try:
-                    break
-            except Exception:
-                data = {}
+        # Tek istekte hızlı enrichment: /horse + /workouts paralel çalışır.
+        # Başarısız sonucu üç kez tekrar ederek toplam süreyi uzatmıyoruz.
+        try:
+            data = load_horse_enrichment(
+                str(at_id), name,
+                str(target_date or ""), str(target_city or ""),
+                str(target_distance or ""), str(target_surface or ""),
+                str(target_class or ""),
+            )
+        except Exception as exc:
+            data = {"history": [], "workouts": [], "error": str(exc)}
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
 
@@ -1151,7 +1152,7 @@ def enrich_race_horses(
         # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
         return item
 
-    with ThreadPoolExecutor(max_workers=min(3, max(1, len(enriched)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(enriched)))) as executor:
         futures = [executor.submit(one, h) for h in enriched]
         return [f.result() for f in futures]
 
@@ -1390,7 +1391,7 @@ def _history_tables(history: List[Dict[str, Any]]) -> None:
         owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
         trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
         owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
-        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"])
         prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
         rows.append({
             "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
