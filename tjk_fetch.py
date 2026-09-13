@@ -1,7 +1,6 @@
 import requests
 from datetime import date, datetime
 from typing import Any, Dict, List
-from concurrent.futures import ThreadPoolExecutor
 
 
 # =========================================================
@@ -424,16 +423,6 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     )
 
-    # TJK programındaki gerçek Orijin alanını koru.
-    result["origin"] = (
-        result.get("origin")
-        or result.get("orijin")
-        or result.get("Orijin")
-        or result.get("pedigree")
-        or ""
-    )
-    result["orijin"] = result["origin"]
-
     result["trainer"] = (
         result.get("trainer")
         or result.get("antrenor")
@@ -455,13 +444,6 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
     at_id = (
         result.get("atId")
         or result.get("at_id")
-        or result.get("atID")
-        or result.get("AtId")
-        or result.get("AtID")
-        or result.get("ATID")
-        or result.get("at_kodu")
-        or result.get("AtKodu")
-        or result.get("AtKoduId")
         or result.get("horseId")
         or result.get("horse_id")
         or result.get("horseKey")
@@ -715,81 +697,6 @@ def get_horse_workouts(
     )
 
 
-def _normalize_history_rows(rows: Any) -> List[Dict[str, Any]]:
-    """Worker/TJK geçmişini uygulamanın tek standart şemasına getirir."""
-    if not isinstance(rows, list):
-        return []
-    out = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        x = dict(row)
-        aliases = {
-            "date": ("date", "tarih", "Tarih"),
-            "city": ("city", "şehir", "Sehir"),
-            "distance": ("distance", "msf", "mesafe", "Msf"),
-            "surface": ("surface", "pist", "Pist"),
-            "place": ("place", "sira", "Sıra", "S"),
-            "time": ("time", "derece", "Derece"),
-            "weight": ("weight", "kilo", "siklet", "Sıklet"),
-            "equipment": ("equipment", "taki", "takı", "Takı"),
-            "jockey": ("jockey", "jokey", "Jokey"),
-            "post": ("post", "st", "start", "St"),
-            "odds": ("odds", "gny", "Gny"),
-            "group": ("group", "grup", "Grup"),
-            "raceName": ("raceName", "race_name", "race", "koşu", "kosu"),
-            "className": ("className", "class", "kcins", "K Cinsi", "raceType"),
-            "trainer": ("trainer", "antrenor", "antrenör", "Antrenör"),
-            "owner": ("owner", "sahip", "Sahip"),
-            "hp": ("hp", "HP"),
-            "prize": ("prize", "ikramiye", "Ikramiye", "İkramiye"),
-            "s20": ("s20", "S20"),
-        }
-        for canonical, keys in aliases.items():
-            if x.get(canonical) in (None, ""):
-                for key in keys:
-                    if x.get(key) not in (None, ""):
-                        x[canonical] = x[key]
-                        break
-        out.append(x)
-    return out
-
-
-def _normalize_workout_rows(rows: Any) -> List[Dict[str, Any]]:
-    """TJK galop kayıtlarını tek standart şemaya getirir."""
-    if not isinstance(rows, list):
-        return []
-    out = []
-    distance_keys = ("2200", "2000", "1800", "1600", "1400", "1200", "1000", "800", "600", "400", "200")
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        x = dict(row)
-        for d in distance_keys:
-            canonical = f"m{d}"
-            if x.get(canonical) in (None, ""):
-                for key in (d, f"{d}m", f"time{d}"):
-                    if x.get(key) not in (None, ""):
-                        x[canonical] = x[key]
-                        break
-        if x.get("date") in (None, ""):
-            for key in ("tarih", "Tarih"):
-                if x.get(key) not in (None, ""):
-                    x["date"] = x[key]
-                    break
-        if x.get("city") in (None, ""):
-            for key in ("track", "hipodrom", "İdman Hipodromu", "şehir", "Sehir"):
-                if x.get(key) not in (None, ""):
-                    x["city"] = x[key]
-                    break
-        if x.get("surface") in (None, "") and x.get("pist") not in (None, ""):
-            x["surface"] = x["pist"]
-        if x.get("type") in (None, "") and x.get("tur") not in (None, ""):
-            x["type"] = x["tur"]
-        out.append(x)
-    return out
-
-
 def get_horse_enrichment(
     at_id: Any,
     horse: str,
@@ -800,75 +707,81 @@ def get_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """At geçmişi + galop verisini kaynakları gereksiz çoğaltmadan toplar.
+    """
+    Mevcut uygulama mimarisini bozmadan gerçek koşu geçmişi ve galop verisini
+    hafif Worker endpointlerinden alır.
 
-    ÖNEMLİ: /horsedata fallback'i toplu analizden kaldırıldı. Bu endpoint
-    Worker tarafında bir at için çok sayıda TJK sayfasını art arda taradığı
-    için 503/resource-limit oluşturabiliyor. Bunun yerine hafif /horse ve
-    /workouts endpointleri kullanılır; yalnızca başarısız olan kaynak bir kez
-    daha denenir.
+    ÖNEMLİ:
+    Eski sürüm önce /horsedata çağırıyordu. Bu endpoint tek at için birden
+    fazla TJK sayfası taradığı için Worker 503/resource-limit oluşturabiliyordu.
+    Burada doğrudan mevcut /horse ve /workouts endpointleri kullanılır.
+    target_* parametreleri uygulama ile geriye dönük uyumluluk için korunur.
     """
     horse_name = normalize_text(horse)
+    errors: List[str] = []
 
-    def safe_history():
+    def fetch_history() -> Dict[str, Any]:
         if at_id in (None, ""):
-            return {"ok": False, "history": []}
+            return {"ok": False, "history": [], "error": "atId yok"}
         try:
             return get_horse_history(at_id, timeout=timeout)
         except Exception as exc:
             return {"ok": False, "history": [], "error": str(exc)}
 
-    def safe_workouts():
+    def fetch_workouts() -> Dict[str, Any]:
         if not horse_name:
-            return {"ok": False, "workouts": []}
+            return {"ok": False, "workouts": [], "error": "At adı yok"}
         try:
             return get_horse_workouts(horse_name, timeout=timeout)
         except Exception as exc:
             return {"ok": False, "workouts": [], "error": str(exc)}
 
-    # İlk tur: iki hafif Worker endpointi aynı anda.
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fh = ex.submit(safe_history)
-        fw = ex.submit(safe_workouts)
-        h = fh.result()
-        w = fw.result()
+    # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        history_future = executor.submit(fetch_history)
+        workout_future = executor.submit(fetch_workouts)
+        history_data = history_future.result()
+        workout_data = workout_future.result()
 
-    history = _normalize_history_rows(h.get("history")) if isinstance(h, dict) else []
-    workouts = _normalize_workout_rows(w.get("workouts")) if isinstance(w, dict) else []
-    errors = []
+    history = history_data.get("history", []) if isinstance(history_data, dict) else []
+    workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
 
-    # Boş kalan kaynağı yalnızca 1 kez tekrar dene.
+    if not isinstance(history, list):
+        history = []
+    if not isinstance(workouts, list):
+        workouts = []
+
+    # Sadece boş kalan tarafı bir kez tekrar dene.
     if not history and at_id not in (None, ""):
-        h2 = safe_history()
-        history = _normalize_history_rows(h2.get("history")) if isinstance(h2, dict) else []
-        if not history and isinstance(h2, dict) and h2.get("error"):
-            errors.append(f"horse: {h2.get('error')}")
+        retry = fetch_history()
+        if isinstance(retry, dict) and isinstance(retry.get("history"), list):
+            history = retry.get("history") or []
+        if not history and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"horse: {retry.get('error')}")
 
     if not workouts and horse_name:
-        w2 = safe_workouts()
-        workouts = _normalize_workout_rows(w2.get("workouts")) if isinstance(w2, dict) else []
-        if not workouts and isinstance(w2, dict) and w2.get("error"):
-            errors.append(f"workouts: {w2.get('error')}")
+        retry = fetch_workouts()
+        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
+            workouts = retry.get("workouts") or []
+        if not workouts and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"workouts: {retry.get('error')}")
 
-    # İlk turdaki hata bilgisini yalnızca gerçekten veri yoksa bildir.
-    if not history and isinstance(h, dict) and h.get("error"):
-        errors.append(f"horse: {h.get('error')}")
-    if not workouts and isinstance(w, dict) and w.get("error"):
-        errors.append(f"workouts: {w.get('error')}")
+    if not history and isinstance(history_data, dict) and history_data.get("error"):
+        errors.append(f"horse: {history_data.get('error')}")
+    if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
+        errors.append(f"workouts: {workout_data.get('error')}")
 
-    # Tekrarlı hata metinlerini temizle.
     errors = list(dict.fromkeys(errors))
 
-    result = {
+    result: Dict[str, Any] = {
         "ok": bool(history or workouts),
         "history": history,
         "workouts": workouts,
         "historyCount": len(history),
         "workoutCount": len(workouts),
-        "dataSchema": "tjk-v57-light",
     }
     if errors:
-        result["partialError" if (history or workouts) else "error"] = " | ".join(errors)
+        result["error"] = " | ".join(errors)
     return result
 
 # =========================================================
