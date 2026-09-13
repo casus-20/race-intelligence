@@ -1,5 +1,6 @@
 import requests
 from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 
@@ -671,17 +672,53 @@ def _worker_json(
     return data
 
 
+def _extract_list_payload(data: Dict[str, Any], keys: List[str]) -> List[Dict[str, Any]]:
+    """Worker cevaplarındaki farklı kapsayıcı şemalardan listeyi çıkarır."""
+    wanted = {str(k).lower() for k in keys}
+
+    def walk(value: Any, depth: int = 0):
+        if depth > 4:
+            return []
+        if isinstance(value, list):
+            return [x for x in value if isinstance(x, dict)]
+        if not isinstance(value, dict):
+            return []
+
+        for key, child in value.items():
+            if str(key).lower() in wanted and isinstance(child, list):
+                return [x for x in child if isinstance(x, dict)]
+
+        # history/workouts bazen data/result/response altında gelir.
+        for key in ("data", "result", "response", "payload", "horse"):
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                found = walk(child, depth + 1)
+                if found:
+                    return found
+        return []
+
+    return walk(data)
+
+
 def get_horse_history(
     at_id: Any,
     timeout: int = 45,
 ) -> Dict[str, Any]:
     if at_id in (None, ""):
         return {"ok": False, "history": []}
-    return _worker_json(
+    data = _worker_json(
         API_HORSE,
         {"atId": str(at_id)},
         timeout=timeout,
     )
+    history = _extract_list_payload(
+        data,
+        ["history", "raceHistory", "race_history", "pastRaces", "past_races", "races", "kosular", "koşular"],
+    )
+    result = dict(data)
+    result["history"] = history
+    result["historyCount"] = len(history)
+    return result
 
 
 def get_horse_workouts(
@@ -690,11 +727,19 @@ def get_horse_workouts(
 ) -> Dict[str, Any]:
     if not normalize_text(horse):
         return {"ok": False, "workouts": []}
-    return _worker_json(
+    data = _worker_json(
         API_WORKOUTS,
         {"horse": normalize_text(horse)},
         timeout=timeout,
     )
+    workouts = _extract_list_payload(
+        data,
+        ["workouts", "workout", "workoutHistory", "workout_history", "galop", "galops", "gallops", "gallopHistory", "gallop_history", "galoplar"],
+    )
+    result = dict(data)
+    result["workouts"] = workouts
+    result["workoutCount"] = len(workouts)
+    return result
 
 
 def get_horse_enrichment(
