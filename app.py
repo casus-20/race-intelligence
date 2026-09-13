@@ -2924,129 +2924,66 @@ else:
         # is escaped before being inserted into HTML.
         return f"String({expr} ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;')"
 
-    # AG Grid 29+ / streamlit-aggrid: direct HTML string returns may be rendered
-    # as literal text. Use class-based cell renderers that create real DOM nodes.
-    origin_renderer = JsCode(r"""
-    class OriginRenderer {
-        init(params) {
-            const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
-            root.style.whiteSpace = 'nowrap';
-            const parts = String(params.value ?? '').split(/\r?\n/);
-            const sire = document.createElement('span');
-            sire.textContent = parts[0] || '';
-            sire.style.color = '#1565c0';
-            sire.style.fontWeight = '800';
-            root.appendChild(sire);
-            if (parts.length > 1) {
-                root.appendChild(document.createElement('br'));
-                const dam = document.createElement('span');
-                dam.textContent = parts[1] || '';
-                dam.style.color = '#111111';
-                dam.style.fontWeight = '700';
-                root.appendChild(dam);
-            }
-            this.eGui = root;
+    origin_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const parts = v.split(/\\n|\\r\\n/);
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        if (parts.length >= 2) {
+            return `<div style="line-height:1.18"><span style="color:#1565c0;font-weight:800">${esc(parts[0])}</span><br><span style="color:#111;font-weight:700">${esc(parts[1])}</span></div>`;
         }
-        getGui() { return this.eGui; }
+        return `<span style="color:#1565c0;font-weight:800">${esc(v)}</span>`;
     }
     """)
 
-    jockey_renderer = JsCode(r"""
-    class JockeyRenderer {
-        init(params) {
-            const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
-            const parts = String(params.value ?? '').split(/\r?\n/);
-            parts.forEach((part, i) => {
-                if (i > 0) root.appendChild(document.createElement('br'));
-                const span = document.createElement('span');
-                span.textContent = part;
-                if (/^Ap$/i.test(part.trim())) {
-                    span.style.color = '#d40000';
-                    span.style.fontWeight = '900';
-                }
-                root.appendChild(span);
-            });
-            this.eGui = root;
-        }
-        getGui() { return this.eGui; }
+    jockey_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const parts = v.split(/\\n|\\r\\n/);
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        const out = parts.map((p,i) => {
+            if (/^Ap$/i.test(p.trim())) return '<span style="color:#d40000;font-weight:900">Ap</span>';
+            return esc(p);
+        });
+        return `<div style="line-height:1.18">${out.join('<br>')}</div>`;
     }
     """)
 
-    owner_trainer_renderer = JsCode(r"""
-    class OwnerTrainerRenderer {
-        init(params) {
-            const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
-            const parts = String(params.value ?? '').split(/\r?\n/);
-            const owner = document.createElement('span');
-            owner.textContent = parts[0] || '';
-            owner.style.color = '#1565c0';
-            owner.style.fontWeight = '800';
-            root.appendChild(owner);
-            if (parts.length > 1) {
-                root.appendChild(document.createElement('br'));
-                const trainer = document.createElement('span');
-                trainer.textContent = parts[1] || '';
-                trainer.style.color = '#d40000';
-                trainer.style.fontWeight = '800';
-                root.appendChild(trainer);
-            }
-            this.eGui = root;
-        }
-        getGui() { return this.eGui; }
+    owner_trainer_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const parts = v.split(/\\n|\\r\\n/);
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        return `<div style="line-height:1.18"><span style="color:#1565c0;font-weight:800">${esc(parts[0] || '')}</span><br><span style="color:#d40000;font-weight:800">${esc(parts[1] || '')}</span></div>`;
     }
     """)
 
-    weight_renderer = JsCode(r"""
-    class WeightRenderer {
-        init(params) {
-            const root = document.createElement('span');
-            const v = String(params.value ?? '');
-            const m = v.match(/^(.*?)(\s*\+\s*\d+(?:[.,]\d+)?)\s*$/);
-            if (m) {
-                const base = document.createTextNode(m[1]);
-                root.appendChild(base);
-                const extra = document.createElement('span');
-                extra.textContent = m[2];
-                extra.style.color = '#d40000';
-                extra.style.fontWeight = '900';
-                root.appendChild(extra);
-            } else {
-                root.textContent = v;
-            }
-            this.eGui = root;
-        }
-        getGui() { return this.eGui; }
+    weight_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        const m = v.match(/^(.*?)(\\s*[+]\\s*[-+]?\\d+(?:[.,]\\d+)?)\\s*$/);
+        if (m) return `${esc(m[1])} <span style="color:#d40000;font-weight:900">${esc(m[2])}</span>`;
+        return esc(v);
     }
     """)
 
-    eid_renderer = JsCode(r"""
-    class EidRenderer {
-        init(params) {
-            const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
-            span.style.color = '#d40000';
-            span.style.fontWeight = '900';
-            this.eGui = span;
-        }
-        getGui() { return this.eGui; }
+    eid_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        return `<span style="color:#d40000;font-weight:900">${esc(v)}</span>`;
     }
     """)
 
-    last_race_renderer = JsCode(r"""
-    class LastRaceRenderer {
-        init(params) {
-            const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
-            const surf = String((params.data && params.data._last_surface) || '').toLowerCase();
-            const isGrass = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
-            span.style.color = isGrass ? '#138a36' : '#111111';
-            span.style.fontWeight = '900';
-            this.eGui = span;
-        }
-        getGui() { return this.eGui; }
+    last_race_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const surf = String((params.data && params.data._last_surface) || '').toLowerCase();
+        const isGrass = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
+        const color = isGrass ? '#138a36' : '#111111';
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        return `<span style="color:${color};font-weight:900">${esc(v)}</span>`;
     }
     """)
 
