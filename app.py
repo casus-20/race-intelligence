@@ -1026,7 +1026,6 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
-@st.cache_data(ttl=900, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
@@ -1081,20 +1080,41 @@ def enrich_race_horses(
             or ""
         )
         name = get_horse_name(item)
+        # atId yoksa bile galoplar isim üzerinden alınabilir.
         if not at_id:
+            item["_at_id"] = ""
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
+            try:
+                fallback = get_horse_enrichment(
+                    "", name,
+                    target_date=target_date, target_city=target_city,
+                    target_distance=target_distance, target_surface=target_surface,
+                    target_class=target_class,
+                )
+                if isinstance(fallback, dict):
+                    item["_history"] = fallback.get("history", []) or []
+                    item["_workouts"] = fallback.get("workouts", []) or []
+            except Exception as exc:
+                item["_enrichment_error"] = str(exc)
             return item
-        data = load_horse_enrichment(
-            str(at_id),
-            name,
-            str(target_date or ""),
-            str(target_city or ""),
-            str(target_distance or ""),
-            str(target_surface or ""),
-            str(target_class or ""),
-        )
+
+        data = {}
+        # Boş/başarısız cevap cache'lenmediği için her deneme gerçekten Worker'a gider.
+        for _attempt in range(3):
+            try:
+                data = load_horse_enrichment(
+                    str(at_id), name,
+                    str(target_date or ""), str(target_city or ""),
+                    str(target_distance or ""), str(target_surface or ""),
+                    str(target_class or ""),
+                )
+                history_try = data.get("history", []) if isinstance(data, dict) else []
+                workouts_try = data.get("workouts", []) if isinstance(data, dict) else []
+                if history_try or workouts_try:
+                    break
+            except Exception:
+                data = {}
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
 
