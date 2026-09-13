@@ -662,14 +662,15 @@ def load_active_cities(selected_date: date) -> List[str]:
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
-        for future in as_completed(futures):
-            city = future.result()
-            if city:
-                active.append(city)
+    # Worker kaynaklarını zorlamamak için şehirleri TEK TEK kontrol et.
+    # Ana program akışında kullanılan get_program() ile aynı endpoint ve
+    # aynı istemci korunur. Bir şehir hata verirse diğer şehirleri denemeye devam eder.
+    for city in ALL_CITIES:
+        result = check_city(city)
+        if result:
+            active.append(result)
 
-    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
+    # Worker şehir sırasını koru.
     return [city for city in ALL_CITIES if city in active]
 
 
