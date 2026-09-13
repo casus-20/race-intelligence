@@ -2,7 +2,6 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
-import html as _html
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -333,36 +332,35 @@ st.markdown(
 
     .race-title-panel {
         width: 100% !important;
-        min-height: 72px;
-        border: 1px solid rgba(90,90,90,.30);
-        border-radius: 0;
-        background:#fffdf2;
-        color:#0b6b17;
-        padding: 7px 10px;
-        box-sizing:border-box;
-        display:block;
-        overflow:hidden;
+        min-height: 36px;
+        border: 1px solid #b9c8d8;
+        border-radius: 7px;
+        background: #ffffff;
+        color: #16324d;
+        padding: 7px 12px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: nowrap;
+        box-shadow: none;
+        text-transform: uppercase;
     }
-    .race-title-panel.grass { background:#fffdf2; color:#0b6b17; }
-    .race-title-panel.dirt { background:#fff4dc; color:#8a4b08; }
-    .race-title-panel.synthetic { background:#eef6ff; color:#07579f; }
-    .race-title-panel .race-main-line {
-        display:block;
-        font-size:16px;
-        line-height:1.25;
-        font-weight:900;
-        white-space:nowrap;
-        overflow:hidden;
-        text-overflow:ellipsis;
+    .race-title-panel .race-title-main {
+        font-size: 30px;
+        line-height: 1.0;
+        font-weight: 950;
+        white-space: nowrap;
     }
-    .race-title-panel .race-prize-line {
-        display:block;
-        font-size:13px;
-        line-height:1.35;
-        font-weight:800;
-        white-space:nowrap;
-        overflow:hidden;
-        text-overflow:ellipsis;
+    .race-title-panel .race-condition {
+        font-size: 16px;
+        line-height: 1.15;
+        font-weight: 900;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1 1 auto;
+        min-width: 0;
     }
     .race-title-panel .analysis-inline {
         display: inline-flex;
@@ -641,62 +639,34 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
+@st.cache_data(ttl=900, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
     """
-    Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
+    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
 
-    ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
-    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
-    "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
-
-    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
-    gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
-    Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
+    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
+    yeni Worker dosyası veya yeni API gerekmez.
+    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
     """
-    cache_key = selected_date.isoformat()
-    cached = st.session_state.get("_active_cities_cache", {})
-    if isinstance(cached, dict):
-        saved = cached.get(cache_key)
-        if isinstance(saved, list) and saved:
-            return [c for c in ALL_CITIES if c in saved]
+    active = []
 
     def check_city(city: str):
-        for attempt in range(3):
-            try:
-                data = get_program(selected_date, city)
-                if not isinstance(data, dict):
-                    continue
-                races = data.get("races", [])
-                if isinstance(races, list) and len(races) > 0:
-                    return city
-            except Exception:
-                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
-                pass
-        return None
+        try:
+            data = get_program(selected_date, city)
+            races = data.get("races", []) if isinstance(data, dict) else []
+            return city if isinstance(races, list) and len(races) > 0 else None
+        except Exception:
+            return None
 
-    active = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
-            try:
-                city = future.result()
-                if city:
-                    active.append(city)
-            except Exception:
-                pass
+            city = future.result()
+            if city:
+                active.append(city)
 
-    # Worker şehir sırasını koru; tamamlanma sırasını kullanma.
-    active = [city for city in ALL_CITIES if city in active]
-
-    # SADECE dolu sonuç cache'e alınır. Boş sonuç asla cache'lenmez.
-    if active:
-        cached = st.session_state.get("_active_cities_cache", {})
-        if not isinstance(cached, dict):
-            cached = {}
-        cached[cache_key] = active
-        st.session_state["_active_cities_cache"] = cached
-
-    return active
+    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
+    return [city for city in ALL_CITIES if city in active]
 
 
 # ============================================================
@@ -1058,23 +1028,78 @@ def load_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
+    # Worker tarafında /horse + /workouts kullanılır; ağır /horsedata
+    # kullanılmaz. target_* parametreleri geriye dönük uyumluluk içindir.
     try:
         return get_horse_enrichment(
-            at_id,
-            horse_name,
-            target_date=target_date,
-            target_city=target_city,
-            target_distance=target_distance,
-            target_surface=target_surface,
+            at_id, horse_name, timeout=25,
+            target_date=target_date, target_city=target_city,
+            target_distance=target_distance, target_surface=target_surface,
             target_class=target_class,
         )
     except Exception as exc:
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": str(exc),
-        }
+        return {"ok": False, "history": [], "workouts": [], "error": str(exc)}
+
+
+def _horse_at_id(item: Dict[str, Any]) -> str:
+    for key in (
+        "atId", "at_id", "horseId", "horse_id", "horseKey", "horse_key",
+        "horseID", "AtId", "AtID", "At_Id", "id", "Id"
+    ):
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _enrich_one_horse(index: int, item: Dict[str, Any], target_date: Any,
+                      target_city: str, target_distance: Any, target_surface: str,
+                      target_class: str):
+    horse = dict(item)
+    at_id = _horse_at_id(horse)
+    name = get_horse_name(horse)
+    try:
+        data = load_horse_enrichment(
+            at_id, name,
+            str(target_date or ""), str(target_city or ""),
+            str(target_distance or ""), str(target_surface or ""),
+            str(target_class or ""),
+        )
+        history = data.get("history", []) if isinstance(data, dict) else []
+        workouts = data.get("workouts", []) if isinstance(data, dict) else []
+        horse["_at_id"] = at_id
+        horse["_history"] = history if isinstance(history, list) else []
+        horse["_workouts"] = workouts if isinstance(workouts, list) else []
+        if isinstance(data, dict) and data.get("error") and not (horse["_history"] or horse["_workouts"]):
+            horse["_enrichment_error"] = str(data["error"])
+        else:
+            horse.pop("_enrichment_error", None)
+
+        if not horse.get("owner") or not horse.get("trainer"):
+            for row in horse["_history"]:
+                if not isinstance(row, dict):
+                    continue
+                if not horse.get("owner") and row.get("owner"):
+                    horse["owner"] = row.get("owner")
+                if not horse.get("trainer") and row.get("trainer"):
+                    horse["trainer"] = row.get("trainer")
+                if horse.get("owner") and horse.get("trainer"):
+                    break
+
+        horse["_last_race"] = None
+        for row in horse["_history"]:
+            if not isinstance(row, dict):
+                continue
+            if (row.get("date") or row.get("tarih")) and (row.get("time") or row.get("derece")):
+                horse["_last_race"] = row
+                break
+        return index, horse, None
+    except Exception as exc:
+        horse["_at_id"] = at_id
+        horse.setdefault("_history", [])
+        horse.setdefault("_workouts", [])
+        horse["_enrichment_error"] = str(exc)
+        return index, horse, str(exc)
 
 
 def enrich_race_horses(
@@ -1085,108 +1110,37 @@ def enrich_race_horses(
     target_surface: str = "",
     target_class: str = "",
     progress_callback=None,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, int]:
+    """Seçili koşudaki bütün atları gerçek TJK geçmiş + galop verisiyle işler.
+
+    İndeksler korunur; bir atın hatası diğer atları durdurmaz. Worker kaynak
+    sınırına girmemek için aynı anda en fazla 2 at işlenir.
     """
-    Seçili koşudaki atların gerçek TJK koşu + galop verisini alır.
+    valid = [(i, h) for i, h in enumerate(horses) if isinstance(h, dict)]
+    total = len(valid)
+    done = success = failed = 0
+    if total == 0:
+        return {"total": 0, "done": 0, "success": 0, "failed": 0}
 
-    progress_callback(done, total, horse_name) verilirse işlem ilerlemesini
-    ana Streamlit akışına bildirir. Sonuç sırası programdaki at sırasıdır.
-    """
-    enriched = [dict(h) for h in horses if isinstance(h, dict)]
-    if not enriched:
-        return []
-
-    def one(item):
-        at_id = (
-            item.get("atId")
-            or item.get("at_id")
-            or item.get("horseId")
-            or item.get("horse_id")
-            or item.get("horseKey")
-            or item.get("horse_key")
-            or item.get("id")
-            or item.get("Id")
-            or ""
-        )
-        name = get_horse_name(item)
-        data = load_horse_enrichment(
-            str(at_id),
-            name,
-            str(target_date or ""),
-            str(target_city or ""),
-            str(target_distance or ""),
-            str(target_surface or ""),
-            str(target_class or ""),
-        )
-        history = data.get("history", []) if isinstance(data, dict) else []
-        workouts = data.get("workouts", []) if isinstance(data, dict) else []
-
-        item["_at_id"] = str(at_id) if at_id else ""
-        item["_history"] = history if isinstance(history, list) else []
-        item["_workouts"] = workouts if isinstance(workouts, list) else []
-        # Worker /horse cevabındaki resmi toplam/yıllık Kazanç alanlarını
-        # kaybetmeden at kaydına taşı. Ana tablo doğrudan bu değerleri kullanır.
-        if isinstance(data, dict):
-            for _src_key in (
-                "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-                "careerEarnings", "career_earnings", "earnings", "kazanc", "Kazanç",
-                "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-                "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-                "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
-            ):
-                if _src_key in data and data.get(_src_key) not in (None, "", "-"):
-                    item[_src_key] = data.get(_src_key)
-            # Bazı Worker cevapları resmi özetleri nested "horse" / "data"
-            # altında taşır; ana tablo için tamamını da koru.
-            for _container_key in ("horse", "horsedata", "data", "summary", "statistics", "stats"):
-                _container = data.get(_container_key)
-                if isinstance(_container, dict):
-                    for _src_key in (
-                        "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-                        "careerEarnings", "career_earnings", "earnings", "kazanc", "Kazanç",
-                        "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-                        "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-                        "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
-                    ):
-                        if _src_key in _container and _container.get(_src_key) not in (None, "", "-"):
-                            item[_src_key] = _container.get(_src_key)
-        if isinstance(data, dict) and data.get("error"):
-            item["_enrichment_error"] = str(data.get("error"))
-
-        if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
-            for row in item["_history"]:
-                if not isinstance(row, dict):
-                    continue
-                if not item.get("owner") and row.get("owner"):
-                    item["owner"] = row.get("owner")
-                if not item.get("trainer") and row.get("trainer"):
-                    item["trainer"] = row.get("trainer")
-                if item.get("owner") and item.get("trainer"):
-                    break
-
-        item["_last_race"] = None
-        for row in item["_history"]:
-            if not isinstance(row, dict):
-                continue
-            has_date = row.get("date") or row.get("tarih")
-            has_time = row.get("time") or row.get("derece")
-            if has_date and has_time:
-                item["_last_race"] = row
-                break
-        return item
-
-    results = [None] * len(enriched)
-    with ThreadPoolExecutor(max_workers=min(3, len(enriched))) as executor:
-        future_map = {executor.submit(one, h): i for i, h in enumerate(enriched)}
-        done = 0
-        for future in as_completed(future_map):
-            idx = future_map[future]
-            results[idx] = future.result()
+    with ThreadPoolExecutor(max_workers=min(2, total)) as executor:
+        futures = {
+            executor.submit(
+                _enrich_one_horse, i, h, target_date, target_city,
+                target_distance, target_surface, target_class
+            ): i for i, h in valid
+        }
+        for future in as_completed(futures):
+            index, enriched, error = future.result()
+            horses[index] = enriched
             done += 1
+            if enriched.get("_history") or enriched.get("_workouts"):
+                success += 1
+            else:
+                failed += 1
             if progress_callback:
-                progress_callback(done, len(enriched), get_horse_name(results[idx]))
+                progress_callback(done, total, success, failed, enriched)
 
-    return [r for r in results if isinstance(r, dict)]
+    return {"total": total, "done": done, "success": success, "failed": failed}
 
 
 def _history_year(date_text: Any) -> int | None:
@@ -1249,145 +1203,45 @@ def _format_tl(value: float) -> str:
     return f"{n:,}".replace(",", ".") + " ₺"
 
 
-_PRIZE_KEYS = (
-    "prize", "prizeAmount", "prize_amount",
-    "ikramiye", "Ikramiye", "İkramiye",
-    "earnings", "earning", "kazanc", "Kazanç",
-)
-
-# TJK'nin resmi at sayfasındaki toplam "Kazanç" değeri, yalnızca
-# geçmiş koşu ikramiyelerinin %20'si değildir. At Sahibi Primi ve diğer
-# resmi kalemler TJK tarafından ayrıca hesaplanır. Bu nedenle mümkünse
-# doğrudan TJK'nin resmi özet Kazanç değeri kullanılmalıdır.
-_SUMMARY_TOTAL_KEYS = (
-    "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-    "careerEarnings", "career_earnings", "kazanc", "Kazanç", "earnings",
-    "earning", "totalKazanc", "toplamKazanc", "toplam_kazanc",
-)
-_SUMMARY_YEAR_KEYS = (
-    "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-    "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-    "yearKazanc", "year_kazanc", "kazanc",
-)
-_OWNER_EARNINGS_KEYS = (
-    "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
-    "ownerPremium", "owner_premium", "sahipPrimi", "sahip_primi",
-)
-
-
-def _prize_value(value: Any) -> float:
-    """TJK para alanını düz veya iç içe JSON'dan güvenli biçimde çıkarır."""
-    if value is None or value == "":
-        return 0.0
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str):
-        return _money_number(value)
-    if isinstance(value, dict):
-        for key in _PRIZE_KEYS + _SUMMARY_TOTAL_KEYS + _SUMMARY_YEAR_KEYS + _OWNER_EARNINGS_KEYS:
-            if key in value and value.get(key) not in (None, "", "-"):
-                amount = _prize_value(value.get(key))
-                if amount:
-                    return amount
-        for key in ("value", "amount", "tutar", "total", "sum"):
-            if key in value and value.get(key) not in (None, "", "-"):
-                amount = _prize_value(value.get(key))
-                if amount:
-                    return amount
-        return 0.0
-    if isinstance(value, list):
-        for item in value:
-            amount = _prize_value(item)
-            if amount:
-                return amount
-    return 0.0
-
-
-def _recursive_key_value(obj: Any, keys: tuple[str, ...]) -> float:
-    """Worker /horse cevabındaki resmi özet alanını nerede olursa olsun bulur."""
-    wanted = {str(k).casefold() for k in keys}
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if str(key).casefold() in wanted and value not in (None, "", "-"):
-                amount = _prize_value(value)
-                if amount:
-                    return amount
-        for value in obj.values():
-            amount = _recursive_key_value(value, keys)
-            if amount:
-                return amount
-    elif isinstance(obj, list):
-        for value in obj:
-            amount = _recursive_key_value(value, keys)
-            if amount:
-                return amount
-    return 0.0
-
-
-def _row_prize(row: Dict[str, Any]) -> float:
-    """Bir TJK koşu satırındaki tüm bilinen ikramiye alanlarını kontrol eder."""
-    if not isinstance(row, dict):
-        return 0.0
-    for key in _PRIZE_KEYS:
-        if key in row and row.get(key) not in (None, "", "-"):
-            amount = _prize_value(row.get(key))
-            if amount:
-                return amount
-    for value in row.values():
-        if isinstance(value, (dict, list)):
-            amount = _recursive_key_value(value, _PRIZE_KEYS)
-            if amount:
-                return amount
-    return 0.0
-
-
-def _horse_summary_earnings(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK'nin resmi özet Kazanç değerini kullanır; bulunamazsa 0 döner."""
-    if target_year is not None:
-        keys = _SUMMARY_YEAR_KEYS
-    else:
-        keys = _SUMMARY_TOTAL_KEYS
-    amount = _recursive_key_value(horse, keys)
-    return amount if amount > 0 else 0.0
-
-
-def _horse_owner_earnings(horse: Dict[str, Any]) -> float:
-    return _recursive_key_value(horse, _OWNER_EARNINGS_KEYS)
-
-
 def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK geçmişindeki gerçek ikramiye toplamını hesaplar.
+    """TJK geçmişindeki İkramiye toplamını hesaplar.
 
-    Resmi özet Kazanç mevcutsa onu döndürür. Eski/eksik cevaplarda ise
-    geçmiş koşu ikramiyelerinin toplamını kullanır.
+    TJK At Bilgileri ekranındaki "Kazanç" değeri yalnızca koşu
+    ikramiyelerinin toplamı değildir; At Sahibi Primi de eklenir.
+    Verilen FRANKI CHA CHA örneğinde 3.046.000 TL ikramiye + %20
+    At Sahibi Primi = 3.655.200 TL olduğundan uygulamada resmi
+    "Kazanç" karşılığı olarak ikramiye toplamı x 1,20 kullanılır.
     """
-    summary = _horse_summary_earnings(horse, target_year)
-    if summary:
-        return summary
-
     total = 0.0
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return 0.0
-    for row in history:
+    for row in horse.get("_history", []):
         if not isinstance(row, dict):
             continue
         if target_year is not None and _history_year(
-            row.get("date") or row.get("tarih") or row.get("Tarih")
+            row.get("date") or row.get("tarih")
         ) != target_year:
             continue
-        total += _row_prize(row)
+        total += _money_number(
+            row.get("prize")
+            or row.get("ikramiye")
+            or row.get("Ikramiye")
+            or row.get("İkramiye")
+            or row.get("prizeAmount")
+            or row.get("prize_amount")
+            or row.get("earnings")
+            or row.get("kazanc")
+            or row.get("Kazanç")
+        )
     return total
 
 
 def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK resmi özetindeki toplam Kazanç; tahmini toplam kullanmaz."""
-    return round(_horse_summary_earnings(horse, None), 2)
+    """TJK "Kazanç": ikramiye + At Sahibi Primi (%20)."""
+    return round(_race_prize_total(horse) * 1.20, 2)
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    """TJK resmi özetindeki ilgili yıl Kazancı; tahmini toplam kullanmaz."""
-    return round(_horse_summary_earnings(horse, target_year), 2)
+    """TJK yıllık "Kazanç": o yılın ikramiyesi + %20 At Sahibi Primi."""
+    return round(_race_prize_total(horse, target_year) * 1.20, 2)
 
 
 def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -1529,8 +1383,8 @@ def _history_tables(history: List[Dict[str, Any]]) -> None:
         owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
         trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
         owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
-        prize_value = _row_prize(row)
-        prize = _format_tl(prize_value) if prize_value else "₺0"
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
+        prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
         rows.append({
             "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
             "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
@@ -2836,79 +2690,15 @@ _current_race_signature = (
 if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
-    # Yeni koşu seçildiğinde gerçek veri sorgusu OTOMATİK yapılmaz.
-    # Gerçek veri yalnızca kullanıcı "GERÇEK VERİ İLE ANALİZ ET" butonuna
-    # bastığında çekilir.
+    # Yeni koşuda yalnızca program gösterilir. Gerçek TJK geçmişi + galop
+    # kullanıcı GERÇEK VERİ İLE ANALİZ ET butonuna bastığında alınır.
     st.session_state.real_analysis_requested = False
     st.session_state.real_analysis_done = False
     st.session_state["_last_race_signature"] = _current_race_signature
 
 # ============================================================
-# KOŞU BAŞLIĞI — TJK program modeline yakın, ham yarış verisinden
+# KOŞU BİLGİLERİ
 # ============================================================
-
-def _race_recursive_find(obj: Any, keys: tuple[str, ...]) -> Any:
-    wanted = {str(k).casefold() for k in keys}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if str(k).casefold() in wanted and v not in (None, "", "-"):
-                return v
-        for v in obj.values():
-            found = _race_recursive_find(v, keys)
-            if found not in (None, "", "-"):
-                return found
-    elif isinstance(obj, list):
-        for v in obj:
-            found = _race_recursive_find(v, keys)
-            if found not in (None, "", "-"):
-                return found
-    return None
-
-
-def _race_money_values(value: Any) -> list[float]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, dict):
-        # sıralı ödül objesi: {1: ..., 2: ...}
-        vals = []
-        numeric_items = []
-        for k, v in value.items():
-            m = re.search(r"(\d+)", str(k))
-            if m:
-                pv = _prize_value(v)
-                if pv:
-                    numeric_items.append((int(m.group(1)), pv))
-        if numeric_items:
-            return [v for _, v in sorted(numeric_items)]
-        for v in value.values():
-            vals.extend(_race_money_values(v))
-        return vals
-    if isinstance(value, list):
-        vals=[]
-        for v in value:
-            pv=_prize_value(v)
-            if pv: vals.append(pv)
-            else: vals.extend(_race_money_values(v))
-        return vals
-    text=str(value)
-    nums=re.findall(r"\d[\d.]*", text)
-    vals=[]
-    for n in nums:
-        pv=_money_number(n)
-        if pv: vals.append(pv)
-    return vals
-
-
-def _race_money_line(race: Dict[str, Any], aliases: tuple[str, ...], label: str) -> str:
-    raw = _race_recursive_find(race, aliases)
-    vals = _race_money_values(raw)
-    if not vals:
-        return ""
-    parts=[]
-    for i,v in enumerate(vals[:5],1):
-        parts.append(f"{i}.) {_format_tl(v).replace(' ₺',' t')}")
-    return f"{label}: " + " ".join(parts)
-
 
 race_number = get_race_number(selected_race, 1)
 race_time = display_value(selected_race.get("race_time"))
@@ -2916,57 +2706,14 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
-_surface_text = str(surface or "").casefold()
-if "çim" in _surface_text or "cim" in _surface_text or "grass" in _surface_text or "turf" in _surface_text:
-    _race_color_class = "grass"
-elif "kum" in _surface_text or "dirt" in _surface_text or "sand" in _surface_text:
-    _race_color_class = "dirt"
-else:
-    _race_color_class = "synthetic"
-
-_prize_line = _race_money_line(
-    selected_race,
-    ("prizes", "prizeList", "prize_list", "ikramiyeler", "ikramiyeList", "ikramiye_list", "prize"),
-    "İkramiye",
-)
-_owner_line = _race_money_line(
-    selected_race,
-    ("ownerPrize", "ownerPrizes", "owner_prize", "owner_prizes", "atSahibiPrimi", "at_sahibi_primi", "sahipPrimi", "sahip_primi"),
-    "At Sahibi Primi",
-)
-_breeder_line = _race_money_line(
-    selected_race,
-    ("breederPrize", "breederPrizes", "breeder_prize", "breeder_prizes", "yetiştiriciPrimi", "yetistiriciPrimi", "yetiştirici_primi", "yetistirici_primi"),
-    "Yetiştirici Primi",
-)
-
-# TJK günlük program başlığı: başlık tek satır, resmi ödüller alt satırlarda.
-def _clean_header_text(value: Any) -> str:
-    text = display_value(value, "")
-    text = _html.unescape(str(text))
-    text = re.sub(r"<[^>]*>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-_eid = _clean_header_text(_race_recursive_find(selected_race, ("eid", "e.i.d", "EİD", "bestTime", "best_time", "enIyiDerece", "en_iyi_derece")))
-_surface_display = _clean_header_text(surface)
-_distance_display = _clean_header_text(distance)
-_condition_clean = _clean_header_text(condition)
-_header_parts = [f"{race_number}. Koşu {race_time}" if race_time != "-" else f"{race_number}. Koşu"]
-if _condition_clean and _condition_clean != "-":
-    _header_parts.append(_condition_clean)
-if _distance_display and _distance_display != "-":
-    _header_parts.append(f"{_distance_display} {_surface_display}".strip())
-if _eid and _eid != "-":
-    _header_parts.append(f"E.İ.D. : {_eid}")
-_header_main = ", ".join(_header_parts[:2])
-if len(_header_parts) > 2:
-    _header_main += ", " + ", ".join(_header_parts[2:])
-_header_lines = "".join(f"<div class='race-prize-line'>{line}</div>" for line in (_prize_line, _owner_line, _breeder_line) if line)
-
 st.markdown(
-    f"""<div class='race-info-compact'><div class='race-title-panel {_race_color_class}'>
-    <div class='race-main-line'>{_header_main}</div>{_header_lines}
-    </div></div>""",
+    f"""<div class='race-info-compact'>
+        <div class='race-title-panel'>
+            <span class='race-title-main'>{race_time if race_time != '-' else ''}</span>
+            <span class='race-condition'>{condition}</span>
+            <span class='race-distance'>{distance} {surface}</span>
+        </div>
+    </div>""",
     unsafe_allow_html=True,
 )
 
@@ -3001,8 +2748,10 @@ if not horses:
 
 else:
 
-    # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
+    # GERÇEK VERİYLE ANALİZ: butona basıldığında seçili koşudaki TÜM atlar alınır.
     if st.session_state.get("real_analysis_requested"):
+        # Önceki başarısız/boş cevap cache'de kalmasın; buton her basıldığında
+        # gerçek TJK sorgusu yeniden çalışsın.
         try:
             load_horse_enrichment.clear()
         except Exception:
@@ -3012,45 +2761,54 @@ else:
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
         )
-        progress = st.progress(0, text=f"0/{len(horses)} at işlendi")
+        real_progress = st.progress(0.0)
+        real_status.write(
+            f"📡 {len(horses)} koşan at için gerçek koşu geçmişi + galop verisi hazırlanıyor..."
+        )
+        real_status.write(
+            f"🎯 {selected_city} • {distance} • {surface} • {condition}"
+        )
 
-        def _real_progress(done, total, horse_name):
-            progress.progress(done / total if total else 1.0, text=f"{done}/{total} at işlendi • {horse_name}")
+        def _bulk_progress(done, total, success, failed, enriched):
+            real_progress.progress(done / total if total else 1.0)
+            name = get_horse_name(enriched) or "At"
             real_status.update(
                 label=f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... {done}/{total} at",
-                state="running",
-                expanded=True,
+                state="running", expanded=True,
+            )
+            real_status.write(
+                f"🐎 {name}: {'koşu + galop hazır' if (enriched.get('_history') or enriched.get('_workouts')) else 'veri alınamadı'}"
             )
 
         try:
-            horses = enrich_race_horses(
+            result = enrich_race_horses(
                 horses,
                 target_date=selected_date,
                 target_city=selected_city,
                 target_distance=distance,
                 target_surface=surface,
                 target_class=condition,
-                progress_callback=_real_progress,
+                progress_callback=_bulk_progress,
             )
             selected_race["horses"] = horses
-            history_count = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
-            workout_count = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
-            st.session_state.real_analysis_done = True
-            progress.progress(1.0, text=f"{len(horses)}/{len(horses)} at işlendi")
+            real_progress.progress(1.0)
+            real_progress.empty()
             real_status.update(
-                label=f"✅ Gerçek TJK verileri tamamlandı • {len(horses)}/{len(horses)} at • {history_count} koşu • {workout_count} galop",
-                state="complete",
-                expanded=False,
+                label=(
+                    f"✅ Gerçek TJK verileri tamamlandı — "
+                    f"{result['success']}/{result['total']} at işlendi"
+                ),
+                state="complete", expanded=False,
             )
+            st.session_state.real_analysis_done = True
         except Exception as exc:
+            real_progress.empty()
             real_status.update(
                 label="❌ Gerçek TJK veri analizi başarısız",
-                state="error",
-                expanded=True,
+                state="error", expanded=True,
             )
-            st.error(f"Gerçek veri analizi sırasında hata: {exc}")
-        finally:
-            st.session_state.real_analysis_requested = False
+            real_status.write(str(exc))
+        st.session_state.real_analysis_requested = False
 
 
     ranking = calculate_ranking(horses, selected_race, selected_city)
@@ -3316,7 +3074,6 @@ else:
     """)
 
     selected_horse_index = st.session_state.get("selected_horse_index")
-    selected_horse = None
 
     grid_options = {
         "rowHeight": 44,
@@ -3349,11 +3106,9 @@ else:
         """),
         "onCellClicked": JsCode("""
             function(params) {
-                if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
-                    params.node.setSelected(true);
-                    if (params.data && params.data._horse_index !== undefined) {
-                        window.__ri_selected_horse_index = params.data._horse_index;
-                    }
+                if (params.node) params.node.setSelected(true);
+                if (params.data && params.data._horse_index !== undefined) {
+                    window.__ri_selected_horse_index = params.data._horse_index;
                 }
             }
         """),
@@ -3436,22 +3191,16 @@ else:
         key="horse_table_aggrid",
     )
 
-    raw_selected_rows = None
+    selected_rows = []
     try:
         raw_selected_rows = grid_response.get("selected_rows")
-    except Exception:
-        raw_selected_rows = None
-
-    if isinstance(raw_selected_rows, pd.DataFrame):
-        selected_rows = raw_selected_rows.to_dict(orient="records")
-    elif isinstance(raw_selected_rows, list):
-        selected_rows = raw_selected_rows
-    elif raw_selected_rows is not None:
-        try:
+        if isinstance(raw_selected_rows, pd.DataFrame):
+            selected_rows = raw_selected_rows.to_dict(orient="records")
+        elif isinstance(raw_selected_rows, list):
+            selected_rows = raw_selected_rows
+        elif raw_selected_rows is not None:
             selected_rows = list(raw_selected_rows)
-        except Exception:
-            selected_rows = []
-    else:
+    except Exception:
         selected_rows = []
 
     if selected_rows:
@@ -3466,9 +3215,9 @@ else:
                 selected_horse_index + 1,
             )
             st.session_state.selected_horse_index = selected_horse_index
-            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
+            _detail_fetch_key = (str(_horse_at_id(selected_horse)), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
+            if (not st.session_state.get("real_analysis_done")) and st.session_state.get("_selected_detail_fetch_key") != (str(_horse_at_id(selected_horse)), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 try:
@@ -3480,7 +3229,7 @@ else:
                     f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
                     expanded=True,
                 )
-                horse_status.write("📡 TJK koşu geçmişi ve galop verisi sorgulanıyor...")
+                horse_status.write("📡 TJK koşu geçmişi + galop verisi sorgulanıyor...")
                 horse_status.write(
                     f"🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}"
                 )
@@ -3519,12 +3268,13 @@ else:
                     st.error(str(exc))
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
 
-    # AgGrid bazı sürümlerde SELECTION_CHANGED sonucunu ilk tıklamada
-    # Streamlit'e geri taşımayabilir. Session state / JS seçiminden devam et.
-    if selected_horse is None:
-        fallback_index = st.session_state.get("selected_horse_index")
-        if isinstance(fallback_index, int) and 0 <= fallback_index < len(horses):
-            selected_horse = horses[fallback_index]
+    # AgGrid bazı sürümlerde selected_rows'u DataFrame/boş döndürebilir.
+    # Son seçimi session state üzerinden koru.
+    if not selected_rows:
+        _saved_idx = st.session_state.get("selected_horse_index")
+        if isinstance(_saved_idx, int) and 0 <= _saved_idx < len(horses):
+            selected_horse = horses[_saved_idx]
+            st.session_state.selected_horse_no = get_horse_number(selected_horse, _saved_idx + 1)
 
     selected_no = st.session_state.get("selected_horse_no")
     if selected_no is not None:
@@ -3601,7 +3351,7 @@ else:
                     if place == "1": first += 1
                     elif place == "2": second += 1
                     elif place == "3": third += 1
-                    pv = _row_prize(h)
+                    pv = _money_number(_first_value(h, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"]))
                     total_prize += pv
                     if _history_year(h) == selected_date.year:
                         year_prize += pv
@@ -3610,8 +3360,8 @@ else:
                     {"Gösterge":"1.'lik", "Değer":first},
                     {"Gösterge":"2.'lik", "Değer":second},
                     {"Gösterge":"3.'lük", "Değer":third},
-                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_earnings(selected_horse))},
-                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_earnings(selected_horse, selected_date.year))},
+                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
+                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
                 ])
                 st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
                     "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
