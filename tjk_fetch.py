@@ -800,18 +800,17 @@ def get_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """At geçmişi + galop verisini hızlı toplar.
+    """At geçmişi + galop verisini kaynakları gereksiz çoğaltmadan toplar.
 
-    /horse ve /workouts aynı anda çağrılır. atId yoksa bile galop,
-    at adı üzerinden alınır. Eksik kalan taraf için yalnızca gerekli
-    fallback çağrısı yapılır.
+    ÖNEMLİ: /horsedata fallback'i toplu analizden kaldırıldı. Bu endpoint
+    Worker tarafında bir at için çok sayıda TJK sayfasını art arda taradığı
+    için 503/resource-limit oluşturabiliyor. Bunun yerine hafif /horse ve
+    /workouts endpointleri kullanılır; yalnızca başarısız olan kaynak bir kez
+    daha denenir.
     """
     horse_name = normalize_text(horse)
-    history: List[Dict[str, Any]] = []
-    workouts: List[Dict[str, Any]] = []
-    errors: List[str] = []
 
-    def fetch_history():
+    def safe_history():
         if at_id in (None, ""):
             return {"ok": False, "history": []}
         try:
@@ -819,7 +818,7 @@ def get_horse_enrichment(
         except Exception as exc:
             return {"ok": False, "history": [], "error": str(exc)}
 
-    def fetch_workouts():
+    def safe_workouts():
         if not horse_name:
             return {"ok": False, "workouts": []}
         try:
@@ -827,42 +826,38 @@ def get_horse_enrichment(
         except Exception as exc:
             return {"ok": False, "workouts": [], "error": str(exc)}
 
-    # Bağımsız iki kaynak aynı anda çalışır.
+    # İlk tur: iki hafif Worker endpointi aynı anda.
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fh = ex.submit(fetch_history)
-        fw = ex.submit(fetch_workouts)
+        fh = ex.submit(safe_history)
+        fw = ex.submit(safe_workouts)
         h = fh.result()
         w = fw.result()
 
-    if isinstance(h, dict):
-        history = _normalize_history_rows(h.get("history"))
-        if not history and h.get("error"):
-            errors.append(f"horse: {h.get('error')}")
-    if isinstance(w, dict):
-        workouts = _normalize_workout_rows(w.get("workouts"))
-        if not workouts and w.get("error"):
-            errors.append(f"workouts: {w.get('error')}")
+    history = _normalize_history_rows(h.get("history")) if isinstance(h, dict) else []
+    workouts = _normalize_workout_rows(w.get("workouts")) if isinstance(w, dict) else []
+    errors = []
 
-    # Eksik veri varsa birleşik endpointi yalnızca bir kez fallback olarak kullan.
-    # atId yoksa da horse ile galop alınabilir.
-    if (not history and at_id not in (None, "")) or not workouts:
-        try:
-            params = {
-                "atId": str(at_id) if at_id not in (None, "") else "",
-                "horse": horse_name,
-                "date": normalize_date(target_date) if target_date else "",
-                "city": normalize_text(target_city),
-                "distance": normalize_text(target_distance),
-                "surface": normalize_text(target_surface),
-                "raceClass": normalize_text(target_class),
-            }
-            data = _worker_json(API_HORSEDATA, params, timeout=timeout)
-            if not history:
-                history = _normalize_history_rows(data.get("history"))
-            if not workouts:
-                workouts = _normalize_workout_rows(data.get("workouts"))
-        except Exception as exc:
-            errors.append(f"horsedata: {exc}")
+    # Boş kalan kaynağı yalnızca 1 kez tekrar dene.
+    if not history and at_id not in (None, ""):
+        h2 = safe_history()
+        history = _normalize_history_rows(h2.get("history")) if isinstance(h2, dict) else []
+        if not history and isinstance(h2, dict) and h2.get("error"):
+            errors.append(f"horse: {h2.get('error')}")
+
+    if not workouts and horse_name:
+        w2 = safe_workouts()
+        workouts = _normalize_workout_rows(w2.get("workouts")) if isinstance(w2, dict) else []
+        if not workouts and isinstance(w2, dict) and w2.get("error"):
+            errors.append(f"workouts: {w2.get('error')}")
+
+    # İlk turdaki hata bilgisini yalnızca gerçekten veri yoksa bildir.
+    if not history and isinstance(h, dict) and h.get("error"):
+        errors.append(f"horse: {h.get('error')}")
+    if not workouts and isinstance(w, dict) and w.get("error"):
+        errors.append(f"workouts: {w.get('error')}")
+
+    # Tekrarlı hata metinlerini temizle.
+    errors = list(dict.fromkeys(errors))
 
     result = {
         "ok": bool(history or workouts),
@@ -870,12 +865,10 @@ def get_horse_enrichment(
         "workouts": workouts,
         "historyCount": len(history),
         "workoutCount": len(workouts),
-        "dataSchema": "tjk-v56-fast-standard",
+        "dataSchema": "tjk-v57-light",
     }
-    if errors and not (history or workouts):
-        result["error"] = " | ".join(errors)
-    elif errors:
-        result["partialError"] = " | ".join(errors)
+    if errors:
+        result["partialError" if (history or workouts) else "error"] = " | ".join(errors)
     return result
 
 # =========================================================
