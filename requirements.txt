@@ -1,4 +1,5 @@
 streamlit==1.62.0
 pandas>=2.0
 requests>=2.31
-streamlit-aggrid>=1.2.1.post2,<2.0.0
+streamlit-aggrid-v2==0.3.4
+streamlit-aggrid>=0.3.4
