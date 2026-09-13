@@ -1,6 +1,7 @@
 import requests
 from datetime import date, datetime
 from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor
 
 
 # =========================================================
@@ -454,6 +455,13 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
     at_id = (
         result.get("atId")
         or result.get("at_id")
+        or result.get("atID")
+        or result.get("AtId")
+        or result.get("AtID")
+        or result.get("ATID")
+        or result.get("at_kodu")
+        or result.get("AtKodu")
+        or result.get("AtKoduId")
         or result.get("horseId")
         or result.get("horse_id")
         or result.get("horseKey")
@@ -785,74 +793,89 @@ def _normalize_workout_rows(rows: Any) -> List[Dict[str, Any]]:
 def get_horse_enrichment(
     at_id: Any,
     horse: str,
-    timeout: int = 45,
+    timeout: int = 20,
     target_date: Any = None,
     target_city: str = "",
     target_distance: Any = None,
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """Worker /horsedata çağrısı + eksikse /horse ve /workouts fallback.
+    """At geçmişi + galop verisini hızlı toplar.
 
-    Yarış bağlamı da Worker'a gönderilir; böylece YB/TJK karşılaştırması
-    seçilen tarih, şehir, mesafe, pist ve sınıfa göre yapılabilir.
+    /horse ve /workouts aynı anda çağrılır. atId yoksa bile galop,
+    at adı üzerinden alınır. Eksik kalan taraf için yalnızca gerekli
+    fallback çağrısı yapılır.
     """
-    if at_id in (None, ""):
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": "atId yok",
-        }
+    horse_name = normalize_text(horse)
+    history: List[Dict[str, Any]] = []
+    workouts: List[Dict[str, Any]] = []
+    errors: List[str] = []
 
-    errors = []
-    data: Dict[str, Any] = {}
+    def fetch_history():
+        if at_id in (None, ""):
+            return {"ok": False, "history": []}
+        try:
+            return get_horse_history(at_id, timeout=timeout)
+        except Exception as exc:
+            return {"ok": False, "history": [], "error": str(exc)}
 
-    try:
-        data = _worker_json(
-            API_HORSEDATA,
-            {
-                "atId": str(at_id),
-                "horse": normalize_text(horse),
+    def fetch_workouts():
+        if not horse_name:
+            return {"ok": False, "workouts": []}
+        try:
+            return get_horse_workouts(horse_name, timeout=timeout)
+        except Exception as exc:
+            return {"ok": False, "workouts": [], "error": str(exc)}
+
+    # Bağımsız iki kaynak aynı anda çalışır.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fh = ex.submit(fetch_history)
+        fw = ex.submit(fetch_workouts)
+        h = fh.result()
+        w = fw.result()
+
+    if isinstance(h, dict):
+        history = _normalize_history_rows(h.get("history"))
+        if not history and h.get("error"):
+            errors.append(f"horse: {h.get('error')}")
+    if isinstance(w, dict):
+        workouts = _normalize_workout_rows(w.get("workouts"))
+        if not workouts and w.get("error"):
+            errors.append(f"workouts: {w.get('error')}")
+
+    # Eksik veri varsa birleşik endpointi yalnızca bir kez fallback olarak kullan.
+    # atId yoksa da horse ile galop alınabilir.
+    if (not history and at_id not in (None, "")) or not workouts:
+        try:
+            params = {
+                "atId": str(at_id) if at_id not in (None, "") else "",
+                "horse": horse_name,
                 "date": normalize_date(target_date) if target_date else "",
                 "city": normalize_text(target_city),
                 "distance": normalize_text(target_distance),
                 "surface": normalize_text(target_surface),
                 "raceClass": normalize_text(target_class),
-            },
-            timeout=timeout,
-        )
-    except Exception as exc:
-        errors.append(f"horsedata: {exc}")
-
-    history = _normalize_history_rows(data.get("history"))
-    workouts = _normalize_workout_rows(data.get("workouts"))
-
-    if not history:
-        try:
-            h = get_horse_history(at_id, timeout=timeout)
-            if isinstance(h.get("history"), list):
-                history = _normalize_history_rows(h.get("history"))
+            }
+            data = _worker_json(API_HORSEDATA, params, timeout=timeout)
+            if not history:
+                history = _normalize_history_rows(data.get("history"))
+            if not workouts:
+                workouts = _normalize_workout_rows(data.get("workouts"))
         except Exception as exc:
-            errors.append(f"horse: {exc}")
+            errors.append(f"horsedata: {exc}")
 
-    if not workouts:
-        try:
-            w = get_horse_workouts(horse, timeout=timeout)
-            if isinstance(w.get("workouts"), list):
-                workouts = _normalize_workout_rows(w.get("workouts"))
-        except Exception as exc:
-            errors.append(f"workouts: {exc}")
-
-    result = dict(data) if isinstance(data, dict) else {}
-    result["history"] = history
-    result["workouts"] = workouts
-    result["historyCount"] = len(history)
-    result["workoutCount"] = len(workouts)
-    result["dataSchema"] = "tjk-v54-standard"
-    result["ok"] = bool(history or workouts) or bool(data.get("ok")) if isinstance(data, dict) else bool(history or workouts)
+    result = {
+        "ok": bool(history or workouts),
+        "history": history,
+        "workouts": workouts,
+        "historyCount": len(history),
+        "workoutCount": len(workouts),
+        "dataSchema": "tjk-v56-fast-standard",
+    }
     if errors and not (history or workouts):
         result["error"] = " | ".join(errors)
+    elif errors:
+        result["partialError"] = " | ".join(errors)
     return result
 
 # =========================================================
