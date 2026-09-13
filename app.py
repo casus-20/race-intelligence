@@ -1178,17 +1178,6 @@ def _money_number(value: Any) -> float:
         return 0.0
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
-    if isinstance(value, dict):
-        for key in (
-            "amount", "value", "prize", "ikramiye", "İkramiye",
-            "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç",
-            "tl", "try", "total",
-        ):
-            if key in value and value.get(key) not in (None, ""):
-                parsed = _money_number(value.get(key))
-                if parsed:
-                    return parsed
-        return 0.0
 
     text = str(value).strip()
     if not text or text == "-":
@@ -1232,34 +1221,106 @@ def _format_tl(value: float) -> str:
     return f"{n:,}".replace(",", ".") + " ₺"
 
 
-def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK geçmişindeki İkramiye toplamını hesaplar.
+_PRIZE_KEYS = (
+    "prize", "prizeAmount", "prize_amount",
+    "ikramiye", "Ikramiye", "İkramiye",
+    "earnings", "earning", "kazanc", "Kazanç",
+)
 
-    TJK At Bilgileri ekranındaki "Kazanç" değeri yalnızca koşu
-    ikramiyelerinin toplamı değildir; At Sahibi Primi de eklenir.
-    Verilen FRANKI CHA CHA örneğinde 3.046.000 TL ikramiye + %20
-    At Sahibi Primi = 3.655.200 TL olduğundan uygulamada resmi
-    "Kazanç" karşılığı olarak ikramiye toplamı x 1,20 kullanılır.
-    """
+
+def _prize_value(value: Any) -> float:
+    """TJK ikramiye alanını düz veya iç içe JSON'dan güvenli biçimde çıkarır."""
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        return _money_number(value)
+    if isinstance(value, dict):
+        for key in _PRIZE_KEYS:
+            if key in value and value.get(key) not in (None, "", "-"):
+                amount = _prize_value(value.get(key))
+                if amount:
+                    return amount
+        # Bazı TJK cevaplarında para nesnesi value/amount altında geliyor.
+        for key in ("value", "amount", "tutar"):
+            if key in value and value.get(key) not in (None, "", "-"):
+                amount = _prize_value(value.get(key))
+                if amount:
+                    return amount
+        return 0.0
+    if isinstance(value, list):
+        for item in value:
+            amount = _prize_value(item)
+            if amount:
+                return amount
+    return 0.0
+
+
+def _row_prize(row: Dict[str, Any]) -> float:
+    """Bir TJK koşu satırındaki tüm bilinen ikramiye alanlarını kontrol eder."""
+    if not isinstance(row, dict):
+        return 0.0
+    for key in _PRIZE_KEYS:
+        if key in row and row.get(key) not in (None, "", "-"):
+            amount = _prize_value(row.get(key))
+            if amount:
+                return amount
+    # Alan farklı bir üst nesnenin altında ise bir seviye daha ara.
+    for value in row.values():
+        if isinstance(value, dict):
+            for key in _PRIZE_KEYS:
+                if key in value and value.get(key) not in (None, "", "-"):
+                    amount = _prize_value(value.get(key))
+                    if amount:
+                        return amount
+    return 0.0
+
+
+def _horse_summary_earnings(horse: Dict[str, Any], target_year: int | None = None) -> float:
+    """At kaydında özet Kazanç alanı varsa onu kullan; yoksa 0 döndür."""
+    if target_year is not None:
+        keys = (
+            "yearEarnings", "year_earnings", "yearlyEarnings",
+            "yearly_earnings", "annualEarnings", "annual_earnings",
+            "buYilKazanc", "bu_yil_kazanc",
+        )
+    else:
+        keys = (
+            "totalEarnings", "total_earnings", "lifetimeEarnings",
+            "lifetime_earnings", "careerEarnings", "career_earnings",
+            "earnings", "kazanc", "Kazanç",
+        )
+    for key in keys:
+        if key in horse and horse.get(key) not in (None, "", "-"):
+            amount = _prize_value(horse.get(key))
+            if amount:
+                return amount
+    return 0.0
+
+
+def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
+    """TJK geçmişindeki gerçek ikramiye toplamını hesaplar."""
+    # Önce TJK cevabında hazır gelen resmi özet kazanç alanını kullan.
+    # Bu, bazı atlarda geçmiş satırlarında ikramiye alanının eksik gelmesi
+    # durumunda ana tablonun yanlışlıkla 0 ₺ göstermesini engeller.
+    summary = _horse_summary_earnings(horse, target_year)
+    if summary:
+        return summary
+
     total = 0.0
-    for row in horse.get("_history", []):
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return 0.0
+
+    for row in history:
         if not isinstance(row, dict):
             continue
         if target_year is not None and _history_year(
-            row.get("date") or row.get("tarih")
+            row.get("date") or row.get("tarih") or row.get("Tarih")
         ) != target_year:
             continue
-        total += _money_number(
-            row.get("prize")
-            or row.get("ikramiye")
-            or row.get("Ikramiye")
-            or row.get("İkramiye")
-            or row.get("prizeAmount")
-            or row.get("prize_amount")
-            or row.get("earnings")
-            or row.get("kazanc")
-            or row.get("Kazanç")
-        )
+        total += _row_prize(row)
     return total
 
 
@@ -1412,8 +1473,8 @@ def _history_tables(history: List[Dict[str, Any]]) -> None:
         owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
         trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
         owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
-        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç", "amount", "value"])
-        prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
+        prize_value = _row_prize(row)
+        prize = _format_tl(prize_value) if prize_value else "₺0"
         rows.append({
             "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
             "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
@@ -3098,7 +3159,7 @@ else:
     grid_options = {
         "rowHeight": 44,
         "headerHeight": 38,
-        "domLayout": "autoHeight",
+        "domLayout": "normal",
         "suppressRowClickSelection": False,
         "rowSelection": "single",
         "animateRows": False,
@@ -3199,9 +3260,7 @@ else:
             }
         """ % int(selected_horse_index))
 
-    # AG Grid kendi iç dikey scrollbarını kullanmasın; tablo tüm satırları
-    # yüksekliği içinde açsın. Sayfanın normal dikey kaydırması devam eder.
-    grid_height = max(150, 42 + len(df_grid) * 44)
+    grid_height = min(760, max(150, 42 + len(df_grid) * 44))
     grid_response = AgGrid(
         df_grid,
         gridOptions=grid_options,
@@ -3380,7 +3439,7 @@ else:
                     if place == "1": first += 1
                     elif place == "2": second += 1
                     elif place == "3": third += 1
-                    pv = _money_number(_first_value(h, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"]))
+                    pv = _row_prize(h)
                     total_prize += pv
                     if _history_year(h) == selected_date.year:
                         year_prize += pv
