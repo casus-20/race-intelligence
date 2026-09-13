@@ -672,53 +672,17 @@ def _worker_json(
     return data
 
 
-def _extract_list_payload(data: Dict[str, Any], keys: List[str]) -> List[Dict[str, Any]]:
-    """Worker cevaplarındaki farklı kapsayıcı şemalardan listeyi çıkarır."""
-    wanted = {str(k).lower() for k in keys}
-
-    def walk(value: Any, depth: int = 0):
-        if depth > 4:
-            return []
-        if isinstance(value, list):
-            return [x for x in value if isinstance(x, dict)]
-        if not isinstance(value, dict):
-            return []
-
-        for key, child in value.items():
-            if str(key).lower() in wanted and isinstance(child, list):
-                return [x for x in child if isinstance(x, dict)]
-
-        # history/workouts bazen data/result/response altında gelir.
-        for key in ("data", "result", "response", "payload", "horse"):
-            child = value.get(key)
-            if isinstance(child, (dict, list)):
-                found = walk(child, depth + 1)
-                if found:
-                    return found
-        return []
-
-    return walk(data)
-
-
 def get_horse_history(
     at_id: Any,
     timeout: int = 45,
 ) -> Dict[str, Any]:
     if at_id in (None, ""):
         return {"ok": False, "history": []}
-    data = _worker_json(
+    return _worker_json(
         API_HORSE,
         {"atId": str(at_id)},
         timeout=timeout,
     )
-    history = _extract_list_payload(
-        data,
-        ["history", "raceHistory", "race_history", "pastRaces", "past_races", "races", "kosular", "koşular"],
-    )
-    result = dict(data)
-    result["history"] = history
-    result["historyCount"] = len(history)
-    return result
 
 
 def get_horse_workouts(
@@ -727,19 +691,11 @@ def get_horse_workouts(
 ) -> Dict[str, Any]:
     if not normalize_text(horse):
         return {"ok": False, "workouts": []}
-    data = _worker_json(
+    return _worker_json(
         API_WORKOUTS,
         {"horse": normalize_text(horse)},
         timeout=timeout,
     )
-    workouts = _extract_list_payload(
-        data,
-        ["workouts", "workout", "workoutHistory", "workout_history", "galop", "galops", "gallops", "gallopHistory", "gallop_history", "galoplar"],
-    )
-    result = dict(data)
-    result["workouts"] = workouts
-    result["workoutCount"] = len(workouts)
-    return result
 
 
 def get_horse_enrichment(
@@ -818,13 +774,45 @@ def get_horse_enrichment(
 
     errors = list(dict.fromkeys(errors))
 
+    # /horse cevabındaki resmi toplam/yıllık kazanç özetini kaybetme.
+    # Worker'ın farklı sürümlerinde bu bilgiler top-level, data/horse/summary
+    # altında veya farklı anahtar adlarıyla gelebiliyor. İlgili alanları
+    # recursive olarak toplayıp app.py'ye tek bir summary nesnesi olarak geçir.
+    _summary_keys = {
+        "totalearnings", "total_earnings", "lifetimeearnings", "lifetime_earnings",
+        "careerearnings", "career_earnings", "earnings", "earning", "kazanc", "kazanç",
+        "yearearnings", "year_earnings", "yearlyearnings", "yearly_earnings",
+        "annualearnings", "annual_earnings", "buyilkazanc", "bu_yil_kazanc",
+        "yearkazanc", "year_kazanc", "ownerearnings", "owner_earnings",
+        "atsahibiprimi", "at_sahibi_primi", "ownerpremium", "owner_premium",
+    }
+
+    def _collect_summary(obj: Any, out: Dict[str, Any]) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if str(key).casefold() in _summary_keys and value not in (None, "", "-"):
+                    out.setdefault(str(key), value)
+                if isinstance(value, (dict, list)):
+                    _collect_summary(value, out)
+        elif isinstance(obj, list):
+            for value in obj:
+                if isinstance(value, (dict, list)):
+                    _collect_summary(value, out)
+
+    summary: Dict[str, Any] = {}
+    _collect_summary(history_data, summary)
+
     result: Dict[str, Any] = {
         "ok": bool(history or workouts),
         "history": history,
         "workouts": workouts,
         "historyCount": len(history),
         "workoutCount": len(workouts),
+        "summary": summary,
     }
+    # Top-level anahtarları da doğrudan koru; eski app sürümleri için geriye
+    # dönük uyumluluk sağlar.
+    result.update(summary)
     if errors:
         result["error"] = " | ".join(errors)
     return result
