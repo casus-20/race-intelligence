@@ -639,33 +639,41 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
-    """
-    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
-
-    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
-    yeni Worker dosyası veya yeni API gerekmez.
-    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
-    """
-    active = []
+    """Seçilen tarihte yarış programı bulunan tüm hipodromları getirir."""
+    active = set()
 
     def check_city(city: str):
-        try:
-            data = get_program(selected_date, city)
-            races = data.get("races", []) if isinstance(data, dict) else []
-            return city if isinstance(races, list) and len(races) > 0 else None
-        except Exception:
-            return None
+        # Geçici Worker/TJK hatasında şehir yanlışlıkla elenmesin.
+        for _ in range(3):
+            try:
+                data = get_program(selected_date, city)
+                if not isinstance(data, dict):
+                    continue
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
+                races = data.get("races")
+                if isinstance(races, list) and len(races) > 0:
+                    return city
+            except Exception:
+                continue
+        return None
+
+    # Worker'a aynı anda aşırı istek göndermemek için kontrollü paralellik.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(check_city, city): city
+            for city in ALL_CITIES
+        }
         for future in as_completed(futures):
-            city = future.result()
-            if city:
-                active.append(city)
+            try:
+                city = future.result()
+                if city:
+                    active.add(city)
+            except Exception:
+                pass
 
-    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
+    # Sabit şehir sırasını koru.
     return [city for city in ALL_CITIES if city in active]
 
 
