@@ -639,33 +639,50 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
     """
-    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
+    Yalnızca SEÇİLEN TARİHTE gerçekten yarış programı dönen
+    hipodromları getirir.
 
-    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
-    yeni Worker dosyası veya yeni API gerekmez.
-    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
+    ÖNEMLİ: Aktif hipodrom kontrolünde yarış programı istekleri
+    birbirine bindirilmez. Worker/TJK aynı anda çok sayıda /data
+    isteğinde bazı şehirleri 429/5xx ile döndürebildiği için bir
+    şehrin geçici hatası o şehrin listeden düşmesine neden olmaz.
     """
-    active = []
+    active = set()
 
     def check_city(city: str):
-        try:
-            data = get_program(selected_date, city)
-            races = data.get("races", []) if isinstance(data, dict) else []
-            return city if isinstance(races, list) and len(races) > 0 else None
-        except Exception:
-            return None
+        # Her şehir için en fazla 3 deneme. Sadece gerçekten races
+        # listesi doluysa şehir aktif kabul edilir.
+        for _attempt in range(3):
+            try:
+                data = get_program(selected_date, city)
+                if not isinstance(data, dict):
+                    continue
+                races = data.get("races")
+                if isinstance(races, list) and len(races) > 0:
+                    return city
+            except Exception:
+                pass
+        return None
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
+    # 10 şehri tek tek kontrol etmek yerine kontrollü 2'li paralellik.
+    # Amaç: Worker'ı boğmadan o tarihteki tüm aktif hipodromları bulmak.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(check_city, city): city
+            for city in ALL_CITIES
+        }
         for future in as_completed(futures):
-            city = future.result()
-            if city:
-                active.append(city)
+            try:
+                city = future.result()
+                if city:
+                    active.add(city)
+            except Exception:
+                pass
 
-    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
+    # Tam olarak ALL_CITIES sırasını koru.
     return [city for city in ALL_CITIES if city in active]
 
 
