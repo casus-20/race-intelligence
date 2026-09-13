@@ -1,4 +1,5 @@
 import streamlit as st
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
 from datetime import date, datetime
@@ -2881,206 +2882,232 @@ else:
         "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF",
         "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "TOPLAM KAZANÇ",
     ]
+    df = pd.DataFrame(table_rows)
     df_display = df[display_columns].copy()
-    # Kritik: No kesinlikle numeric dtype olmalı. Böylece başlığa tıklanınca
-    # Streamlit gerçek sayısal sıralama yapar: 1,2,3...14 / 14,13,12...1.
     df_display["No"] = pd.to_numeric(df_display["No"], errors="coerce").fillna(0).astype(int)
 
-    column_config = {
-        "No": st.column_config.NumberColumn("No", format="%d", width=32, pinned=True),
-        "At İsmi": st.column_config.TextColumn("At İsmi", width=110, pinned=True),
-        "Yaş": st.column_config.TextColumn("Yaş", width=40),
-        "Orijin (Baba-Anne)": st.column_config.TextColumn("Orijin (Baba-Anne)", width=140),
-        "Kilo": st.column_config.TextColumn("Kilo", width=38),
-        "Jokey": st.column_config.TextColumn("Jokey", width=84),
-        "Sahip / Antrenör": st.column_config.TextColumn("Sahip / Antrenör", width=115),
-        "St": st.column_config.TextColumn("St", width=30),
-        "HP": st.column_config.TextColumn("Hp", width=34),
-        "Son 6 Y.": st.column_config.TextColumn("Son 6", width=38),
-        "KGS": st.column_config.TextColumn("KGS", width=38),
-        "s20": st.column_config.TextColumn("s20", width=38),
-        "EİD": st.column_config.TextColumn("EİD", width=52),
-        "Gny": st.column_config.TextColumn("Gny", width=40),
-        "AGF": st.column_config.TextColumn("AGF", width=47),
-        "BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f", width=67),
-        "ŞART UYUMU": st.column_config.NumberColumn("ŞART UYUMU", format="%.1f", width=67),
-        "GÜNCEL SINIF": st.column_config.NumberColumn("GÜNCEL SINIF", format="%.1f", width=70),
-        "SON GALOP": st.column_config.TextColumn("SON GALOP", width=70),
-        "SON KOŞU": st.column_config.TextColumn("SON KOŞU", width=60),
-        "BU YIL KAZANÇ": st.column_config.TextColumn("BU YIL KAZANÇ", width=84),
-        "TOPLAM KAZANÇ": st.column_config.TextColumn("TOPLAM KAZANÇ", width=90),
+    # ------------------------------------------------------------------
+    # V1-V6 ANA TABLO — AG GRID
+    # ------------------------------------------------------------------
+    # AG Grid yalnızca görüntüleme/etkileşim katmanıdır. Analiz hesapları,
+    # TJK veri modeli ve sıralama mantığı Python tarafında aynen korunur.
+    # _horse_index ve _last_surface seçim/render işlemleri için gizli alandır.
+    df_grid = df_display.copy()
+    df_grid["_horse_index"] = df["_horse_index"].values
+    df_grid["_last_surface"] = [
+        str((((horses[int(hidx)].get("_last_race") or {}).get("surface")) or ((horses[int(hidx)].get("_last_race") or {}).get("pist")) or ""))
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+        for hidx in df["_horse_index"].tolist()
+    ]
+
+    def _js_safe(v):
+        return str(v if v is not None else "").replace("\\", "\\\\").replace("'", "\\'")
+
+    cell_style_js = JsCode("""
+    function(params) {
+        const idx = params.data && params.data._horse_index;
+        const selected = window.__ri_selected_horse_index;
+        const base = (params.node.rowIndex % 2 === 0) ? '#ffffff' : '#f1f3f5';
+        return {
+            backgroundColor: (selected !== undefined && String(idx) === String(selected)) ? '#dceeff' : base,
+            color: (selected !== undefined && String(idx) === String(selected)) ? '#062b55' : '#17212b',
+            fontWeight: '700',
+            fontSize: '12px',
+            whiteSpace: 'pre-line',
+            lineHeight: '1.15'
+        };
     }
+    """)
+
+    def _esc_js_text(expr):
+        # JavaScript helper body used inside renderers; all external cell data
+        # is escaped before being inserted into HTML.
+        return f"String({expr} ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;')"
+
+    origin_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const parts = v.split(/\\n|\\r\\n/);
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        if (parts.length >= 2) {
+            return `<div style="line-height:1.18"><span style="color:#1565c0;font-weight:800">${esc(parts[0])}</span><br><span style="color:#111;font-weight:700">${esc(parts[1])}</span></div>`;
+        }
+        return `<span style="color:#1565c0;font-weight:800">${esc(v)}</span>`;
+    }
+    """)
+
+    jockey_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const parts = v.split(/\\n|\\r\\n/);
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        const out = parts.map((p,i) => {
+            if (/^Ap$/i.test(p.trim())) return '<span style="color:#d40000;font-weight:900">Ap</span>';
+            return esc(p);
+        });
+        return `<div style="line-height:1.18">${out.join('<br>')}</div>`;
+    }
+    """)
+
+    owner_trainer_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const parts = v.split(/\\n|\\r\\n/);
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        return `<div style="line-height:1.18"><span style="color:#1565c0;font-weight:800">${esc(parts[0] || '')}</span><br><span style="color:#d40000;font-weight:800">${esc(parts[1] || '')}</span></div>`;
+    }
+    """)
+
+    weight_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        const m = v.match(/^(.*?)(\\s*[+]\\s*[-+]?\\d+(?:[.,]\\d+)?)\\s*$/);
+        if (m) return `${esc(m[1])} <span style="color:#d40000;font-weight:900">${esc(m[2])}</span>`;
+        return esc(v);
+    }
+    """)
+
+    eid_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        return `<span style="color:#d40000;font-weight:900">${esc(v)}</span>`;
+    }
+    """)
+
+    last_race_renderer = JsCode("""
+    function(params) {
+        const v = String(params.value ?? '');
+        const surf = String((params.data && params.data._last_surface) || '').toLowerCase();
+        const isGrass = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
+        const color = isGrass ? '#138a36' : '#111111';
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+        return `<span style="color:${color};font-weight:900">${esc(v)}</span>`;
+    }
+    """)
 
     selected_horse_index = st.session_state.get("selected_horse_index")
 
-    def _row_style(row):
-        try:
-            pos = int(row.name)
-        except Exception:
-            pos = 0
-        if selected_horse_index is not None and int(df.iloc[int(row.name)]["_horse_index"]) == int(selected_horse_index):
-            bg, fg = "#dceeff", "#062b55"
-        else:
-            bg, fg = ("#ffffff", "#17212b") if pos % 2 == 0 else ("#f1f3f5", "#17212b")
-        return [f"background-color:{bg};color:{fg};font-weight:700;" for _ in row]
+    grid_options = {
+        "rowHeight": 44,
+        "headerHeight": 38,
+        "domLayout": "normal",
+        "suppressRowClickSelection": False,
+        "rowSelection": "single",
+        "animateRows": False,
+        "enableCellTextSelection": True,
+        "ensureDomOrder": True,
+        "defaultColDef": {
+            "sortable": True,
+            "filter": True,
+            "resizable": True,
+            "wrapText": True,
+            "autoHeight": False,
+        },
+        "onGridReady": JsCode("""
+            function(params) {
+                window.__ri_selected_horse_index = %s;
+            }
+        """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
+        "onRowClicked": JsCode("""
+            function(params) {
+                if (params.data && params.data._horse_index !== undefined) {
+                    window.__ri_selected_horse_index = params.data._horse_index;
+                }
+            }
+        """),
+    }
 
-    def _cell_style(data):
-        styles = pd.DataFrame("", index=data.index, columns=data.columns)
-        if "No" in data.columns:
-            styles["No"] = "font-weight:900;text-align:center;"
-
-        # V3 — EİD tamamı kırmızı.
-        # Native st.dataframe hücre içinde kısmi metin rengi desteklemediği için
-        # Baba/Anne, Ap, Sahip/Antrenör ve fazla kilo aynı hücrede ayrı renklenemez.
-        # Metin yapısı korunur; EİD ve SON KOŞU hücre bazında renklendirilir.
-        if "EİD" in data.columns:
-            styles["EİD"] = "color:#d40000 !important;font-weight:900;"
-
-        # V4 — SON KOŞU: son yarış çim ise yeşil, diğer pistler siyah.
-        if "SON KOŞU" in data.columns:
-            for ridx in data.index:
-                try:
-                    hidx = int(df.iloc[int(ridx)]["_horse_index"])
-                    horse = horses[hidx]
-                    lr = horse.get("_last_race") if isinstance(horse, dict) else None
-                    surf = str((lr or {}).get("surface") or (lr or {}).get("pist") or "").lower()
-                    styles.at[ridx, "SON KOŞU"] = (
-                        "color:#138a36 !important;font-weight:900;" if "çim" in surf or "cim" in surf or "grass" in surf or "turf" in surf
-                        else "color:#111111 !important;font-weight:900;"
-                    )
-                except Exception:
-                    styles.at[ridx, "SON KOŞU"] = "color:#111111 !important;font-weight:900;"
-
-        return styles
-
-    _style_source = df.copy()
-    styled_df = (
-        _style_source[display_columns]
-        .style
-        .apply(_row_style, axis=1)
-        .apply(_cell_style, axis=None)
-        .set_properties(**{
-            "font-size":"9px", "font-weight":"700",
-            "white-space":"pre-line", "vertical-align":"middle",
-            "color":"#17212b"
-        })
-        .set_table_styles([
-            {"selector":"th", "props":[
-                ("background-color","#d5dae2"),("color","#101820"),
-                ("font-weight","900"),("font-size","9px"),
-                ("height","42px"),("text-align","center"),
-                ("border","1px solid #c0c7d0")
-            ]},
-            {"selector":"td", "props":[
-                ("font-size","9px"),("font-weight","700"),
-                ("white-space","pre-line"),("border","1px solid #d2d7de")
-            ]},
-        ])
+    gb = GridOptionsBuilder.from_dataframe(df_grid)
+    gb.configure_default_column(
+        sortable=True, filter=True, resizable=True,
+        wrapText=True, autoHeight=False,
     )
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+    gb.configure_grid_options(**grid_options)
 
-    table_row_height = 44
-    table_height = 54 + (len(df) * table_row_height) + 28
+    # Sabit sütunlar.
+    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"])
+    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120)
+    gb.configure_column("Yaş", width=55, minWidth=48)
+    gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
+    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer)
+    gb.configure_column("Jokey", width=105, minWidth=90, cellRenderer=jockey_renderer)
+    gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
+    gb.configure_column("St", width=52, minWidth=45)
+    gb.configure_column("HP", width=58, minWidth=50)
+    gb.configure_column("Son 6 Y.", width=85, minWidth=70)
+    gb.configure_column("KGS", width=58, minWidth=50)
+    gb.configure_column("s20", width=58, minWidth=50)
+    gb.configure_column("EİD", width=75, minWidth=65, cellRenderer=eid_renderer)
+    gb.configure_column("Gny", width=60, minWidth=50)
+    gb.configure_column("AGF", width=70, minWidth=60)
+    gb.configure_column("BİZİM SKOR", width=105, minWidth=90)
+    gb.configure_column("ŞART UYUMU", width=105, minWidth=90)
+    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95)
+    gb.configure_column("SON GALOP", width=95, minWidth=80)
+    gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
+    gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100)
+    gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105)
+    gb.configure_column("_horse_index", hide=True)
+    gb.configure_column("_last_surface", hide=True)
 
-    st.markdown("""
-    <style>
-    .ri-mode-badge { text-align:center; font-size:9px; padding:9px 4px; color:#66717d; }
-    .ri-mode-badge b { background:#e6f4ea; color:#16833b; padding:5px 8px; border-radius:5px; }
-    .ri-model-summary { text-align:right; font-size:9px; color:#46515d; }
-    div[data-testid="stDataFrame"] { border:1px solid #c8cdd4 !important; border-radius:4px !important; box-shadow:none !important; overflow:hidden !important; }
-    div[data-testid="stDataFrame"] input[type="checkbox"] { opacity:0 !important; width:2px !important; margin:0 !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) { width:6px !important; min-width:6px !important; max-width:6px !important; padding:0 !important; }
-    div[data-testid="stDataFrame"] [role="columnheader"] {
-        background:#d5dae2 !important; color:#101820 !important; font-size:12px !important;
-        font-weight:900 !important; height:34px !important; min-height:34px !important;
-        line-height:34px !important; border-color:#c0c7d0 !important; text-transform:none !important;
-    }
-    div[data-testid="stDataFrame"] [role="columnheader"] * { color:#101820 !important; font-weight:900 !important; background:transparent !important; }
-    div[data-testid="stDataFrame"] [role="gridcell"],
-    div[data-testid="stDataFrame"] [role="gridcell"] > div {
-        min-height:44px !important; height:44px !important; line-height:1.18 !important;
-        white-space:pre-line !important; overflow:hidden !important; text-overflow:clip !important;
-        overflow-wrap:normal !important; word-break:normal !important; color:#17212b !important;
-    }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar:vertical { width:0 !important; }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar:horizontal { height:12px !important; }
-    div[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb { background:#aeb7c2 !important; border-radius:8px !important; }
-    /* Seçim kutusu görünür ve mavi */
-    div[data-testid="stDataFrame"] input[type="checkbox"] {
-        opacity:1 !important; visibility:visible !important; width:15px !important; height:15px !important;
-        min-width:15px !important; margin:0 !important; accent-color:#1976d2 !important;
-        cursor:pointer !important;
-    }
-    div[data-testid="stDataFrame"] [role="gridcell"]:has(input[type="checkbox"]) {
-        width:30px !important; min-width:30px !important; max-width:30px !important;
-        padding:0 !important; background:#171b24 !important;
-    }
-    /* At İsmi Streamlit'in native pinned column özelliğiyle sabitlenir.
-       CSS ile nth-child/position:sticky uygulanmıyor; çünkü dataframe
-       sanal grid olarak çiziliyor ve bu yöntem yatay kaydırmada çalışmıyor. */
-    /* PROGRAMI GETİR: mavi, kompakt ve okunabilir yazı. */
-    .st-key-program_get_button button {
-        background:#1976d2 !important;
-        border-color:#1976d2 !important;
-        color:#ffffff !important;
-        font-size:14px !important;
-        font-weight:800 !important;
-        line-height:1.2 !important;
-        min-height:42px !important;
-        padding:7px 10px !important;
-        white-space:normal !important;
-    }
-    .st-key-program_get_button button:hover {
-        background:#1565c0 !important;
-        border-color:#1565c0 !important;
-    }
+    grid_options = gb.build()
+    grid_options["rowStyle"] = JsCode("""
+        function(params) {
+            const selected = window.__ri_selected_horse_index;
+            if (selected !== undefined && selected !== null && params.data && String(params.data._horse_index) === String(selected)) {
+                return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'700'};
+            }
+            return null;
+        }
+    """)
+    grid_options["onSelectionChanged"] = JsCode("""
+        function(params) {
+            const rows = params.api.getSelectedRows();
+            if (rows && rows.length && rows[0]._horse_index !== undefined) {
+                window.__ri_selected_horse_index = rows[0]._horse_index;
+            }
+        }
+    """)
 
-    /* Ana işlem düğmeleri: varsayılan sarı, gerçek veri yeşil. */
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-        min-height:34px !important; font-size:10px !important; padding:4px 8px !important;
-    }
-    /* Birincil buton yeşil; Manuel Analiz artık secondary olduğundan kırmızı görünmez. */
-    button[kind="primary"] { background:#20a34a !important; border-color:#20a34a !important; color:#fff !important; }
-    /* Üst işlem butonlarının kesin renkleri */
-    div[data-testid="stHorizontalBlock"] div:has(.ri-reset-marker) button {
-        background:#c58a2b !important; border-color:#c58a2b !important; color:#fff !important;
-    }
-    div[data-testid="stHorizontalBlock"] div:has(.ri-real-marker) button {
-        background:#20a34a !important; border-color:#20a34a !important; color:#fff !important;
-    }
-    div[data-testid="stHorizontalBlock"] div:has(.ri-manual-marker) button {
-        background:#ff4b4b !important; border-color:#ff4b4b !important; color:#fff !important;
-    }
-    /* Buton renkleri metne göre */
-    div[data-testid="stButton"]:has(button:has(span)) button { color:#fff !important; }
-    div[data-testid="stButton"]:has(button span) button { border-radius:5px !important; }
-    div[data-testid="stButton"]:has(button span) { }
-    /* Varsayılana dön: sarı */
-    button:has(span) { }
-        </style>
-    """, unsafe_allow_html=True)
+    # Seçili atın başlangıçta vurgulanması.
+    if selected_horse_index is not None:
+        grid_options["onFirstDataRendered"] = JsCode("""
+            function(params) {
+                params.api.forEachNode(function(node) {
+                    if (node.data && String(node.data._horse_index) === String(%d)) node.setSelected(true);
+                });
+            }
+        """ % int(selected_horse_index))
 
-    table_event = st.dataframe(
-        styled_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-        key="horse_table",
-        on_select="rerun",
-        selection_mode="single-row",
-        height=table_height,
-        row_height=table_row_height,
+    grid_height = min(760, max(150, 42 + len(df_grid) * 44))
+    grid_response = AgGrid(
+        df_grid,
+        gridOptions=grid_options,
+        height=grid_height,
+        width="100%",
+        fit_columns_on_grid_load=False,
+        allow_unsafe_jscode=True,
+        update_mode="SELECTION_CHANGED",
+        data_return_mode="AS_INPUT",
+        theme="streamlit",
+        key="horse_table_aggrid",
     )
 
     selected_rows = []
     try:
-        selected_rows = list(table_event.selection.rows)
+        selected_rows = grid_response.get("selected_rows") or []
     except Exception:
         selected_rows = []
 
     if selected_rows:
-        selected_display_row = int(selected_rows[0])
-        if 0 <= selected_display_row < len(df):
-            selected_horse_index = int(df.iloc[selected_display_row]["_horse_index"])
+        try:
+            selected_horse_index = int(selected_rows[0].get("_horse_index"))
+        except Exception:
+            selected_horse_index = None
+        if selected_horse_index is not None and 0 <= selected_horse_index < len(horses):
             selected_horse = horses[selected_horse_index]
             st.session_state.selected_horse_no = get_horse_number(
                 selected_horse,
