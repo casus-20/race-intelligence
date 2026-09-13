@@ -1178,6 +1178,17 @@ def _money_number(value: Any) -> float:
         return 0.0
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
+    if isinstance(value, dict):
+        for key in (
+            "amount", "value", "prize", "ikramiye", "İkramiye",
+            "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç",
+            "tl", "try", "total",
+        ):
+            if key in value and value.get(key) not in (None, ""):
+                parsed = _money_number(value.get(key))
+                if parsed:
+                    return parsed
+        return 0.0
 
     text = str(value).strip()
     if not text or text == "-":
@@ -1401,7 +1412,7 @@ def _history_tables(history: List[Dict[str, Any]]) -> None:
         owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
         trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
         owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
-        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç", "amount", "value"])
         prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
         rows.append({
             "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
@@ -3087,7 +3098,7 @@ else:
     grid_options = {
         "rowHeight": 44,
         "headerHeight": 38,
-        "domLayout": "normal",
+        "domLayout": "autoHeight",
         "suppressRowClickSelection": False,
         "rowSelection": "single",
         "animateRows": False,
@@ -3188,7 +3199,9 @@ else:
             }
         """ % int(selected_horse_index))
 
-    grid_height = min(760, max(150, 42 + len(df_grid) * 44))
+    # AG Grid kendi iç dikey scrollbarını kullanmasın; tablo tüm satırları
+    # yüksekliği içinde açsın. Sayfanın normal dikey kaydırması devam eder.
+    grid_height = max(150, 42 + len(df_grid) * 44)
     grid_response = AgGrid(
         df_grid,
         gridOptions=grid_options,
