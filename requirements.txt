@@ -1,5 +1,6 @@
 streamlit==1.62.0
 pandas>=2.0
 requests>=2.31
+beautifulsoup4
 streamlit-aggrid-v2==0.3.4
 streamlit-aggrid>=0.3.4
