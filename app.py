@@ -2952,6 +2952,41 @@ else:
     }
     """)
 
+    # At İsmi hücresine doğrudan tıklanabilir alan veriyoruz.
+    # Tıklama satırı seçer; mevcut Python tarafındaki SELECTION_CHANGED akışı
+    # da aynı anda çalışarak gerçek koşu + galop ayrıntılarını açar.
+    horse_name_renderer = JsCode(r"""
+    class HorseNameRenderer {
+        init(params) {
+            const root = document.createElement('span');
+            const parts = String(params.value ?? '').split(/\r?\n/);
+            const name = document.createElement('span');
+            name.textContent = parts[0] || '';
+            name.style.cursor = 'pointer';
+            name.style.fontWeight = '800';
+            name.title = 'Gerçek koşular ve galopları aç';
+            name.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (params.node) {
+                    params.node.setSelected(true);
+                    if (params.api) params.api.ensureNodeVisible(params.node);
+                }
+            });
+            root.appendChild(name);
+            if (parts.length > 1 && parts[1]) {
+                root.appendChild(document.createElement('br'));
+                const eq = document.createElement('span');
+                eq.textContent = parts.slice(1).join('\n');
+                eq.style.fontWeight = '600';
+                eq.style.fontSize = '11px';
+                root.appendChild(eq);
+            }
+            this.eGui = root;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
     jockey_renderer = JsCode(r"""
     class JockeyRenderer {
         init(params) {
@@ -3073,6 +3108,16 @@ else:
                 window.__ri_selected_horse_index = %s;
             }
         """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
+        "onCellClicked": JsCode("""
+            function(params) {
+                if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
+                    params.node.setSelected(true);
+                    if (params.data && params.data._horse_index !== undefined) {
+                        window.__ri_selected_horse_index = params.data._horse_index;
+                    }
+                }
+            }
+        """),
         "onRowClicked": JsCode("""
             function(params) {
                 if (params.data && params.data._horse_index !== undefined) {
@@ -3092,7 +3137,7 @@ else:
 
     # Sabit sütunlar.
     gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"])
-    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120)
+    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120, cellRenderer=horse_name_renderer)
     gb.configure_column("Yaş", width=55, minWidth=48)
     gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
     gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer)
