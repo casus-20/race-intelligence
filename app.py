@@ -332,28 +332,25 @@ st.markdown(
 
     .race-title-panel {
         width: 100% !important;
-        min-height: 36px;
-        border: 1px solid #b9c8d8;
-        border-radius: 7px;
-        background: #ffffff;
-        color: #16324d;
-        padding: 7px 12px;
+        min-height: 72px;
+        border: 1px solid rgba(90,90,90,.30);
+        border-radius: 0;
+        background: #fffdf2;
+        color: #0b6b17;
+        padding: 6px 10px;
         box-sizing: border-box;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        flex-wrap: nowrap;
+        display: block;
         box-shadow: none;
-        text-transform: uppercase;
+        text-transform: none;
     }
-    .race-title-panel .race-title-main {
-        font-size: 30px;
-        line-height: 1.0;
-        font-weight: 950;
-        white-space: nowrap;
-    }
+    .race-title-panel.grass { background:#fffdf2; color:#0b6b17; }
+    .race-title-panel.dirt { background:#fff4dc; color:#8a4b08; }
+    .race-title-panel.synthetic { background:#eef6ff; color:#07579f; }
+    .race-title-panel .race-head-line { display:flex; align-items:center; gap:12px; min-height:28px; }
+    .race-title-panel .race-prize-line { font-size:13px; line-height:1.35; font-weight:800; white-space:normal; }
+    .race-title-panel .race-title-main { font-size:18px; line-height:1.0; font-weight:950; white-space:nowrap; }
     .race-title-panel .race-condition {
-        font-size: 16px;
+        font-size: 14px;
         line-height: 1.15;
         font-weight: 900;
         white-space: nowrap;
@@ -1122,6 +1119,32 @@ def enrich_race_horses(
         item["_at_id"] = str(at_id) if at_id else ""
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
+        # Worker /horse cevabındaki resmi toplam/yıllık Kazanç alanlarını
+        # kaybetmeden at kaydına taşı. Ana tablo doğrudan bu değerleri kullanır.
+        if isinstance(data, dict):
+            for _src_key in (
+                "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
+                "careerEarnings", "career_earnings", "earnings", "kazanc", "Kazanç",
+                "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
+                "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
+                "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
+            ):
+                if _src_key in data and data.get(_src_key) not in (None, "", "-"):
+                    item[_src_key] = data.get(_src_key)
+            # Bazı Worker cevapları resmi özetleri nested "horse" / "data"
+            # altında taşır; ana tablo için tamamını da koru.
+            for _container_key in ("horse", "horsedata", "data", "summary", "statistics", "stats"):
+                _container = data.get(_container_key)
+                if isinstance(_container, dict):
+                    for _src_key in (
+                        "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
+                        "careerEarnings", "career_earnings", "earnings", "kazanc", "Kazanç",
+                        "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
+                        "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
+                        "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
+                    ):
+                        if _src_key in _container and _container.get(_src_key) not in (None, "", "-"):
+                            item[_src_key] = _container.get(_src_key)
         if isinstance(data, dict) and data.get("error"):
             item["_enrichment_error"] = str(data.get("error"))
 
@@ -1227,9 +1250,28 @@ _PRIZE_KEYS = (
     "earnings", "earning", "kazanc", "Kazanç",
 )
 
+# TJK'nin resmi at sayfasındaki toplam "Kazanç" değeri, yalnızca
+# geçmiş koşu ikramiyelerinin %20'si değildir. At Sahibi Primi ve diğer
+# resmi kalemler TJK tarafından ayrıca hesaplanır. Bu nedenle mümkünse
+# doğrudan TJK'nin resmi özet Kazanç değeri kullanılmalıdır.
+_SUMMARY_TOTAL_KEYS = (
+    "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
+    "careerEarnings", "career_earnings", "kazanc", "Kazanç", "earnings",
+    "earning", "totalKazanc", "toplamKazanc", "toplam_kazanc",
+)
+_SUMMARY_YEAR_KEYS = (
+    "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
+    "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
+    "yearKazanc", "year_kazanc", "kazanc",
+)
+_OWNER_EARNINGS_KEYS = (
+    "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
+    "ownerPremium", "owner_premium", "sahipPrimi", "sahip_primi",
+)
+
 
 def _prize_value(value: Any) -> float:
-    """TJK ikramiye alanını düz veya iç içe JSON'dan güvenli biçimde çıkarır."""
+    """TJK para alanını düz veya iç içe JSON'dan güvenli biçimde çıkarır."""
     if value is None or value == "":
         return 0.0
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1237,13 +1279,12 @@ def _prize_value(value: Any) -> float:
     if isinstance(value, str):
         return _money_number(value)
     if isinstance(value, dict):
-        for key in _PRIZE_KEYS:
+        for key in _PRIZE_KEYS + _SUMMARY_TOTAL_KEYS + _SUMMARY_YEAR_KEYS + _OWNER_EARNINGS_KEYS:
             if key in value and value.get(key) not in (None, "", "-"):
                 amount = _prize_value(value.get(key))
                 if amount:
                     return amount
-        # Bazı TJK cevaplarında para nesnesi value/amount altında geliyor.
-        for key in ("value", "amount", "tutar"):
+        for key in ("value", "amount", "tutar", "total", "sum"):
             if key in value and value.get(key) not in (None, "", "-"):
                 amount = _prize_value(value.get(key))
                 if amount:
@@ -1252,6 +1293,27 @@ def _prize_value(value: Any) -> float:
     if isinstance(value, list):
         for item in value:
             amount = _prize_value(item)
+            if amount:
+                return amount
+    return 0.0
+
+
+def _recursive_key_value(obj: Any, keys: tuple[str, ...]) -> float:
+    """Worker /horse cevabındaki resmi özet alanını nerede olursa olsun bulur."""
+    wanted = {str(k).casefold() for k in keys}
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if str(key).casefold() in wanted and value not in (None, "", "-"):
+                amount = _prize_value(value)
+                if amount:
+                    return amount
+        for value in obj.values():
+            amount = _recursive_key_value(value, keys)
+            if amount:
+                return amount
+    elif isinstance(obj, list):
+        for value in obj:
+            amount = _recursive_key_value(value, keys)
             if amount:
                 return amount
     return 0.0
@@ -1266,44 +1328,34 @@ def _row_prize(row: Dict[str, Any]) -> float:
             amount = _prize_value(row.get(key))
             if amount:
                 return amount
-    # Alan farklı bir üst nesnenin altında ise bir seviye daha ara.
     for value in row.values():
-        if isinstance(value, dict):
-            for key in _PRIZE_KEYS:
-                if key in value and value.get(key) not in (None, "", "-"):
-                    amount = _prize_value(value.get(key))
-                    if amount:
-                        return amount
-    return 0.0
-
-
-def _horse_summary_earnings(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """At kaydında özet Kazanç alanı varsa onu kullan; yoksa 0 döndür."""
-    if target_year is not None:
-        keys = (
-            "yearEarnings", "year_earnings", "yearlyEarnings",
-            "yearly_earnings", "annualEarnings", "annual_earnings",
-            "buYilKazanc", "bu_yil_kazanc",
-        )
-    else:
-        keys = (
-            "totalEarnings", "total_earnings", "lifetimeEarnings",
-            "lifetime_earnings", "careerEarnings", "career_earnings",
-            "earnings", "kazanc", "Kazanç",
-        )
-    for key in keys:
-        if key in horse and horse.get(key) not in (None, "", "-"):
-            amount = _prize_value(horse.get(key))
+        if isinstance(value, (dict, list)):
+            amount = _recursive_key_value(value, _PRIZE_KEYS)
             if amount:
                 return amount
     return 0.0
 
 
+def _horse_summary_earnings(horse: Dict[str, Any], target_year: int | None = None) -> float:
+    """TJK'nin resmi özet Kazanç değerini kullanır; bulunamazsa 0 döner."""
+    if target_year is not None:
+        keys = _SUMMARY_YEAR_KEYS
+    else:
+        keys = _SUMMARY_TOTAL_KEYS
+    amount = _recursive_key_value(horse, keys)
+    return amount if amount > 0 else 0.0
+
+
+def _horse_owner_earnings(horse: Dict[str, Any]) -> float:
+    return _recursive_key_value(horse, _OWNER_EARNINGS_KEYS)
+
+
 def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK geçmişindeki gerçek ikramiye toplamını hesaplar."""
-    # Önce TJK cevabında hazır gelen resmi özet kazanç alanını kullan.
-    # Bu, bazı atlarda geçmiş satırlarında ikramiye alanının eksik gelmesi
-    # durumunda ana tablonun yanlışlıkla 0 ₺ göstermesini engeller.
+    """TJK geçmişindeki gerçek ikramiye toplamını hesaplar.
+
+    Resmi özet Kazanç mevcutsa onu döndürür. Eski/eksik cevaplarda ise
+    geçmiş koşu ikramiyelerinin toplamını kullanır.
+    """
     summary = _horse_summary_earnings(horse, target_year)
     if summary:
         return summary
@@ -1312,7 +1364,6 @@ def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> 
     history = horse.get("_history", [])
     if not isinstance(history, list):
         return 0.0
-
     for row in history:
         if not isinstance(row, dict):
             continue
@@ -1325,14 +1376,20 @@ def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> 
 
 
 def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK "Kazanç": ikramiye + At Sahibi Primi (%20)."""
-    return round(_race_prize_total(horse) * 1.20, 2)
+    """TJK resmi "Kazanç" değeri."""
+    official = _horse_summary_earnings(horse, None)
+    if official:
+        return round(official, 2)
+    # Fallback: yalnızca geçmişteki gerçek ikramiyeleri göster; %20 uydurma.
+    return round(_race_prize_total(horse) + _horse_owner_earnings(horse), 2)
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    """TJK yıllık "Kazanç": o yılın ikramiyesi + %20 At Sahibi Primi."""
-    return round(_race_prize_total(horse, target_year) * 1.20, 2)
-
+    """TJK resmi yıllık Kazanç değeri."""
+    official = _horse_summary_earnings(horse, target_year)
+    if official:
+        return round(official, 2)
+    return round(_race_prize_total(horse, target_year), 2)
 
 def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
     workouts = horse.get("_workouts", [])
@@ -2788,8 +2845,71 @@ if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state["_last_race_signature"] = _current_race_signature
 
 # ============================================================
-# KOŞU BİLGİLERİ
+# KOŞU BAŞLIĞI — TJK program modeline yakın, ham yarış verisinden
 # ============================================================
+
+def _race_recursive_find(obj: Any, keys: tuple[str, ...]) -> Any:
+    wanted = {str(k).casefold() for k in keys}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if str(k).casefold() in wanted and v not in (None, "", "-"):
+                return v
+        for v in obj.values():
+            found = _race_recursive_find(v, keys)
+            if found not in (None, "", "-"):
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _race_recursive_find(v, keys)
+            if found not in (None, "", "-"):
+                return found
+    return None
+
+
+def _race_money_values(value: Any) -> list[float]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, dict):
+        # sıralı ödül objesi: {1: ..., 2: ...}
+        vals = []
+        numeric_items = []
+        for k, v in value.items():
+            m = re.search(r"(\d+)", str(k))
+            if m:
+                pv = _prize_value(v)
+                if pv:
+                    numeric_items.append((int(m.group(1)), pv))
+        if numeric_items:
+            return [v for _, v in sorted(numeric_items)]
+        for v in value.values():
+            vals.extend(_race_money_values(v))
+        return vals
+    if isinstance(value, list):
+        vals=[]
+        for v in value:
+            pv=_prize_value(v)
+            if pv: vals.append(pv)
+            else: vals.extend(_race_money_values(v))
+        return vals
+    text=str(value)
+    nums=re.findall(r"\d[\d.]*", text)
+    vals=[]
+    for n in nums:
+        pv=_money_number(n)
+        if pv: vals.append(pv)
+    return vals
+
+
+def _race_money_line(race: Dict[str, Any], aliases: tuple[str, ...], label: str) -> str:
+    raw = _race_recursive_find(race, aliases)
+    vals = _race_money_values(raw)
+    if not vals:
+        return ""
+    parts=[]
+    for i,v in enumerate(vals[:5],1):
+        parts.append(f"{i}.) {_format_tl(v).replace(' ₺',' t')}")
+    return f"{label}: " + " ".join(parts)
+
 
 race_number = get_race_number(selected_race, 1)
 race_time = display_value(selected_race.get("race_time"))
@@ -2797,12 +2917,42 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
+_surface_text = str(surface or "").casefold()
+if "çim" in _surface_text or "cim" in _surface_text or "grass" in _surface_text or "turf" in _surface_text:
+    _race_color_class = "grass"
+elif "kum" in _surface_text or "dirt" in _surface_text or "sand" in _surface_text:
+    _race_color_class = "dirt"
+else:
+    _race_color_class = "synthetic"
+
+_prize_line = _race_money_line(
+    selected_race,
+    ("prizes", "prizeList", "prize_list", "ikramiyeler", "ikramiyeList", "ikramiye_list", "prize"),
+    "İkramiye",
+)
+_owner_line = _race_money_line(
+    selected_race,
+    ("ownerPrize", "ownerPrizes", "owner_prize", "owner_prizes", "atSahibiPrimi", "at_sahibi_primi", "sahipPrimi", "sahip_primi"),
+    "At Sahibi Primi",
+)
+_breeder_line = _race_money_line(
+    selected_race,
+    ("breederPrize", "breederPrizes", "breeder_prize", "breeder_prizes", "yetiştiriciPrimi", "yetistiriciPrimi", "yetiştirici_primi", "yetistirici_primi"),
+    "Yetiştirici Primi",
+)
+
+# TJK başlık modeli: 1. Koşu + saat + şartlar; alt satırlarda resmi ikramiye kalemleri.
+_header_main = f"{race_number}. Koşu  {race_time if race_time != '-' else ''}".strip()
+_header_lines = "".join(f"<div class='race-prize-line'>{line}</div>" for line in (_prize_line, _owner_line, _breeder_line) if line)
+
 st.markdown(
     f"""<div class='race-info-compact'>
-        <div class='race-title-panel'>
-            <span class='race-title-main'>{race_time if race_time != '-' else ''}</span>
-            <span class='race-condition'>{condition}</span>
-            <span class='race-distance'>{distance} {surface}</span>
+        <div class='race-title-panel {_race_color_class}'>
+            <div class='race-head-line'>
+                <span class='race-title-main'>{_header_main}</span>
+                <span class='race-condition'>{condition}</span>
+            </div>
+            {_header_lines}
         </div>
     </div>""",
     unsafe_allow_html=True,
