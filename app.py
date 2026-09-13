@@ -2,6 +2,7 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
+import html as _html
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1380,21 +1381,14 @@ def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> 
 
 
 def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK resmi "Kazanç" değeri."""
-    official = _horse_summary_earnings(horse, None)
-    if official:
-        return round(official, 2)
-    # Özet yoksa yalnızca elde gerçekten bulunan koşu ikramiyelerini kullan.
-    # At sahibi primi veya %20 varsayımı eklenmez; TJK resmi değeri uydurulmaz.
-    return round(_race_prize_total(horse), 2)
+    """TJK resmi özetindeki toplam Kazanç; tahmini toplam kullanmaz."""
+    return round(_horse_summary_earnings(horse, None), 2)
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    """TJK resmi yıllık Kazanç değeri."""
-    official = _horse_summary_earnings(horse, target_year)
-    if official:
-        return round(official, 2)
-    return round(_race_prize_total(horse, target_year), 2)
+    """TJK resmi özetindeki ilgili yıl Kazancı; tahmini toplam kullanmaz."""
+    return round(_horse_summary_earnings(horse, target_year), 2)
+
 
 def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
     workouts = horse.get("_workouts", [])
@@ -2947,13 +2941,19 @@ _breeder_line = _race_money_line(
 )
 
 # TJK günlük program başlığı: başlık tek satır, resmi ödüller alt satırlarda.
-_eid = display_value(_race_recursive_find(selected_race, ("eid", "e.i.d", "EİD", "bestTime", "best_time", "enIyiDerece", "en_iyi_derece")), "")
-_surface_display = display_value(surface, "")
-_distance_display = display_value(distance, "")
-_condition_clean = re.sub(r"\s+", " ", display_value(condition, "")).strip()
+def _clean_header_text(value: Any) -> str:
+    text = display_value(value, "")
+    text = _html.unescape(str(text))
+    text = re.sub(r"<[^>]*>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+_eid = _clean_header_text(_race_recursive_find(selected_race, ("eid", "e.i.d", "EİD", "bestTime", "best_time", "enIyiDerece", "en_iyi_derece")))
+_surface_display = _clean_header_text(surface)
+_distance_display = _clean_header_text(distance)
+_condition_clean = _clean_header_text(condition)
 _header_parts = [f"{race_number}. Koşu {race_time}" if race_time != "-" else f"{race_number}. Koşu"]
-if condition_clean and condition_clean != "-":
-    _header_parts.append(condition_clean)
+if _condition_clean and _condition_clean != "-":
+    _header_parts.append(_condition_clean)
 if _distance_display and _distance_display != "-":
     _header_parts.append(f"{_distance_display} {_surface_display}".strip())
 if _eid and _eid != "-":
