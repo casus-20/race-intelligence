@@ -3167,9 +3167,17 @@ else:
         key="horse_table_aggrid",
     )
 
+    # AgGrid sürümüne göre selected_rows liste veya DataFrame gelebilir.
+    # Her iki durumda da ilk seçili satırı güvenli biçimde sözlüğe çevir.
     selected_rows = []
     try:
-        selected_rows = grid_response.get("selected_rows") or []
+        raw_selected_rows = grid_response.get("selected_rows")
+        if isinstance(raw_selected_rows, pd.DataFrame):
+            selected_rows = raw_selected_rows.to_dict(orient="records")
+        elif isinstance(raw_selected_rows, list):
+            selected_rows = raw_selected_rows
+        elif raw_selected_rows is not None:
+            selected_rows = list(raw_selected_rows)
     except Exception:
         selected_rows = []
 
@@ -3238,15 +3246,23 @@ else:
                     st.error(str(exc))
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
 
-    selected_no = st.session_state.get("selected_horse_no")
-    if selected_no is not None:
-        selected_horse = next(
-            (
-                h for h in horses
-                if str(get_horse_number(h, 0)) == str(selected_no)
-            ),
-            None,
-        )
+    # Seçim rerun sırasında AgGrid'den boş dönse bile session_state'deki
+    # seçili atı kullanmaya devam et. Böylece alt koşu/galop tabloları kaybolmaz.
+    selected_index_state = st.session_state.get("selected_horse_index")
+    selected_horse = None
+    if isinstance(selected_index_state, int) and 0 <= selected_index_state < len(horses):
+        selected_horse = horses[selected_index_state]
+
+    if selected_horse is None:
+        selected_no = st.session_state.get("selected_horse_no")
+        if selected_no is not None:
+            selected_horse = next(
+                (
+                    h for h in horses
+                    if str(get_horse_number(h, 0)) == str(selected_no)
+                ),
+                None,
+            )
 
         if selected_horse:
             st.markdown("---")
