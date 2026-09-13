@@ -3264,91 +3264,90 @@ else:
                 None,
             )
 
-        if selected_horse:
-            st.markdown("---")
-            # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
-            # at için aç/kapatılabilir bilgi alanında göster.
-            eid_detail = best_race_detail(selected_horse)
-            if eid_detail:
-                with st.expander(f"🔴 EİD BİLGİSİ — {eid_detail.get('Derece', '-')}  •  aç / kapat", expanded=False):
-                    eid_cols = st.columns(4)
-                    eid_cols[0].metric("Derece", eid_detail.get("Derece", "-"))
-                    eid_cols[1].write(f"**Hipodrom:** {eid_detail.get('Hipodrom', '-')}\n\n**Tarih:** {eid_detail.get('Tarih', '-')}")
-                    eid_cols[2].write(f"**Mesafe:** {eid_detail.get('Mesafe', '-')}\n\n**Bilgi:** {eid_detail.get('Bilgi', '-')}")
-                    eid_cols[3].caption("TJK programındaki En İyi Derece kaydı")
-            st.subheader(
-                f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
+    if selected_horse:
+        st.markdown("---")
+        # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
+        # at için aç/kapatılabilir bilgi alanında göster.
+        eid_detail = best_race_detail(selected_horse)
+        if eid_detail:
+            with st.expander(f"🔴 EİD BİLGİSİ — {eid_detail.get('Derece', '-')}  •  aç / kapat", expanded=False):
+                eid_cols = st.columns(4)
+                eid_cols[0].metric("Derece", eid_detail.get("Derece", "-"))
+                eid_cols[1].write(f"**Hipodrom:** {eid_detail.get('Hipodrom', '-')}\n\n**Tarih:** {eid_detail.get('Tarih', '-')}")
+                eid_cols[2].write(f"**Mesafe:** {eid_detail.get('Mesafe', '-')}\n\n**Bilgi:** {eid_detail.get('Bilgi', '-')}")
+                eid_cols[3].caption("TJK programındaki En İyi Derece kaydı")
+        st.subheader(
+            f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
+        )
+
+        st.markdown("<div class='selected-horse-card'>"
+                    f"<div class='selected-horse-name'>{get_horse_name(selected_horse)}</div>"
+                    f"<div class='selected-horse-origin'>{_split_origin(get_horse_origin(selected_horse))[0]}"
+                    f"<br>{_split_origin(get_horse_origin(selected_horse))[1]}</div>"
+                    "</div>", unsafe_allow_html=True)
+
+        tab_all, tab_first, tab_stats, tab_work = st.tabs([
+            "Tüm Yarışları", "1.'likleri", "İstatistikler", "Galoplar"
+        ])
+
+        history = selected_horse.get("_history", [])
+        workouts = selected_horse.get("_workouts", [])
+
+        if selected_horse.get("_enrichment_error"):
+            st.warning(
+                "TJK gerçek veri sorgusu: "
+                + str(selected_horse.get("_enrichment_error"))
+            )
+        else:
+            st.caption(
+                f"Gerçek TJK veri: {len(history)} koşu kaydı • "
+                f"{len(workouts)} galop kaydı"
             )
 
-            st.markdown("<div class='selected-horse-card'>"
-                        f"<div class='selected-horse-name'>{get_horse_name(selected_horse)}</div>"
-                        f"<div class='selected-horse-origin'>{_split_origin(get_horse_origin(selected_horse))[0]}"
-                        f"<br>{_split_origin(get_horse_origin(selected_horse))[1]}</div>"
-                        "</div>", unsafe_allow_html=True)
+        with tab_all:
+            _history_tables(history)
 
-            tab_all, tab_first, tab_stats, tab_work = st.tabs([
-                "Tüm Yarışları", "1.'likleri", "İstatistikler", "Galoplar"
+        with tab_first:
+            firsts = []
+            for h in history:
+                if not isinstance(h, dict):
+                    continue
+                place = str(_first_value(h, ["place", "sira", "S"])).strip()
+                if re.match(r"^1(?:\.0)?$", place):
+                    firsts.append(h)
+            _history_tables(firsts) if firsts else st.info("TJK geçmişinde 1.'lik kaydı bulunamadı.")
+
+        with tab_stats:
+            total = len([h for h in history if isinstance(h, dict)])
+            first = second = third = 0
+            total_prize = 0.0
+            year_prize = 0.0
+            for h in history:
+                if not isinstance(h, dict):
+                    continue
+                place = str(_first_value(h, ["place", "sira", "S"])).strip().replace(".", "")
+                if place == "1": first += 1
+                elif place == "2": second += 1
+                elif place == "3": third += 1
+                pv = _money_number(_first_value(h, ["prize", "ikramiye"]))
+                total_prize += pv
+                if _history_year(h) == selected_date.year:
+                    year_prize += pv
+            stat_rows = pd.DataFrame([
+                {"Gösterge":"TOPLAM KOŞU", "Değer":total},
+                {"Gösterge":"1.'lik", "Değer":first},
+                {"Gösterge":"2.'lik", "Değer":second},
+                {"Gösterge":"3.'lük", "Değer":third},
+                {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
+                {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
             ])
+            st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
+                "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
+                "Değer": st.column_config.TextColumn("Değer", width=180),
+            })
 
-            history = selected_horse.get("_history", [])
-            workouts = selected_horse.get("_workouts", [])
-
-            if selected_horse.get("_enrichment_error"):
-                st.warning(
-                    "TJK gerçek veri sorgusu: "
-                    + str(selected_horse.get("_enrichment_error"))
-                )
-            else:
-                st.caption(
-                    f"Gerçek TJK veri: {len(history)} koşu kaydı • "
-                    f"{len(workouts)} galop kaydı"
-                )
-
-            with tab_all:
-                _history_tables(history)
-
-            with tab_first:
-                firsts = []
-                for h in history:
-                    if not isinstance(h, dict):
-                        continue
-                    place = str(_first_value(h, ["place", "sira", "S"])).strip()
-                    if re.match(r"^1(?:\.0)?$", place):
-                        firsts.append(h)
-                _history_tables(firsts) if firsts else st.info("TJK geçmişinde 1.'lik kaydı bulunamadı.")
-
-            with tab_stats:
-                total = len([h for h in history if isinstance(h, dict)])
-                first = second = third = 0
-                total_prize = 0.0
-                year_prize = 0.0
-                for h in history:
-                    if not isinstance(h, dict):
-                        continue
-                    place = str(_first_value(h, ["place", "sira", "S"])).strip().replace(".", "")
-                    if place == "1": first += 1
-                    elif place == "2": second += 1
-                    elif place == "3": third += 1
-                    pv = _money_number(_first_value(h, ["prize", "ikramiye"]))
-                    total_prize += pv
-                    if _history_year(h) == selected_date.year:
-                        year_prize += pv
-                stat_rows = pd.DataFrame([
-                    {"Gösterge":"TOPLAM KOŞU", "Değer":total},
-                    {"Gösterge":"1.'lik", "Değer":first},
-                    {"Gösterge":"2.'lik", "Değer":second},
-                    {"Gösterge":"3.'lük", "Değer":third},
-                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
-                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
-                ])
-                st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
-                    "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
-                    "Değer": st.column_config.TextColumn("Değer", width=180),
-                })
-
-            with tab_work:
-                _workout_tables(workouts)
-
+        with tab_work:
+            _workout_tables(workouts)
 
     # Analiz özeti
     if ranking:
