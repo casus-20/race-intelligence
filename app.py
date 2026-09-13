@@ -649,7 +649,7 @@ def load_active_cities(selected_date: date) -> List[str]:
 
     Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
     yeni Worker dosyası veya yeni API gerekmez.
-    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
+    Worker kaynaklarını zorlamamak için hipodromlar sırayla kontrol edilir.
     """
     active = []
 
@@ -2331,12 +2331,11 @@ with st.sidebar:
     with st.spinner("TJK'daki aktif hipodromlar kontrol ediliyor..."):
         active_cities = load_active_cities(selected_date)
 
-_active_city_lookup_failed = not bool(active_cities)
-if _active_city_lookup_failed:
-    st.sidebar.warning(
-        "Aktif hipodrom listesi TJK Worker'dan alınamadı. Hipodrom seçimi açık bırakıldı."
+if not active_cities:
+    st.sidebar.error(
+        f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı bulunan hipodrom bulunamadı."
     )
-    active_cities = ALL_CITIES.copy()
+    st.stop()
 
 if st.session_state.loaded_city in active_cities:
     default_city_index = active_cities.index(
