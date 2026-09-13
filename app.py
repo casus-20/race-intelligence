@@ -335,29 +335,33 @@ st.markdown(
         min-height: 72px;
         border: 1px solid rgba(90,90,90,.30);
         border-radius: 0;
-        background: #fffdf2;
-        color: #0b6b17;
-        padding: 6px 10px;
-        box-sizing: border-box;
-        display: block;
-        box-shadow: none;
-        text-transform: none;
+        background:#fffdf2;
+        color:#0b6b17;
+        padding: 7px 10px;
+        box-sizing:border-box;
+        display:block;
+        overflow:hidden;
     }
     .race-title-panel.grass { background:#fffdf2; color:#0b6b17; }
     .race-title-panel.dirt { background:#fff4dc; color:#8a4b08; }
     .race-title-panel.synthetic { background:#eef6ff; color:#07579f; }
-    .race-title-panel .race-head-line { display:flex; align-items:center; gap:12px; min-height:28px; }
-    .race-title-panel .race-prize-line { font-size:13px; line-height:1.35; font-weight:800; white-space:normal; }
-    .race-title-panel .race-title-main { font-size:18px; line-height:1.0; font-weight:950; white-space:nowrap; }
-    .race-title-panel .race-condition {
-        font-size: 14px;
-        line-height: 1.15;
-        font-weight: 900;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        flex: 1 1 auto;
-        min-width: 0;
+    .race-title-panel .race-main-line {
+        display:block;
+        font-size:16px;
+        line-height:1.25;
+        font-weight:900;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+    .race-title-panel .race-prize-line {
+        display:block;
+        font-size:13px;
+        line-height:1.35;
+        font-weight:800;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
     }
     .race-title-panel .analysis-inline {
         display: inline-flex;
@@ -1380,8 +1384,9 @@ def total_earnings(horse: Dict[str, Any]) -> float:
     official = _horse_summary_earnings(horse, None)
     if official:
         return round(official, 2)
-    # Fallback: yalnızca geçmişteki gerçek ikramiyeleri göster; %20 uydurma.
-    return round(_race_prize_total(horse) + _horse_owner_earnings(horse), 2)
+    # Özet yoksa yalnızca elde gerçekten bulunan koşu ikramiyelerini kullan.
+    # At sahibi primi veya %20 varsayımı eklenmez; TJK resmi değeri uydurulmaz.
+    return round(_race_prize_total(horse), 2)
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
@@ -2941,20 +2946,27 @@ _breeder_line = _race_money_line(
     "Yetiştirici Primi",
 )
 
-# TJK başlık modeli: 1. Koşu + saat + şartlar; alt satırlarda resmi ikramiye kalemleri.
-_header_main = f"{race_number}. Koşu  {race_time if race_time != '-' else ''}".strip()
+# TJK günlük program başlığı: başlık tek satır, resmi ödüller alt satırlarda.
+_eid = display_value(_race_recursive_find(selected_race, ("eid", "e.i.d", "EİD", "bestTime", "best_time", "enIyiDerece", "en_iyi_derece")), "")
+_surface_display = display_value(surface, "")
+_distance_display = display_value(distance, "")
+_condition_clean = re.sub(r"\s+", " ", display_value(condition, "")).strip()
+_header_parts = [f"{race_number}. Koşu {race_time}" if race_time != "-" else f"{race_number}. Koşu"]
+if condition_clean and condition_clean != "-":
+    _header_parts.append(condition_clean)
+if _distance_display and _distance_display != "-":
+    _header_parts.append(f"{_distance_display} {_surface_display}".strip())
+if _eid and _eid != "-":
+    _header_parts.append(f"E.İ.D. : {_eid}")
+_header_main = ", ".join(_header_parts[:2])
+if len(_header_parts) > 2:
+    _header_main += ", " + ", ".join(_header_parts[2:])
 _header_lines = "".join(f"<div class='race-prize-line'>{line}</div>" for line in (_prize_line, _owner_line, _breeder_line) if line)
 
 st.markdown(
-    f"""<div class='race-info-compact'>
-        <div class='race-title-panel {_race_color_class}'>
-            <div class='race-head-line'>
-                <span class='race-title-main'>{_header_main}</span>
-                <span class='race-condition'>{condition}</span>
-            </div>
-            {_header_lines}
-        </div>
-    </div>""",
+    f"""<div class='race-info-compact'><div class='race-title-panel {_race_color_class}'>
+    <div class='race-main-line'>{_header_main}</div>{_header_lines}
+    </div></div>""",
     unsafe_allow_html=True,
 )
 
@@ -3598,8 +3610,8 @@ else:
                     {"Gösterge":"1.'lik", "Değer":first},
                     {"Gösterge":"2.'lik", "Değer":second},
                     {"Gösterge":"3.'lük", "Değer":third},
-                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
-                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
+                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_earnings(selected_horse))},
+                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_earnings(selected_horse, selected_date.year))},
                 ])
                 st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
                     "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
