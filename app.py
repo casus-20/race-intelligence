@@ -639,34 +639,62 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
-@st.cache_data(ttl=900, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
     """
-    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
+    Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
 
-    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
-    yeni Worker dosyası veya yeni API gerekmez.
-    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
+    ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
+    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
+    "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
+
+    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
+    gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
+    Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
     """
-    active = []
+    cache_key = selected_date.isoformat()
+    cached = st.session_state.get("_active_cities_cache", {})
+    if isinstance(cached, dict):
+        saved = cached.get(cache_key)
+        if isinstance(saved, list) and saved:
+            return [c for c in ALL_CITIES if c in saved]
 
     def check_city(city: str):
-        try:
-            data = get_program(selected_date, city)
-            races = data.get("races", []) if isinstance(data, dict) else []
-            return city if isinstance(races, list) and len(races) > 0 else None
-        except Exception:
-            return None
+        for attempt in range(3):
+            try:
+                data = get_program(selected_date, city)
+                if not isinstance(data, dict):
+                    continue
+                races = data.get("races", [])
+                if isinstance(races, list) and len(races) > 0:
+                    return city
+            except Exception:
+                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
+                pass
+        return None
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    active = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
-            city = future.result()
-            if city:
-                active.append(city)
+            try:
+                city = future.result()
+                if city:
+                    active.append(city)
+            except Exception:
+                pass
 
-    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
-    return [city for city in ALL_CITIES if city in active]
+    # Worker şehir sırasını koru; tamamlanma sırasını kullanma.
+    active = [city for city in ALL_CITIES if city in active]
+
+    # SADECE dolu sonuç cache'e alınır. Boş sonuç asla cache'lenmez.
+    if active:
+        cached = st.session_state.get("_active_cities_cache", {})
+        if not isinstance(cached, dict):
+            cached = {}
+        cached[cache_key] = active
+        st.session_state["_active_cities_cache"] = cached
+
+    return active
 
 
 # ============================================================
