@@ -3174,8 +3174,18 @@ else:
     grid_options["onSelectionChanged"] = JsCode("""
         function(params) {
             const rows = params.api.getSelectedRows();
-            if (rows && rows.length && rows[0]._horse_index !== undefined) {
-                window.__ri_selected_horse_index = rows[0]._horse_index;
+            if (rows && rows.length) {
+                const row = rows[0];
+                if (row && row._horse_index !== undefined) {
+                    window.__ri_selected_horse_index = row._horse_index;
+                } else {
+                    const nodes = params.api.getSelectedNodes();
+                    if (nodes && nodes.length && nodes[0].data && nodes[0].data._horse_index !== undefined) {
+                        window.__ri_selected_horse_index = nodes[0].data._horse_index;
+                    }
+                }
+            } else {
+                window.__ri_selected_horse_index = null;
             }
         }
     """)
@@ -3198,21 +3208,41 @@ else:
         width="100%",
         fit_columns_on_grid_load=False,
         allow_unsafe_jscode=True,
-        update_mode="SELECTION_CHANGED",
+        update_on=["selectionChanged"],
         data_return_mode="AS_INPUT",
         theme="streamlit",
         key="horse_table_aggrid",
     )
 
+    # streamlit-aggrid 1.x dönen selected_rows tipini sürümler arasında
+    # değiştirebildiği için hem dict/list hem DataFrame hem de GridReturn
+    # nesnesini güvenli biçimde ele alıyoruz. Ayrıca bazı sürümlerde
+    # _horse_index dönüşe dahil edilmezse nodeRowIndex geri dönüş yoludur.
     selected_rows = []
     try:
         selected_rows = grid_response.get("selected_rows") or []
     except Exception:
-        selected_rows = []
+        try:
+            selected_rows = grid_response.selected_rows or []
+        except Exception:
+            selected_rows = []
+
+    if hasattr(selected_rows, "to_dict"):
+        try:
+            selected_rows = selected_rows.to_dict("records")
+        except Exception:
+            selected_rows = []
 
     if selected_rows:
+        row0 = selected_rows[0] if isinstance(selected_rows, (list, tuple)) else None
+        if row0 is None and isinstance(selected_rows, dict):
+            row0 = selected_rows
         try:
-            selected_horse_index = int(selected_rows[0].get("_horse_index"))
+            raw_index = row0.get("_horse_index") if isinstance(row0, dict) else None
+            if raw_index is None and isinstance(row0, dict):
+                node_info = row0.get("_selectedRowNodeInfo") or row0.get("_nodeInfo") or {}
+                raw_index = node_info.get("nodeRowIndex")
+            selected_horse_index = int(raw_index) if raw_index is not None else None
         except Exception:
             selected_horse_index = None
         if selected_horse_index is not None and 0 <= selected_horse_index < len(horses):
