@@ -938,7 +938,7 @@ def get_horse_weight(
         or horse.get("Sıklet")
         or horse.get("weight")
     )
-    return f"{base}\n{extra}" if extra else base
+    return f"{base}\n{extra.replace('Fazla Kilo: ', '')}" if extra else base
 
 
 def get_horse_jockey(
@@ -956,7 +956,7 @@ def get_horse_jockey(
     # olarak gelir. İkisini de görselde ikinci satıra taşırız.
     m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
     if m:
-        label = "AP Apranti" if m.group(2).strip().upper() == "AP" else m.group(2).strip()
+        label = "Ap"
         return f"{m.group(1).strip()}\n{label}"
     return text
 
