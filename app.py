@@ -1,6 +1,10 @@
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode
 import pandas as pd
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 import re
 from datetime import date, datetime
 from typing import Any, Dict, List
@@ -927,7 +931,7 @@ def _weight_parts(value: Any) -> tuple[str, str]:
     # Fazla kilo bilgisini aynı hücrede ikinci satıra taşır.
     fm = re.search(r"([+\-]\s*\d+(?:[.,]\d+)?)", rest)
     if fm:
-        return base, fm.group(1).replace(',', '.').replace(" ", "")
+        return base, f"Fazla Kilo: {fm.group(1).replace(',', '.')}"
     return base, rest
 
 
@@ -957,7 +961,7 @@ def get_horse_jockey(
     # olarak gelir. İkisini de görselde ikinci satıra taşırız.
     m = re.match(r"^(.*?)(?:\s+)(AP(?:\s+Apranti)?|Apranti)$", text, flags=re.I)
     if m:
-        label = "Ap"
+        label = "AP Apranti" if m.group(2).strip().upper() == "AP" else m.group(2).strip()
         return f"{m.group(1).strip()}\n{label}"
     return text
 
@@ -1123,7 +1127,7 @@ def enrich_race_horses(
         # Tarihi hedef yarış yılına göre hesaplamak için selected_date daha sonra eklenir.
         return item
 
-    with ThreadPoolExecutor(max_workers=min(3, max(1, len(enriched)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(enriched)))) as executor:
         futures = [executor.submit(one, h) for h in enriched]
         return [f.result() for f in futures]
 
@@ -2305,9 +2309,10 @@ st.sidebar.title("🏇 Yarış Programı")
 # yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
 # farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
 # otomatik olarak bugüne geçilir.
+# Türkiye yerel tarihi: sunucu UTC olsa bile gün değişimini Europe/Istanbul
+# üzerinden belirle. Böylece 00:00 sonrası tarih otomatik 13/09 gibi yeni güne geçer.
 try:
-    from zoneinfo import ZoneInfo
-    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date() if ZoneInfo else date.today()
 except Exception:
     _today = date.today()
 if st.session_state.get("_date_auto_sync_day") != _today:
@@ -2841,12 +2846,7 @@ else:
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
             "Kilo": get_horse_weight(horse),
             "Jokey": get_horse_jockey(horse),
-            "Sahip / Antrenör": "\n".join(
-                [
-                    owner if owner else "",
-                    trainer if trainer else "",
-                ]
-            ).strip() or "-",
+            "Sahip / Antrenör": "\n".join([x for x in (owner, trainer) if x]) or "-",
             "St": get_horse_start(horse),
             "HP": get_horse_hp(horse),
             "Son 6 Y.": form_digits,
@@ -2882,68 +2882,34 @@ else:
         "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF",
         "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "TOPLAM KAZANÇ",
     ]
-    df = pd.DataFrame(table_rows)
     df_display = df[display_columns].copy()
     df_display["No"] = pd.to_numeric(df_display["No"], errors="coerce").fillna(0).astype(int)
 
-    # ------------------------------------------------------------------
-    # V1-V6 ANA TABLO — AG GRID
-    # ------------------------------------------------------------------
-    # AG Grid yalnızca görüntüleme/etkileşim katmanıdır. Analiz hesapları,
-    # TJK veri modeli ve sıralama mantığı Python tarafında aynen korunur.
-    # _horse_index ve _last_surface seçim/render işlemleri için gizli alandır.
+    # V1-V6 ANA TABLO — AG GRID. Sidebar/tarih/hipodrom/program akışına dokunulmaz.
     df_grid = df_display.copy()
-    df_grid["_horse_index"] = df["_horse_index"].values
+    df_grid["_horse_index"] = df["_horse_index"].astype(int).values
     df_grid["_last_surface"] = [
-        str((((horses[int(hidx)].get("_last_race") or {}).get("surface")) or ((horses[int(hidx)].get("_last_race") or {}).get("pist")) or ""))
-        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
-        for hidx in df["_horse_index"].tolist()
+        str(((horses[int(i)].get("_last_race") or {}).get("surface"))
+            or ((horses[int(i)].get("_last_race") or {}).get("pist")) or "")
+        if 0 <= int(i) < len(horses) and isinstance(horses[int(i)], dict) else ""
+        for i in df["_horse_index"].tolist()
     ]
 
-    def _js_safe(v):
-        return str(v if v is not None else "").replace("\\", "\\\\").replace("'", "\\'")
-
-    cell_style_js = JsCode("""
-    function(params) {
-        const idx = params.data && params.data._horse_index;
-        const selected = window.__ri_selected_horse_index;
-        const base = (params.node.rowIndex % 2 === 0) ? '#ffffff' : '#f1f3f5';
-        return {
-            backgroundColor: (selected !== undefined && String(idx) === String(selected)) ? '#dceeff' : base,
-            color: (selected !== undefined && String(idx) === String(selected)) ? '#062b55' : '#17212b',
-            fontWeight: '700',
-            fontSize: '12px',
-            whiteSpace: 'pre-line',
-            lineHeight: '1.15'
-        };
-    }
-    """)
-
-    def _esc_js_text(expr):
-        # JavaScript helper body used inside renderers; all external cell data
-        # is escaped before being inserted into HTML.
-        return f"String({expr} ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;')"
-
-    # AG Grid 29+ / streamlit-aggrid: direct HTML string returns may be rendered
-    # as literal text. Use class-based cell renderers that create real DOM nodes.
     origin_renderer = JsCode(r"""
     class OriginRenderer {
         init(params) {
             const root = document.createElement('div');
             root.style.lineHeight = '1.18';
-            root.style.whiteSpace = 'nowrap';
             const parts = String(params.value ?? '').split(/\r?\n/);
             const sire = document.createElement('span');
             sire.textContent = parts[0] || '';
-            sire.style.color = '#1565c0';
-            sire.style.fontWeight = '800';
+            sire.style.color = '#1565c0'; sire.style.fontWeight = '800';
             root.appendChild(sire);
-            if (parts.length > 1) {
+            if (parts.length > 1 && parts[1]) {
                 root.appendChild(document.createElement('br'));
                 const dam = document.createElement('span');
-                dam.textContent = parts[1] || '';
-                dam.style.color = '#111111';
-                dam.style.fontWeight = '700';
+                dam.textContent = parts[1];
+                dam.style.color = '#111111'; dam.style.fontWeight = '700';
                 root.appendChild(dam);
             }
             this.eGui = root;
@@ -2952,35 +2918,25 @@ else:
     }
     """)
 
-    # At İsmi hücresine doğrudan tıklanabilir alan veriyoruz.
-    # Tıklama satırı seçer; mevcut Python tarafındaki SELECTION_CHANGED akışı
-    # da aynı anda çalışarak gerçek koşu + galop ayrıntılarını açar.
     horse_name_renderer = JsCode(r"""
     class HorseNameRenderer {
         init(params) {
-            const root = document.createElement('span');
+            const root = document.createElement('div');
+            root.style.lineHeight = '1.18'; root.style.cursor = 'pointer';
+            root.title = 'Gerçek koşular ve galopları aç';
             const parts = String(params.value ?? '').split(/\r?\n/);
             const name = document.createElement('span');
-            name.textContent = parts[0] || '';
-            name.style.cursor = 'pointer';
-            name.style.fontWeight = '800';
-            name.title = 'Gerçek koşular ve galopları aç';
-            name.addEventListener('click', function(e) {
-                e.stopPropagation();
-                if (params.node) {
-                    params.node.setSelected(true);
-                    if (params.api) params.api.ensureNodeVisible(params.node);
-                }
-            });
+            name.textContent = parts[0] || ''; name.style.fontWeight = '900';
             root.appendChild(name);
             if (parts.length > 1 && parts[1]) {
-                root.appendChild(document.createElement('br'));
                 const eq = document.createElement('span');
-                eq.textContent = parts.slice(1).join('\n');
-                eq.style.fontWeight = '600';
-                eq.style.fontSize = '11px';
+                eq.textContent = parts[1]; eq.style.display = 'block'; eq.style.fontSize = '11px';
                 root.appendChild(eq);
             }
+            root.addEventListener('click', function(e) {
+                e.preventDefault(); e.stopPropagation();
+                if (params.node) params.node.setSelected(true);
+            });
             this.eGui = root;
         }
         getGui() { return this.eGui; }
@@ -2990,17 +2946,12 @@ else:
     jockey_renderer = JsCode(r"""
     class JockeyRenderer {
         init(params) {
-            const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
+            const root = document.createElement('div'); root.style.lineHeight = '1.18';
             const parts = String(params.value ?? '').split(/\r?\n/);
             parts.forEach((part, i) => {
-                if (i > 0) root.appendChild(document.createElement('br'));
-                const span = document.createElement('span');
-                span.textContent = part;
-                if (/^Ap$/i.test(part.trim())) {
-                    span.style.color = '#d40000';
-                    span.style.fontWeight = '900';
-                }
+                if (i) root.appendChild(document.createElement('br'));
+                const span = document.createElement('span'); span.textContent = part;
+                if (/^Ap$/i.test(part.trim())) { span.style.color = '#d40000'; span.style.fontWeight = '900'; }
                 root.appendChild(span);
             });
             this.eGui = root;
@@ -3012,21 +2963,14 @@ else:
     owner_trainer_renderer = JsCode(r"""
     class OwnerTrainerRenderer {
         init(params) {
-            const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
+            const root = document.createElement('div'); root.style.lineHeight = '1.18';
             const parts = String(params.value ?? '').split(/\r?\n/);
-            const owner = document.createElement('span');
-            owner.textContent = parts[0] || '';
-            owner.style.color = '#1565c0';
-            owner.style.fontWeight = '800';
-            root.appendChild(owner);
-            if (parts.length > 1) {
+            const owner = document.createElement('span'); owner.textContent = parts[0] || '';
+            owner.style.color = '#1565c0'; owner.style.fontWeight = '800'; root.appendChild(owner);
+            if (parts.length > 1 && parts[1]) {
                 root.appendChild(document.createElement('br'));
-                const trainer = document.createElement('span');
-                trainer.textContent = parts[1] || '';
-                trainer.style.color = '#d40000';
-                trainer.style.fontWeight = '800';
-                root.appendChild(trainer);
+                const trainer = document.createElement('span'); trainer.textContent = parts[1];
+                trainer.style.color = '#d40000'; trainer.style.fontWeight = '800'; root.appendChild(trainer);
             }
             this.eGui = root;
         }
@@ -3038,19 +2982,13 @@ else:
     class WeightRenderer {
         init(params) {
             const root = document.createElement('span');
-            const v = String(params.value ?? '');
-            const m = v.match(/^(.*?)(\s*\+\s*\d+(?:[.,]\d+)?)\s*$/);
+            const value = String(params.value ?? '');
+            const m = value.match(/^(.*?)(\s*\+\s*\d+(?:[.,]\d+)?)\s*$/);
             if (m) {
-                const base = document.createTextNode(m[1]);
-                root.appendChild(base);
-                const extra = document.createElement('span');
-                extra.textContent = m[2];
-                extra.style.color = '#d40000';
-                extra.style.fontWeight = '900';
-                root.appendChild(extra);
-            } else {
-                root.textContent = v;
-            }
+                root.appendChild(document.createTextNode(m[1]));
+                const extra = document.createElement('span'); extra.textContent = m[2];
+                extra.style.color = '#d40000'; extra.style.fontWeight = '900'; root.appendChild(extra);
+            } else root.textContent = value;
             this.eGui = root;
         }
         getGui() { return this.eGui; }
@@ -3060,11 +2998,8 @@ else:
     eid_renderer = JsCode(r"""
     class EidRenderer {
         init(params) {
-            const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
-            span.style.color = '#d40000';
-            span.style.fontWeight = '900';
-            this.eGui = span;
+            const el = document.createElement('span'); el.textContent = String(params.value ?? '');
+            el.style.color = '#d40000'; el.style.fontWeight = '900'; this.eGui = el;
         }
         getGui() { return this.eGui; }
     }
@@ -3073,237 +3008,110 @@ else:
     last_race_renderer = JsCode(r"""
     class LastRaceRenderer {
         init(params) {
-            const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
+            const el = document.createElement('span'); el.textContent = String(params.value ?? '');
             const surf = String((params.data && params.data._last_surface) || '').toLowerCase();
-            const isGrass = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
-            span.style.color = isGrass ? '#138a36' : '#111111';
-            span.style.fontWeight = '900';
-            this.eGui = span;
+            const grass = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
+            el.style.color = grass ? '#16833b' : '#111111'; el.style.fontWeight = '800'; this.eGui = el;
         }
         getGui() { return this.eGui; }
     }
     """)
 
-    selected_horse_index = st.session_state.get("selected_horse_index")
-
-    grid_options = {
-        "rowHeight": 44,
-        "headerHeight": 38,
-        "domLayout": "normal",
-        "suppressRowClickSelection": False,
-        "rowSelection": "single",
-        "animateRows": False,
-        "enableCellTextSelection": True,
-        "ensureDomOrder": True,
-        "defaultColDef": {
-            "sortable": True,
-            "filter": True,
-            "resizable": True,
-            "wrapText": True,
-            "autoHeight": False,
-        },
-        "onGridReady": JsCode("""
-            function(params) {
-                window.__ri_selected_horse_index = %s;
-            }
-        """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
-        "onCellClicked": JsCode("""
-            function(params) {
-                if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
-                    params.node.setSelected(true);
-                    if (params.data && params.data._horse_index !== undefined) {
-                        window.__ri_selected_horse_index = params.data._horse_index;
-                    }
-                }
-            }
-        """),
-        "onRowClicked": JsCode("""
-            function(params) {
-                if (params.data && params.data._horse_index !== undefined) {
-                    window.__ri_selected_horse_index = params.data._horse_index;
-                }
-            }
-        """),
-    }
-
     gb = GridOptionsBuilder.from_dataframe(df_grid)
-    gb.configure_default_column(
-        sortable=True, filter=True, resizable=True,
-        wrapText=True, autoHeight=False,
-    )
-    gb.configure_selection(selection_mode="single", use_checkbox=False)
-    gb.configure_grid_options(**grid_options)
-
-    # Sabit sütunlar.
-    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"])
-    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120, cellRenderer=horse_name_renderer)
-    gb.configure_column("Yaş", width=55, minWidth=48)
-    gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
-    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer)
-    gb.configure_column("Jokey", width=105, minWidth=90, cellRenderer=jockey_renderer)
-    gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
-    gb.configure_column("St", width=52, minWidth=45)
-    gb.configure_column("HP", width=58, minWidth=50)
-    gb.configure_column("Son 6 Y.", width=85, minWidth=70)
-    gb.configure_column("KGS", width=58, minWidth=50)
-    gb.configure_column("s20", width=58, minWidth=50)
-    gb.configure_column("EİD", width=75, minWidth=65, cellRenderer=eid_renderer)
-    gb.configure_column("Gny", width=60, minWidth=50)
-    gb.configure_column("AGF", width=70, minWidth=60)
-    gb.configure_column("BİZİM SKOR", width=105, minWidth=90)
-    gb.configure_column("ŞART UYUMU", width=105, minWidth=90)
-    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95)
-    gb.configure_column("SON GALOP", width=95, minWidth=80)
-    gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
-    gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100)
-    gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105)
-    gb.configure_column("_horse_index", hide=True)
-    gb.configure_column("_last_surface", hide=True)
+    gb.configure_default_column(sortable=True, filter=True, resizable=True, wrapText=True, autoHeight=False, minWidth=55)
+    gb.configure_selection(selection_mode='single', use_checkbox=False, suppressRowClickSelection=False, suppressRowDeselection=False)
+    gb.configure_column('No', header_name='No', pinned='left', width=52, minWidth=45)
+    gb.configure_column('At İsmi', header_name='At İsmi', pinned='left', width=155, minWidth=125, cellRenderer=horse_name_renderer)
+    gb.configure_column('Yaş', width=65, minWidth=55)
+    gb.configure_column('Orijin (Baba-Anne)', width=175, minWidth=150, cellRenderer=origin_renderer)
+    gb.configure_column('Kilo', width=75, minWidth=65, cellRenderer=weight_renderer)
+    gb.configure_column('Jokey', width=110, minWidth=90, cellRenderer=jockey_renderer)
+    gb.configure_column('Sahip / Antrenör', width=160, minWidth=135, cellRenderer=owner_trainer_renderer)
+    gb.configure_column('St', width=52, minWidth=45); gb.configure_column('HP', width=58, minWidth=50)
+    gb.configure_column('Son 6 Y.', width=85, minWidth=70); gb.configure_column('KGS', width=58, minWidth=50)
+    gb.configure_column('s20', width=58, minWidth=50)
+    gb.configure_column('EİD', width=75, minWidth=65, cellRenderer=eid_renderer)
+    gb.configure_column('Gny', width=65, minWidth=55); gb.configure_column('AGF', width=75, minWidth=60)
+    gb.configure_column('BİZİM SKOR', width=105, minWidth=90); gb.configure_column('ŞART UYUMU', width=105, minWidth=90)
+    gb.configure_column('GÜNCEL SINIF', width=110, minWidth=95); gb.configure_column('SON GALOP', width=100, minWidth=85)
+    gb.configure_column('SON KOŞU', width=100, minWidth=85, cellRenderer=last_race_renderer)
+    gb.configure_column('BU YIL KAZANÇ', width=120, minWidth=100); gb.configure_column('TOPLAM KAZANÇ', width=125, minWidth=105)
+    gb.configure_column('_horse_index', hide=True); gb.configure_column('_last_surface', hide=True)
 
     grid_options = gb.build()
-    grid_options["rowStyle"] = JsCode("""
-        function(params) {
-            const selected = window.__ri_selected_horse_index;
-            if (selected !== undefined && selected !== null && params.data && String(params.data._horse_index) === String(selected)) {
-                return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'700'};
-            }
-            return null;
-        }
-    """)
-    grid_options["onSelectionChanged"] = JsCode("""
-        function(params) {
-            const rows = params.api.getSelectedRows();
-            if (rows && rows.length) {
-                const row = rows[0];
-                if (row && row._horse_index !== undefined) {
-                    window.__ri_selected_horse_index = row._horse_index;
-                } else {
-                    const nodes = params.api.getSelectedNodes();
-                    if (nodes && nodes.length && nodes[0].data && nodes[0].data._horse_index !== undefined) {
-                        window.__ri_selected_horse_index = nodes[0].data._horse_index;
-                    }
-                }
-            } else {
-                window.__ri_selected_horse_index = null;
-            }
-        }
-    """)
+    grid_options['rowSelection'] = 'single'
+    grid_options['suppressRowClickSelection'] = False
+    grid_options['suppressRowDeselection'] = False
+    grid_options['rowHeight'] = 44; grid_options['headerHeight'] = 40; grid_options['animateRows'] = False
+    grid_options['ensureDomOrder'] = True
+    _sel_idx = st.session_state.get('selected_horse_index')
+    if _sel_idx is not None:
+        grid_options['onFirstDataRendered'] = JsCode(f"""
+        function(params) {{
+            params.api.forEachNode(function(node) {{
+                if (node.data && String(node.data._horse_index) === String({_sel_idx})) node.setSelected(true);
+            }});
+        }}
+        """)
 
-    # Seçili atın başlangıçta vurgulanması.
-    if selected_horse_index is not None:
-        grid_options["onFirstDataRendered"] = JsCode("""
-            function(params) {
-                params.api.forEachNode(function(node) {
-                    if (node.data && String(node.data._horse_index) === String(%d)) node.setSelected(true);
-                });
-            }
-        """ % int(selected_horse_index))
-
-    grid_height = min(760, max(150, 42 + len(df_grid) * 44))
+    grid_height = min(760, max(180, 44 + len(df_grid) * 44))
     grid_response = AgGrid(
-        df_grid,
-        gridOptions=grid_options,
-        height=grid_height,
-        width="100%",
-        fit_columns_on_grid_load=False,
-        allow_unsafe_jscode=True,
-        update_on=["selectionChanged"],
-        data_return_mode="AS_INPUT",
-        theme="streamlit",
-        key="horse_table_aggrid",
+        df_grid, gridOptions=grid_options, height=grid_height, width='100%', fit_columns_on_grid_load=False,
+        allow_unsafe_jscode=True, update_mode=GridUpdateMode.SELECTION_CHANGED, data_return_mode='AS_INPUT',
+        theme='streamlit', key='horse_table_aggrid_v6_final',
     )
 
-    # streamlit-aggrid 1.x dönen selected_rows tipini sürümler arasında
-    # değiştirebildiği için hem dict/list hem DataFrame hem de GridReturn
-    # nesnesini güvenli biçimde ele alıyoruz. Ayrıca bazı sürümlerde
-    # _horse_index dönüşe dahil edilmezse nodeRowIndex geri dönüş yoludur.
     selected_rows = []
     try:
-        selected_rows = grid_response.get("selected_rows") or []
+        selected_rows = grid_response.get('selected_rows') or []
     except Exception:
-        try:
-            selected_rows = grid_response.selected_rows or []
-        except Exception:
-            selected_rows = []
-
-    if hasattr(selected_rows, "to_dict"):
-        try:
-            selected_rows = selected_rows.to_dict("records")
-        except Exception:
-            selected_rows = []
+        try: selected_rows = grid_response.selected_rows or []
+        except Exception: selected_rows = []
+    if hasattr(selected_rows, 'to_dict'):
+        try: selected_rows = selected_rows.to_dict('records')
+        except Exception: selected_rows = []
+    if isinstance(selected_rows, dict): selected_rows = [selected_rows]
 
     if selected_rows:
-        row0 = selected_rows[0] if isinstance(selected_rows, (list, tuple)) else None
-        if row0 is None and isinstance(selected_rows, dict):
-            row0 = selected_rows
-        try:
-            raw_index = row0.get("_horse_index") if isinstance(row0, dict) else None
-            if raw_index is None and isinstance(row0, dict):
-                node_info = row0.get("_selectedRowNodeInfo") or row0.get("_nodeInfo") or {}
-                raw_index = node_info.get("nodeRowIndex")
-            selected_horse_index = int(raw_index) if raw_index is not None else None
-        except Exception:
-            selected_horse_index = None
+        row0 = selected_rows[0]
+        raw_index = None
+        if isinstance(row0, dict):
+            raw_index = row0.get('_horse_index')
+            if raw_index is None: raw_index = row0.get('rowIndex')
+            if raw_index is None:
+                info = row0.get('_selectedRowNodeInfo') or row0.get('_nodeInfo') or {}
+                if isinstance(info, dict): raw_index = info.get('nodeRowIndex')
+        try: selected_horse_index = int(raw_index) if raw_index is not None else None
+        except Exception: selected_horse_index = None
+
         if selected_horse_index is not None and 0 <= selected_horse_index < len(horses):
             selected_horse = horses[selected_horse_index]
-            st.session_state.selected_horse_no = get_horse_number(
-                selected_horse,
-                selected_horse_index + 1,
-            )
+            st.session_state.selected_horse_no = get_horse_number(selected_horse, selected_horse_index + 1)
             st.session_state.selected_horse_index = selected_horse_index
-            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
-
-            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
-                # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
-                # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
+            _detail_fetch_key = (
+                str(selected_horse.get('atId') or selected_horse.get('at_id') or selected_horse.get('id') or ''),
+                str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition),
+            )
+            if st.session_state.get('_selected_detail_fetch_key') != _detail_fetch_key:
+                try: load_horse_enrichment.clear()
+                except Exception: pass
+                horse_status = st.status(f'🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...', expanded=True)
+                horse_status.write('📡 Worker /api/tjk/horsedata sorgulanıyor...')
+                horse_status.write(f'🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}')
                 try:
-                    load_horse_enrichment.clear()
-                except Exception:
-                    pass
-
-                horse_status = st.status(
-                    f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
-                    expanded=True,
-                )
-                horse_status.write("📡 Worker /api/tjk/horsedata sorgulanıyor...")
-                horse_status.write(
-                    f"🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}"
-                )
-                try:
-                    enriched_one = enrich_race_horses(
-                        [selected_horse],
-                        target_date=selected_date,
-                        target_city=selected_city,
-                        target_distance=distance,
-                        target_surface=surface,
-                        target_class=condition,
-                    )
+                    enriched_one = enrich_race_horses([selected_horse], target_date=selected_date, target_city=selected_city, target_distance=distance, target_surface=surface, target_class=condition)
                     if enriched_one:
                         horses[selected_horse_index] = enriched_one[0]
-                        selected_race["horses"] = horses
+                        selected_race['horses'] = horses
                         selected_horse = horses[selected_horse_index]
-                    if selected_horse.get("_history") or selected_horse.get("_workouts"):
-                        horse_status.update(
-                            label="✅ Atın gerçek koşu ve galop verileri hazır",
-                            state="complete",
-                            expanded=False,
-                        )
+                    if selected_horse.get('_history') or selected_horse.get('_workouts'):
+                        horse_status.update(label='✅ Atın gerçek koşu ve galop verileri hazır', state='complete', expanded=False)
                     else:
-                        horse_status.update(
-                            label="⚠️ TJK bu at için geçmiş/galop verisi döndürmedi",
-                            state="complete",
-                            expanded=True,
-                        )
-                    st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
+                        horse_status.update(label='⚠️ TJK bu at için geçmiş/galop verisi döndürmedi', state='complete', expanded=True)
+                    st.session_state['_selected_detail_fetch_key'] = _detail_fetch_key
                 except Exception as exc:
-                    horse_status.update(
-                        label="❌ At geçmişi/galop sorgusu başarısız",
-                        state="error",
-                        expanded=True,
-                    )
-                    st.error(str(exc))
-                    st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
+                    horse_status.update(label='❌ At geçmişi/galop sorgusu başarısız', state='error', expanded=True)
+                    st.error(str(exc)); st.session_state['_selected_detail_fetch_key'] = _detail_fetch_key
 
     selected_no = st.session_state.get("selected_horse_no")
     if selected_no is not None:
@@ -3317,16 +3125,6 @@ else:
 
         if selected_horse:
             st.markdown("---")
-            # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
-            # at için aç/kapatılabilir bilgi alanında göster.
-            eid_detail = best_race_detail(selected_horse)
-            if eid_detail:
-                with st.expander(f"🔴 EİD BİLGİSİ — {eid_detail.get('Derece', '-')}  •  aç / kapat", expanded=False):
-                    eid_cols = st.columns(4)
-                    eid_cols[0].metric("Derece", eid_detail.get("Derece", "-"))
-                    eid_cols[1].write(f"**Hipodrom:** {eid_detail.get('Hipodrom', '-')}\n\n**Tarih:** {eid_detail.get('Tarih', '-')}")
-                    eid_cols[2].write(f"**Mesafe:** {eid_detail.get('Mesafe', '-')}\n\n**Bilgi:** {eid_detail.get('Bilgi', '-')}")
-                    eid_cols[3].caption("TJK programındaki En İyi Derece kaydı")
             st.subheader(
                 f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
             )
