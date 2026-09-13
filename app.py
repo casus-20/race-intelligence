@@ -1023,8 +1023,6 @@ def load_horse_enrichment(
     target_distance: str = "", target_surface: str = "", target_class: str = "",
 ) -> Dict[str, Any]:
     """Yalnızca kullanıcı seçtiği at için gerçek koşu + galop verisini alır."""
-    if not at_id:
-        return {"ok": False, "history": [], "workouts": [], "error": "atId yok"}
     history, workouts, errors = [], [], []
     # Ağır /horsedata yerine mevcut iki endpointi paralel çağırıyoruz.
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -1142,6 +1140,12 @@ def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> 
             row.get("prize")
             or row.get("ikramiye")
             or row.get("Ikramiye")
+            or row.get("İkramiye")
+            or row.get("prizeAmount")
+            or row.get("prize_amount")
+            or row.get("earnings")
+            or row.get("kazanc")
+            or row.get("Kazanç")
         )
     return total
 
@@ -2602,10 +2606,9 @@ _current_race_signature = (
 if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
-    # GERÇEK VERİ modu varsayılandır: yeni koşu seçildiğinde geçmiş
-    # yarış/galop verisini otomatik olarak hazırla. Aksi halde ŞART UYUMU
-    # ve GÜNCEL SINIF, veri gelmeden zorunlu olarak 50.0 gösterirdi.
-    st.session_state.real_analysis_requested = True
+    # Yeni koşuda program önce gösterilir. Gerçek geçmiş/galop verisi
+    # yalnızca "GERÇEK VERİ İLE ANALİZ ET" butonundan sonra ve at seçilince alınır.
+    st.session_state.real_analysis_requested = False
     st.session_state.real_analysis_done = False
     st.session_state["_last_race_signature"] = _current_race_signature
 
@@ -2661,10 +2664,17 @@ if not horses:
 
 else:
 
-    # PROGRAM ÖNCE GELİR. Gerçek koşu/galop verisi at seçildiğinde alınır.
+    # PROGRAM ÖNCE GELİR. Gerçek koşu/galop verisi butondan sonra,
+    # yalnızca seçilen at için alınır.
     if st.session_state.get("real_analysis_requested"):
         st.session_state.real_analysis_done = True
         st.session_state.real_analysis_requested = False
+
+    # Analiz sırası her zaman oluşturulur. Gerçek veri henüz yoksa
+    # hesaplar nötr/eksik veri davranışıyla çalışır; veri geldikten sonra
+    # aşağıdaki rerun ile yeniden hesaplanır.
+    ranking = calculate_ranking(horses, selected_race, selected_city)
+    by_index = {item.get("horse_index"): item for item in ranking if isinstance(item, dict)}
 
     # TJK YENİ ANA TABLO — TIKLANABİLİR SATIR + SIRALAMA/FİLTRE
     # ========================================================
@@ -3063,24 +3073,16 @@ else:
                 selected_horse_index + 1,
             )
             st.session_state.selected_horse_index = selected_horse_index
-            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
+            _detail_fetch_key = (str(_horse_at_id(selected_horse)), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
-                # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
-                # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
-                try:
-                    load_horse_enrichment.clear()
-                except Exception:
-                    pass
-
-                horse_status = st.status(
-                    f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
-                    expanded=True,
+            if (
+                st.session_state.get("real_analysis_done")
+                and st.session_state.get("_selected_detail_fetch_key") != (
+                    str(_horse_at_id(selected_horse)), str(selected_horse_index),
+                    str(selected_date), str(selected_city), str(distance),
+                    str(surface), str(condition)
                 )
-                horse_status.write("📡 Worker /api/tjk/horsedata sorgulanıyor...")
-                horse_status.write(
-                    f"🎯 Hedef yarış: {selected_city} • {distance} • {surface} • {condition}"
-                )
+            ):
                 try:
                     at_id = _horse_at_id(selected_horse)
                     detail_data = load_horse_enrichment(
@@ -3098,26 +3100,11 @@ else:
                         selected_horse.pop("_enrichment_error", None)
                     horses[selected_horse_index] = selected_horse
                     selected_race["horses"] = horses
-                    if selected_horse.get("_history") or selected_horse.get("_workouts"):
-                        horse_status.update(
-                            label="✅ Atın gerçek koşu ve galop verileri hazır",
-                            state="complete",
-                            expanded=False,
-                        )
-                    else:
-                        horse_status.update(
-                            label="⚠️ TJK bu at için geçmiş/galop verisi döndürmedi",
-                            state="complete",
-                            expanded=True,
-                        )
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
+                    # Yeni gerçek veriler ana tabloya da işlensin.
+                    st.rerun()
                 except Exception as exc:
-                    horse_status.update(
-                        label="❌ At geçmişi/galop sorgusu başarısız",
-                        state="error",
-                        expanded=True,
-                    )
-                    st.error(str(exc))
+                    st.error(f"{get_horse_name(selected_horse)} için gerçek veri alınamadı: {exc}")
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
 
     selected_no = st.session_state.get("selected_horse_no")
@@ -3195,7 +3182,7 @@ else:
                     if place == "1": first += 1
                     elif place == "2": second += 1
                     elif place == "3": third += 1
-                    pv = _money_number(_first_value(h, ["prize", "ikramiye"]))
+                    pv = _money_number(_first_value(h, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"]))
                     total_prize += pv
                     if _history_year(h) == selected_date.year:
                         year_prize += pv
