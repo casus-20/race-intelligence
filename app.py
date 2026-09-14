@@ -634,11 +634,67 @@ def load_program(
         city,
     )
 
-    # Program başlığındaki hipodrom adı, seçilen hipodromdan alınır.
-    # Diğer program/analiz verilerine müdahale edilmez.
+    # Yalnızca programın hipodrom adını doğrula.
+    # Koşulara, atlara veya analiz verilerine dokunulmaz.
     if isinstance(data, dict):
         data = dict(data)
-        data["city"] = city
+
+        races = data.get("races", [])
+
+        def _program_signature(program_races):
+            sig = []
+            if not isinstance(program_races, list):
+                return tuple()
+            for r in program_races:
+                if not isinstance(r, dict):
+                    continue
+                horses = r.get("horses", [])
+                names = []
+                if isinstance(horses, list):
+                    for h in horses:
+                        if isinstance(h, dict):
+                            name = (
+                                h.get("name")
+                                or h.get("at_ismi")
+                                or h.get("horseName")
+                                or h.get("horse_name")
+                                or ""
+                            )
+                            name = " ".join(str(name).upper().split())
+                            if name:
+                                names.append(name)
+                sig.append((
+                    str(r.get("no") or r.get("race_number") or ""),
+                    str(r.get("time") or r.get("race_time") or ""),
+                    str(r.get("distance") or ""),
+                    tuple(names),
+                ))
+            return tuple(sig)
+
+        selected_sig = _program_signature(races)
+        actual_city = city
+
+        # Worker yanlış şehir etiketiyle aynı programı döndürdüyse,
+        # aynı programı hangi hipodromun verdiğini bul ve SADECE
+        # programın city alanını düzelt. Veri/analiz değiştirilmez.
+        if selected_sig:
+            for candidate in ALL_CITIES:
+                if candidate == city:
+                    continue
+                try:
+                    candidate_data = get_program(selected_date, candidate)
+                    candidate_sig = _program_signature(
+                        candidate_data.get("races", [])
+                        if isinstance(candidate_data, dict)
+                        else []
+                    )
+                    if candidate_sig and candidate_sig == selected_sig:
+                        actual_city = candidate
+                        break
+                except Exception:
+                    continue
+
+        data["city"] = actual_city
 
     return data
 
