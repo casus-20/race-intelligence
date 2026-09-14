@@ -2,6 +2,7 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
+import html as _html
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -348,6 +349,34 @@ st.markdown(
         box-shadow: none;
         text-transform: uppercase;
     }
+    .race-title-panel {
+         flex-direction: column !important;
+         align-items: flex-start !important;
+         justify-content: center !important;
+         gap: 2px !important;
+         text-transform: none !important;
+     }
+     .race-title-panel .race-header-line {
+         width: 100%;
+         font-size: 15px;
+         line-height: 1.2;
+         font-weight: 900;
+         white-space: nowrap;
+         overflow: hidden;
+         text-overflow: ellipsis;
+     }
+     .race-title-panel .race-header-detail {
+         font-weight: 900;
+     }
+     .race-title-panel .race-prize-line {
+         width: 100%;
+         font-size: 13px;
+         line-height: 1.2;
+         font-weight: 700;
+         white-space: nowrap;
+         overflow: hidden;
+         text-overflow: ellipsis;
+     }
     .race-title-panel .race-title-main {
         font-size: 30px;
         line-height: 1.0;
@@ -1374,25 +1403,15 @@ def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def workout_display(horse: Dict[str, Any]) -> str:
+    """Ana tabloda yalnızca en son galobun 600 m derecesini göster."""
     w = latest_workout(horse)
     if not w:
         return "-"
-    for keys, label in (
-        (("m1200", "1200"), "1200"),
-        (("m1000", "1000"), "1000"),
-        (("m800", "800"), "800"),
-        (("m600", "600"), "600"),
-        (("m400", "400"), "400"),
-        (("time", "derece"), ""),
-    ):
-        value = _first_value(w, list(keys))
-        value = display_value(value, "")
-        if value:
-            if label:
-                return f"{value} ({label}m)"
-            distance = display_value(_first_value(w, ["distance", "msf", "mesafe"]), "")
-            return f"{value} ({distance}m)" if distance else value
-    return "-"
+    value = display_value(
+        _first_value(w, ["m600", "600", "600m", "m_600"]),
+        "",
+    )
+    return f"{value} (600)" if value else "-"
 
 
 def _normalize_surface_for_table(value: Any) -> str:
@@ -2896,6 +2915,94 @@ if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state["_last_race_signature"] = _current_race_signature
 
 # ============================================================
+# KOŞU BAŞLIĞI / İKRAMİYE GÖRSEL YARDIMCILARI
+# ============================================================
+
+def _race_value(race: Dict[str, Any], keys: List[str]) -> Any:
+    if not isinstance(race, dict):
+        return ""
+    for key in keys:
+        value = race.get(key)
+        if value not in (None, ""):
+            return value
+    meta = race.get("meta")
+    if isinstance(meta, dict):
+        for key in keys:
+            value = meta.get(key)
+            if value not in (None, ""):
+                return value
+    return ""
+
+
+def _format_prize_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, dict):
+        parts = []
+        for key in ("1", "2", "3", "4", "5", "first", "second", "third", "fourth", "fifth"):
+            if key in value and value[key] not in (None, ""):
+                parts.append(str(value[key]).strip())
+        return "  ".join(parts) if parts else str(value)
+    if isinstance(value, (list, tuple)):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                no = item.get("no") or item.get("rank") or item.get("sira") or ""
+                amount = item.get("amount") or item.get("value") or item.get("prize") or item.get("ikramiye") or ""
+                if amount != "":
+                    parts.append(f"{no}.){amount}" if no else str(amount))
+            elif item not in (None, ""):
+                parts.append(str(item).strip())
+        return "  ".join(parts)
+    return str(value).strip()
+
+
+def _race_prize_text(race: Dict[str, Any]) -> str:
+    value = _race_value(
+        race,
+        [
+            "prize", "prizes", "ikramiye", "ikramiyeler",
+            "prizeText", "prize_text", "prizeInfo", "prize_info",
+            "ikramiyeText", "ikramiye_text", "ikramiyeInfo",
+        ],
+    )
+    text = _format_prize_text(value)
+    if text:
+        return text
+    horses_for_prize = race.get("horses") if isinstance(race, dict) else None
+    if isinstance(horses_for_prize, list):
+        for h in horses_for_prize[:1]:
+            if isinstance(h, dict):
+                text = _format_prize_text(
+                    _first_value(
+                        h,
+                        ["prize", "prizes", "ikramiye", "ikramiyeler",
+                         "prizeText", "prize_text", "ikramiyeText", "ikramiye_text"],
+                    )
+                )
+                if text:
+                    return text
+    return ""
+
+
+def _race_surface_color(surface_value: Any) -> tuple[str, str]:
+    normalized = _normalize_surface_for_table(surface_value)
+    if normalized == "cim":
+        return "#239447", "#ffffff"
+    if normalized == "sentetik":
+        return "#7b2cbf", "#ffffff"
+    return "#b77a2b", "#ffffff"
+
+
+def _race_id_for_link(race: Dict[str, Any]) -> str:
+    value = _race_value(
+        race,
+        ["raceId", "race_id", "kosuId", "kosu_id", "id", "Id", "raceNoId"],
+    )
+    return str(value).strip() if value not in (None, "") else ""
+
+
+# ============================================================
 # KOŞU BİLGİLERİ
 # ============================================================
 
@@ -2905,12 +3012,45 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
+_race_bg, _race_fg = _race_surface_color(surface)
+_race_id = _race_id_for_link(selected_race)
+_date_q = selected_date.strftime("%d/%m/%Y")
+_daily_url = (
+    "https://www.tjk.org/TR/YarisSever/Info/Page/GunlukYarisProgrami"
+    f"?QueryParameter_Tarih={_date_q}&Era=tomorrow&1=1"
+)
+_race_href = f"{_daily_url}#{_race_id}" if _race_id else _daily_url
+_race_title = (
+    f"{race_number}. Koşu {race_time}" if race_time != "-" else f"{race_number}. Koşu"
+)
+_prize_text = _race_prize_text(selected_race)
+_best_for_header = display_value(selected_race.get("bestTime"), "")
+if not _best_for_header:
+    _best_for_header = display_value(
+        _race_value(selected_race, ["bestTime", "best_time", "eid", "EİD"]),
+        "",
+    )
+
+_race_first_line = (
+    f"<a href='{_html.escape(_race_href, quote=True)}' target='_blank' "
+    f"style='color:{_race_fg};text-decoration:none;'>{_html.escape(_race_title)}</a>"
+    f" <span class='race-header-detail'>{_html.escape(condition)}</span>"
+    f"<span class='race-header-detail'>, {_html.escape(distance)} { _html.escape(surface) }</span>"
+)
+if _best_for_header:
+    _race_first_line += f"<span class='race-header-detail'>, E.İ.D. : {_html.escape(_best_for_header)}</span>"
+
+_prize_html = (
+    f"<div class='race-prize-line'><strong>İkramiye:</strong> {_html.escape(_prize_text)}</div>"
+    if _prize_text else
+    "<div class='race-prize-line'><strong>İkramiye:</strong> -</div>"
+)
+
 st.markdown(
     f"""<div class='race-info-compact'>
-        <div class='race-title-panel'>
-            <span class='race-title-main'>{race_time if race_time != '-' else ''}</span>
-            <span class='race-condition'>{condition}</span>
-            <span class='race-distance'>{distance} {surface}</span>
+        <div class='race-title-panel' style='background:{_race_bg};color:{_race_fg};'>
+            <div class='race-header-line'>{_race_first_line}</div>
+            {_prize_html}
         </div>
     </div>""",
     unsafe_allow_html=True,
@@ -3177,7 +3317,7 @@ else:
                 if (i > 0) root.appendChild(document.createElement('br'));
                 const span = document.createElement('span');
                 span.textContent = part;
-                span.style.color = '#f1c40f';
+                span.style.color = (i === 0) ? '#d40000' : '#f1c40f';
                 span.style.fontWeight = '900';
                 root.appendChild(span);
             });
@@ -3402,6 +3542,34 @@ else:
     }
     """)
 
+    workout_renderer = JsCode(r"""
+    class WorkoutRenderer {
+        init(params) {
+            const root = document.createElement('span');
+            root.style.fontWeight = '900';
+            root.style.color = '#8b5a2b';
+            const text = String(params.value ?? '');
+            const m = text.match(/^(.*?)(\\s*\\(600\\))$/i);
+            if (m) {
+                const main = document.createElement('span');
+                main.textContent = m[1].trim();
+                main.style.fontWeight = '900';
+                root.appendChild(main);
+                const suffix = document.createElement('span');
+                suffix.textContent = m[2];
+                suffix.style.fontSize = '10px';
+                suffix.style.fontWeight = '700';
+                suffix.style.marginLeft = '2px';
+                root.appendChild(suffix);
+            } else {
+                root.textContent = text;
+            }
+            this.eGui = root;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
     def _best_meta_for_table(h):
         best = display_value(h.get("bestTime"), "")
         city = display_value(h.get("bestCity"), "")
@@ -3600,7 +3768,7 @@ else:
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
     gb.configure_column("ŞART UYUMU", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
-    gb.configure_column("SON GALOP", width=95, minWidth=80, cellStyle=JsCode("function(params){return {color:'#8b5a2b',fontWeight:'900'};}"))
+    gb.configure_column("SON GALOP", width=95, minWidth=80, cellRenderer=workout_renderer)
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
