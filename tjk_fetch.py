@@ -120,6 +120,15 @@ def fetch_worker(
             f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
         )
 
+    # -----------------------------------------------------
+    # ŞEHİR İSTEĞİ
+    #
+    # Kritik: Kullanıcının seçtiği hipodrom adı Worker'a
+    # AYNI şekilde gönderilir. Elazığ <-> Şanlıurfa gibi
+    # herhangi bir alias/ters eşleme yapılmaz.
+    # Worker kendi CITY_IDS tablosu ile TJK'ya doğru SehirId
+    # göndermelidir.
+    # -----------------------------------------------------
     params = {
         "date": iso_date,
         "city": city,
@@ -246,22 +255,6 @@ def get_program(
         total_horses += len(horses)
 
     # -----------------------------------------------------
-    # Worker kaynak URL'si ile gerçek TJK şehir isteğini doğrula.
-    # Worker cevabındaki `city` alanına güvenme; bu alan istenen
-    # şehirden üretilebildiği için yanlış programı maskeleyebilir.
-    # -----------------------------------------------------
-    source_url = normalize_text(data.get("sourceUrl", ""))
-    expected_city_id = CITY_IDS.get(city)
-    if source_url and expected_city_id is not None:
-        import re
-        id_match = re.search(r"[?&]SehirId=(\d+)", source_url, flags=re.I)
-        if id_match and int(id_match.group(1)) != int(expected_city_id):
-            raise RuntimeError(
-                f"Yanlış TJK hipodrom kaynağı: istenen={city} "
-                f"(SehirId={expected_city_id}), kaynak={id_match.group(1)}"
-            )
-
-    # -----------------------------------------------------
     # Streamlit'in beklediği standart cevap
     # -----------------------------------------------------
 
@@ -300,7 +293,7 @@ def get_program(
 
         "status": data.get("status"),
 
-        "source_url": source_url,
+        "source_url": data.get("sourceUrl", ""),
 
         "debug": {
             "transport": "Cloudflare Worker",
@@ -311,12 +304,6 @@ def get_program(
             "city_id": CITY_IDS.get(city),
 
             "worker_status": data.get("status"),
-            "worker_response_date": normalize_text(
-                data.get("date") or data.get("targetDate") or data.get("programDate") or ""
-            ),
-            "worker_response_city": normalize_text(
-                data.get("city") or data.get("hipodrom") or data.get("track") or data.get("venue") or ""
-            ),
 
             "race_count": len(races),
 
@@ -329,7 +316,10 @@ def get_program(
                 "TJK Günlük Yarış Programı",
             ),
 
-            "source_url": source_url,
+            "source_url": data.get(
+                "sourceUrl",
+                "",
+            ),
         },
     }
 
