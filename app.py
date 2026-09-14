@@ -3269,7 +3269,7 @@ else:
                 root.appendChild(base);
                 const extra = document.createElement('span');
                 extra.textContent = m[2];
-                extra.style.color = '#d40000';
+                extra.style.color = '#000000';
                 extra.style.fontWeight = '900';
                 root.appendChild(extra);
             } else {
@@ -3368,13 +3368,14 @@ else:
                 const span = document.createElement('span');
                 span.textContent = ch;
                 span.style.fontWeight = '900';
-                const surf = String(surfaces[i] || '').toLowerCase()
+                const rawSurf = String(surfaces[i] || '').trim();
+                const surf = rawSurf.toLowerCase()
                     .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g')
                     .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
-                if (surf.includes('cim') || surf.includes('grass') || surf.includes('turf')) span.style.color = '#138a36';
-                else if (surf.includes('kum') || surf.includes('dirt')) span.style.color = '#8b5a2b';
-                else if (surf.includes('sentetik') || surf.includes('synthetic') || surf.includes('polytrack') || surf.includes('fiber')) span.style.color = '#7b2cbf';
-                else span.style.color = '#17212b';
+                if (/^(c|cim|grass|turf)(?:[:\s-]|$)/.test(surf) || surf.includes('cim') || surf.includes('grass') || surf.includes('turf')) span.style.color = '#138a36';
+                else if (/^(k|kum|dirt)(?:[:\s-]|$)/.test(surf) || surf.includes('kum') || surf.includes('dirt')) span.style.color = '#8b5a2b';
+                else if (/^(s|sentetik|synthetic)(?:[:\s-]|$)/.test(surf) || surf.includes('sentetik') || surf.includes('synthetic') || surf.includes('polytrack') || surf.includes('fiber')) span.style.color = '#7b2cbf';
+                else span.style.color = '#000000';
                 root.appendChild(span);
                 if (i < chars.length - 1) {
                     const space = document.createElement('span');
@@ -3437,18 +3438,18 @@ else:
         init(params) {
             const span = document.createElement('span');
             span.textContent = String(params.value ?? '');
-            const surf = String((params.data && params.data._last_surface) || '').toLowerCase();
-            const normalized = surf
+            const rawSurf = String((params.data && params.data._last_surface) || '').trim();
+            const normalized = rawSurf.toLowerCase()
                 .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g')
                 .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
-            if (normalized.includes('cim') || normalized.includes('grass') || normalized.includes('turf')) {
+            if (/^(c|cim|grass|turf)(?:[:\s-]|$)/.test(normalized) || normalized.includes('cim') || normalized.includes('grass') || normalized.includes('turf')) {
                 span.style.color = '#138a36';
-            } else if (normalized.includes('kum') || normalized.includes('dirt')) {
+            } else if (/^(k|kum|dirt)(?:[:\s-]|$)/.test(normalized) || normalized.includes('kum') || normalized.includes('dirt')) {
                 span.style.color = '#8b5a2b';
-            } else if (normalized.includes('sentetik') || normalized.includes('synthetic') || normalized.includes('polytrack') || normalized.includes('fiber')) {
+            } else if (/^(s|sentetik|synthetic)(?:[:\s-]|$)/.test(normalized) || normalized.includes('sentetik') || normalized.includes('synthetic') || normalized.includes('polytrack') || normalized.includes('fiber')) {
                 span.style.color = '#7b2cbf';
             } else {
-                span.style.color = '#17212b';
+                span.style.color = '#000000';
             }
             span.style.fontWeight = '900';
             this.eGui = span;
@@ -3578,30 +3579,31 @@ else:
     gb.configure_grid_options(**grid_options)
 
     # Sabit sütunlar.
-    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"])
+    black_bold_style = JsCode("function(params){return {color:'#000000',fontWeight:'900'};}")
+    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"], cellStyle=black_bold_style)
     gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120, cellRenderer=horse_name_renderer)
-    gb.configure_column("Yaş", width=55, minWidth=48)
+    gb.configure_column("Yaş", width=55, minWidth=48, cellStyle=black_bold_style)
     gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
-    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer)
+    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=black_bold_style)
     gb.configure_column("Jokey", width=105, minWidth=90, cellRenderer=jockey_renderer)
     gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
-    gb.configure_column("St", width=52, minWidth=45)
-    gb.configure_column("HP", width=58, minWidth=50)
+    gb.configure_column("St", width=52, minWidth=45, cellStyle=black_bold_style)
+    gb.configure_column("HP", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column("Son 6 Y.", width=85, minWidth=70, cellRenderer=form_renderer)
-    gb.configure_column("KGS", width=58, minWidth=50)
-    gb.configure_column("s20", width=58, minWidth=50)
+    gb.configure_column("KGS", width=58, minWidth=50, cellStyle=black_bold_style)
+    gb.configure_column("s20", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column(
         "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell"
     )
-    gb.configure_column("Gny", width=60, minWidth=50)
+    gb.configure_column("Gny", width=60, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
-    gb.configure_column("BİZİM SKOR", width=105, minWidth=90)
-    gb.configure_column("ŞART UYUMU", width=105, minWidth=90)
-    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95)
-    gb.configure_column("SON GALOP", width=95, minWidth=80)
+    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
+    gb.configure_column("ŞART UYUMU", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
+    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
+    gb.configure_column("SON GALOP", width=95, minWidth=80, cellStyle=JsCode("function(params){return {color:'#8b5a2b',fontWeight:'900'};}"))
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
-    gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100)
-    gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105)
+    gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
+    gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("_horse_index", hide=True)
     gb.configure_column("_last_surface", hide=True)
     gb.configure_column("_form_surfaces", hide=True)
