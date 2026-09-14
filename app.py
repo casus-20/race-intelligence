@@ -1000,18 +1000,23 @@ def get_horse_age(
     return text
 
 def get_race_condition(race: Dict[str, Any]) -> str:
-    """Koşu şartını Worker V1 meta.detail/meta.raceName üzerinden alır."""
+    """Koşu başlığında yalnızca yarış şartlarını gösterir."""
     direct = race.get("condition")
-    if direct:
-        return display_value(direct)
-
-    meta = race.get("meta")
-    if isinstance(meta, dict):
-        detail = meta.get("detail") or meta.get("raceName") or ""
-        if detail:
-            return display_value(detail)
-
-    return "-"
+    text = display_value(direct, "") if direct else ""
+    if not text:
+        meta = race.get("meta")
+        if isinstance(meta, dict):
+            detail = meta.get("detail") or meta.get("raceName") or ""
+            text = display_value(detail, "") if detail else ""
+    if not text:
+        return "-"
+    # Bazı TJK/Worker cevaplarında koşu şartı ile ikramiye/prim aynı
+    # alanda gelir. Başlık satırından bunları kesin olarak ayır.
+    text = re.split(
+        r"\s+(?=İkramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s+Sahibi\s+Primi\s*:)",
+        text, maxsplit=1, flags=re.I
+    )[0].strip(" ,;-:")
+    return text or "-"
 
 def _weight_parts(value: Any) -> tuple[str, str]:
     text = display_value(value, "")
@@ -3057,15 +3062,21 @@ def _race_prize_lines(race: Dict[str, Any]) -> tuple[str, str, str]:
     owner_value = pick([
         "ownerPrize", "owner_prize", "ownerPremium", "owner_premium",
         "atSahibiPrimi", "at_sahibi_primi", "atSahibiPrize",
-        "owner", "ownerPrizes",
+        "ownerPrizes",
     ])
 
     base_text = _format_prize_text(base_value)
     breeder_text = _format_prize_text(breeder_value)
     owner_text = _format_prize_text(owner_value)
 
-    # Bazı Worker sürümlerinde tüm kategoriler tek metin halinde gelebilir.
-    combined = " ".join(x for x in (base_text, breeder_text, owner_text) if x)
+    # Bazı Worker sürümlerinde tüm kategoriler koşu şartı/meta.detail
+    # içinde tek metin halinde gelir.
+    raw_detail = display_value(race.get("condition"), "") if isinstance(race, dict) and race.get("condition") else ""
+    if not raw_detail:
+        meta = race.get("meta") if isinstance(race, dict) else None
+        if isinstance(meta, dict):
+            raw_detail = display_value(meta.get("detail") or meta.get("raceName") or "", "")
+    combined = " ".join(x for x in (base_text, breeder_text, owner_text, raw_detail) if x)
     if combined:
         def section_text(pattern):
             m = re.search(pattern + r"\s*[:\-]?\s*(.*?)(?=\s+(?:Yetiştirici(?:lik)?\s+Primi|Yetiştiricilik\s+Primi|At\s+Sahibi\s+Primi)\s*[:\-]?|$)", combined, re.I)
@@ -3075,7 +3086,11 @@ def _race_prize_lines(race: Dict[str, Any]) -> tuple[str, str, str]:
         if not owner_text:
             owner_text = section_text(r"At\s+Sahibi\s+Primi")
         if not base_text:
-            base_text = section_text(r"İkramiye")
+            m_base = re.search(
+                r"İkramiye\s*[:\-]?\s*(.*?)(?=\s+(?:Yetiştirici(?:lik)?\s+Primi|At\s+Sahibi\s+Primi)\s*[:\-]?|$)",
+                combined, re.I
+            )
+            base_text = m_base.group(1).strip() if m_base else ""
 
     # 1-5 ana ikramiye tutarlarını bul.
     def amounts(text):
