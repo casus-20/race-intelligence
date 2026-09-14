@@ -3139,10 +3139,28 @@ else:
     st.markdown("""
     <style>
     .ag-theme-streamlit .ag-cell.ri-eid-cell { overflow: visible !important; }
-    .ag-theme-streamlit .ag-row { background: #e8e8e8 !important; }
-    .ag-theme-streamlit .ag-row-odd { background: #e8e8e8 !important; }
-    .ag-theme-streamlit .ag-tooltip { background:#ffffff !important; color:#ff0000 !important; border:1px solid #ff0000 !important; border-radius:6px !important; font-weight:600 !important; white-space:pre-line !important; }
-    .ag-theme-streamlit .ag-cell { background: transparent !important; }
+    .ag-theme-streamlit .ag-root-wrapper,
+    .ag-theme-streamlit .ag-root,
+    .ag-theme-streamlit .ag-body-viewport,
+    .ag-theme-streamlit .ag-center-cols-viewport,
+    .ag-theme-streamlit .ag-center-cols-container,
+    .ag-theme-streamlit .ag-pinned-left-cols-container {
+        background: #e8e8e6 !important;
+    }
+    .ag-theme-streamlit .ag-row,
+    .ag-theme-streamlit .ag-row-even {
+        background: #e8e8e6 !important;
+    }
+    .ag-theme-streamlit .ag-row-odd {
+        background: #f4f4f2 !important;
+    }
+    .ag-theme-streamlit .ag-row .ag-cell {
+        background: inherit !important;
+    }
+    .ag-theme-streamlit .ag-pinned-left-cols-container .ag-row .ag-cell {
+        background: inherit !important;
+    }
+    .ag-theme-streamlit .ag-tooltip { display:none !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -3289,9 +3307,6 @@ else:
             }
             if (distance) message += '\nMesafe: ' + distance;
             if (info) message += '\n' + info;
-
-            // Native title fallback: bilgi kutusu her tarayıcıda çalışır.
-            if (message) span.setAttribute('title', message);
 
             span.addEventListener('mouseenter', function() {
                 if (!message) return;
@@ -3576,22 +3591,7 @@ else:
     gb.configure_column("KGS", width=58, minWidth=50)
     gb.configure_column("s20", width=58, minWidth=50)
     gb.configure_column(
-        "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell",
-        tooltipValueGetter=JsCode("""
-            function(params) {
-                const d = String(params.value || '').trim();
-                const city = String((params.data && params.data._best_city) || '').trim();
-                const date = String((params.data && params.data._best_date) || '').trim();
-                const distance = String((params.data && params.data._best_distance) || '').trim();
-                const info = String((params.data && params.data._best_info) || '').trim();
-                if (!city && !date && !distance && !info) return d ? ('En İyi Derece: ' + d) : '';
-                const hip = /hipodrom/i.test(city) ? city : (city ? city + ' Hipodromu' : 'TJK Hipodromu');
-                let msg = 'Bu derece ' + hip + "'nda " + (date || 'belirtilen tarihte') + ' yapılmıştır.';
-                if (distance) msg += '\nMesafe: ' + distance;
-                if (info) msg += '\nPist: ' + info;
-                return msg;
-            }
-        """),
+        "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell"
     )
     gb.configure_column("Gny", width=60, minWidth=50)
     gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
@@ -3611,13 +3611,13 @@ else:
     gb.configure_column("_horse_click_token", hide=True)
 
     grid_options = gb.build()
-    grid_options["rowStyle"] = JsCode("""
+    grid_options["getRowStyle"] = JsCode("""
         function(params) {
             const selected = window.__ri_selected_horse_index;
             if (selected !== undefined && selected !== null && params.data && String(params.data._horse_index) === String(selected)) {
                 return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'700'};
             }
-            return {backgroundColor:'#e8e8e8'};
+            return {backgroundColor: (params.node && params.node.rowIndex % 2 === 1) ? '#f4f4f2' : '#e8e8e6'};
         }
     """)
     grid_options["onSelectionChanged"] = JsCode("""
