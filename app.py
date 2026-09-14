@@ -3217,27 +3217,70 @@ else:
             span.textContent = String(params.value ?? '');
             span.style.color = '#d40000';
             span.style.fontWeight = '900';
-            span.style.cursor = 'pointer';
-            span.title = 'Tıkla: En İyi Derece bilgisi';
+            span.style.cursor = 'help';
+            span.style.position = 'relative';
 
             const d = params.data || {};
             const city = String(d._best_city || '').trim();
             const date = String(d._best_date || '').trim();
+            const distance = String(d._best_distance || '').trim();
+            const info = String(d._best_info || '').trim();
+
+            let message = '';
             if (city || date) {
                 const hipodrom = /hipodrom/i.test(city) ? city : `${city || 'TJK'} Hipodromu`;
-                span.title = `Bu derece ${hipodrom}'nda ${date || 'belirtilen tarihte'} yapılmıştır.\nTıklayarak ayrıntıyı aç.`;
+                message = `Bu derece ${hipodrom}'nda ${date || 'belirtilen tarihte'} yapılmıştır.`;
+                if (distance) message += `\nMesafe: ${distance}`;
+                if (info) message += `\n${info}`;
             }
 
+            let tooltip = null;
+            const removeTooltip = () => {
+                if (tooltip && tooltip.parentNode) tooltip.parentNode.removeChild(tooltip);
+                tooltip = null;
+            };
+
+            span.addEventListener('mouseenter', function() {
+                if (!message) return;
+                removeTooltip();
+                tooltip = document.createElement('div');
+                tooltip.textContent = message;
+                tooltip.style.position = 'fixed';
+                tooltip.style.zIndex = '2147483647';
+                tooltip.style.width = '250px';
+                tooltip.style.maxWidth = '300px';
+                tooltip.style.padding = '10px';
+                tooltip.style.background = '#ffffff';
+                tooltip.style.color = '#ff0000';
+                tooltip.style.border = '1px solid #ff0000';
+                tooltip.style.borderRadius = '6px';
+                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)';
+                tooltip.style.textAlign = 'center';
+                tooltip.style.whiteSpace = 'pre-line';
+                tooltip.style.fontSize = '14px';
+                tooltip.style.fontWeight = '600';
+                tooltip.style.lineHeight = '1.35';
+                tooltip.style.pointerEvents = 'none';
+                document.body.appendChild(tooltip);
+
+                const r = span.getBoundingClientRect();
+                const tw = tooltip.offsetWidth;
+                const th = tooltip.offsetHeight;
+                let left = r.left + (r.width / 2) - (tw / 2);
+                let top = r.top - th - 10;
+                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+                if (top < 8) top = r.bottom + 10;
+                tooltip.style.left = `${left}px`;
+                tooltip.style.top = `${top}px`;
+            });
+            span.addEventListener('mouseleave', removeTooltip);
+            span.addEventListener('mousedown', function(event) {
+                // EİD hücresi yalnızca bilgi gösterir; at seçimi/veri çekimi başlatmaz.
+                event.stopPropagation();
+            });
             span.addEventListener('click', function(event) {
                 event.preventDefault();
                 event.stopPropagation();
-                if (params.node) {
-                    params.node.setDataValue('_eid_click_token', String(Date.now()));
-                    params.node.setSelected(true);
-                }
-                if (params.data && params.data._horse_index !== undefined) {
-                    window.__ri_selected_horse_index = params.data._horse_index;
-                }
             });
 
             this.eGui = span;
@@ -3300,7 +3343,18 @@ else:
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
         for hidx in df["_horse_index"].tolist()
     ]
+    df_grid["_best_distance"] = [
+        str(horses[int(hidx)].get("bestDistance") or "")
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+        for hidx in df["_horse_index"].tolist()
+    ]
+    df_grid["_best_info"] = [
+        str(horses[int(hidx)].get("bestInfo") or "")
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+        for hidx in df["_horse_index"].tolist()
+    ]
     df_grid["_eid_click_token"] = ["" for _ in range(len(df_grid))]
+    df_grid["_horse_click_token"] = ["" for _ in range(len(df_grid))]
     last_race_renderer = JsCode(r"""
     class LastRaceRenderer {
         init(params) {
@@ -3333,7 +3387,7 @@ else:
         "rowHeight": 44,
         "headerHeight": 38,
         "domLayout": "autoHeight",
-        "suppressRowClickSelection": False,
+        "suppressRowClickSelection": True,
         "rowSelection": "single",
         "animateRows": False,
         "enableCellTextSelection": True,
@@ -3350,21 +3404,10 @@ else:
                 window.__ri_selected_horse_index = %s;
             }
         """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
-        "onRowClicked": JsCode("""
-            function(params) {
-                if (params.node) {
-                    params.node.setDataValue('_eid_click_token', '');
-                    params.node.setSelected(true);
-                }
-                if (params.data && params.data._horse_index !== undefined) {
-                    window.__ri_selected_horse_index = params.data._horse_index;
-                }
-            }
-        """),
         "onCellClicked": JsCode("""
             function(params) {
                 if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
-                    params.node.setDataValue('_eid_click_token', '');
+                    params.node.setDataValue('_horse_click_token', String(Date.now()));
                     params.node.setSelected(true);
                     if (params.data && params.data._horse_index !== undefined) {
                         window.__ri_selected_horse_index = params.data._horse_index;
@@ -3411,6 +3454,7 @@ else:
     gb.configure_column("_best_city", hide=True)
     gb.configure_column("_best_date", hide=True)
     gb.configure_column("_eid_click_token", hide=True)
+    gb.configure_column("_horse_click_token", hide=True)
 
     grid_options = gb.build()
     grid_options["rowStyle"] = JsCode("""
@@ -3473,28 +3517,29 @@ else:
     else:
         selected_rows = []
 
-    # Bazı streamlit-aggrid sürümlerinde seçilen satır yerine yalnızca data döner.
-    # EİD tıklamasındaki gizli token'ı iki dönüş yolundan da okuyabil.
+    # ÖNEMLİ: Ana tablonun herhangi bir hücresine tıklamak veri çekmez.
+    # Koşu + galop zenginleştirmesi yalnızca "At İsmi" hücresinden gelen
+    # özel tıklama token'ı varsa çalışır.
+    horse_name_clicked = False
     if not selected_rows:
         try:
             returned_data = grid_response.get("data")
             if isinstance(returned_data, pd.DataFrame):
-                token_rows = returned_data[returned_data["_eid_click_token"].astype(str).str.strip() != ""] if "_eid_click_token" in returned_data.columns else pd.DataFrame()
+                token_rows = returned_data[returned_data["_horse_click_token"].astype(str).str.strip() != ""] if "_horse_click_token" in returned_data.columns else pd.DataFrame()
                 if not token_rows.empty:
                     selected_rows = token_rows.to_dict(orient="records")
+                    horse_name_clicked = True
             elif isinstance(returned_data, list):
-                selected_rows = [r for r in returned_data if isinstance(r, dict) and str(r.get("_eid_click_token") or "").strip()]
+                token_rows = [r for r in returned_data if isinstance(r, dict) and str(r.get("_horse_click_token") or "").strip()]
+                if token_rows:
+                    selected_rows = token_rows
+                    horse_name_clicked = True
         except Exception:
             pass
 
-    eid_clicked = False
     if selected_rows:
-        eid_click_token = str(selected_rows[0].get("_eid_click_token") or "").strip()
-        eid_clicked = bool(eid_click_token)
-        if eid_clicked:
-            st.session_state["_last_eid_click_token"] = eid_click_token
-        else:
-            st.session_state["_last_eid_click_token"] = ""
+        horse_name_clicked = horse_name_clicked or bool(str(selected_rows[0].get("_horse_click_token") or "").strip())
+        st.session_state["_last_eid_click_token"] = ""
 
         try:
             selected_horse_index = int(selected_rows[0].get("_horse_index"))
@@ -3509,7 +3554,7 @@ else:
             st.session_state.selected_horse_index = selected_horse_index
             _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if (not eid_clicked) and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
+            if horse_name_clicked and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 try:
