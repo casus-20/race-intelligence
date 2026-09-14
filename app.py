@@ -114,6 +114,8 @@ if "selected_horse_index" not in st.session_state:
     st.session_state["_selected_detail_fetch_key"] = None
 if "_selected_detail_fetch_key" not in st.session_state:
     st.session_state["_selected_detail_fetch_key"] = None
+if "_last_eid_click_token" not in st.session_state:
+    st.session_state["_last_eid_click_token"] = ""
 
 
 # ============================================================
@@ -1393,6 +1395,26 @@ def workout_display(horse: Dict[str, Any]) -> str:
     return "-"
 
 
+def _normalize_surface_for_table(value: Any) -> str:
+    """Son 6 Y. renkleri için TJK pist adını standartlaştırır."""
+    text = str(value or "").strip().lower()
+    text = (
+        text.replace("ı", "i")
+        .replace("ş", "s")
+        .replace("ğ", "g")
+        .replace("ü", "u")
+        .replace("ö", "o")
+        .replace("ç", "c")
+    )
+    if any(x in text for x in ("cim", "grass", "turf")):
+        return "cim"
+    if any(x in text for x in ("sentetik", "synthetic", "polytrack", "fiber")):
+        return "sentetik"
+    if any(x in text for x in ("kum", "dirt")):
+        return "kum"
+    return ""
+
+
 def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     """Ana tabloda Son 6 Y. rakamlarının pist türünü taşıyan gizli veri."""
     history = horse.get("_history", [])
@@ -1404,20 +1426,16 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
         if not isinstance(row, dict):
             values.append("")
             continue
-        surface = str(
+        surface = _normalize_surface_for_table(
             row.get("surface")
             or row.get("pist")
             or row.get("Pist")
+            or row.get("Surface")
+            or row.get("trackSurface")
+            or row.get("track_surface")
             or ""
-        ).strip().lower()
-        if "çim" in surface or "cim" in surface or "grass" in surface or "turf" in surface:
-            values.append("cim")
-        elif "sentetik" in surface or "synthetic" in surface or "polytrack" in surface or "fiber" in surface:
-            values.append("sentetik")
-        elif "kum" in surface or "dirt" in surface:
-            values.append("kum")
-        else:
-            values.append("")
+        )
+        values.append(surface)
 
     return "|".join(values)
 
@@ -3199,13 +3217,29 @@ else:
             span.textContent = String(params.value ?? '');
             span.style.color = '#d40000';
             span.style.fontWeight = '900';
+            span.style.cursor = 'pointer';
+            span.title = 'Tıkla: En İyi Derece bilgisi';
+
             const d = params.data || {};
             const city = String(d._best_city || '').trim();
             const date = String(d._best_date || '').trim();
             if (city || date) {
                 const hipodrom = /hipodrom/i.test(city) ? city : `${city || 'TJK'} Hipodromu`;
-                span.title = `Bu derece ${hipodrom}'nda ${date || 'belirtilen tarihte'} yapılmıştır.`;
+                span.title = `Bu derece ${hipodrom}'nda ${date || 'belirtilen tarihte'} yapılmıştır.\nTıklayarak ayrıntıyı aç.`;
             }
+
+            span.addEventListener('click', function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (params.node) {
+                    params.node.setDataValue('_eid_click_token', String(Date.now()));
+                    params.node.setSelected(true);
+                }
+                if (params.data && params.data._horse_index !== undefined) {
+                    window.__ri_selected_horse_index = params.data._horse_index;
+                }
+            });
+
             this.eGui = span;
         }
         getGui() { return this.eGui; }
@@ -3243,6 +3277,19 @@ else:
     }
     """)
 
+    agf_renderer = JsCode(r"""
+    class AgfRenderer {
+        init(params) {
+            const span = document.createElement('span');
+            span.textContent = String(params.value ?? '');
+            span.style.color = '#138a36';
+            span.style.fontWeight = '900';
+            this.eGui = span;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
     df_grid["_best_city"] = [
         str(horses[int(hidx)].get("bestCity") or "")
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
@@ -3253,14 +3300,25 @@ else:
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
         for hidx in df["_horse_index"].tolist()
     ]
+    df_grid["_eid_click_token"] = ["" for _ in range(len(df_grid))]
     last_race_renderer = JsCode(r"""
     class LastRaceRenderer {
         init(params) {
             const span = document.createElement('span');
             span.textContent = String(params.value ?? '');
             const surf = String((params.data && params.data._last_surface) || '').toLowerCase();
-            const isGrass = surf.includes('çim') || surf.includes('cim') || surf.includes('grass') || surf.includes('turf');
-            span.style.color = isGrass ? '#138a36' : '#111111';
+            const normalized = surf
+                .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g')
+                .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
+            if (normalized.includes('cim') || normalized.includes('grass') || normalized.includes('turf')) {
+                span.style.color = '#138a36';
+            } else if (normalized.includes('kum') || normalized.includes('dirt')) {
+                span.style.color = '#8b5a2b';
+            } else if (normalized.includes('sentetik') || normalized.includes('synthetic') || normalized.includes('polytrack') || normalized.includes('fiber')) {
+                span.style.color = '#7b2cbf';
+            } else {
+                span.style.color = '#17212b';
+            }
             span.style.fontWeight = '900';
             this.eGui = span;
         }
@@ -3294,7 +3352,10 @@ else:
         """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
         "onRowClicked": JsCode("""
             function(params) {
-                if (params.node) params.node.setSelected(true);
+                if (params.node) {
+                    params.node.setDataValue('_eid_click_token', '');
+                    params.node.setSelected(true);
+                }
                 if (params.data && params.data._horse_index !== undefined) {
                     window.__ri_selected_horse_index = params.data._horse_index;
                 }
@@ -3302,7 +3363,8 @@ else:
         """),
         "onCellClicked": JsCode("""
             function(params) {
-                if (params.colDef && (params.colDef.field === 'At İsmi' || params.colDef.field === 'EİD') && params.node) {
+                if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
+                    params.node.setDataValue('_eid_click_token', '');
                     params.node.setSelected(true);
                     if (params.data && params.data._horse_index !== undefined) {
                         window.__ri_selected_horse_index = params.data._horse_index;
@@ -3335,7 +3397,7 @@ else:
     gb.configure_column("s20", width=58, minWidth=50)
     gb.configure_column("EİD", width=75, minWidth=65, cellRenderer=eid_renderer)
     gb.configure_column("Gny", width=60, minWidth=50)
-    gb.configure_column("AGF", width=70, minWidth=60)
+    gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90)
     gb.configure_column("ŞART UYUMU", width=105, minWidth=90)
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95)
@@ -3348,6 +3410,7 @@ else:
     gb.configure_column("_form_surfaces", hide=True)
     gb.configure_column("_best_city", hide=True)
     gb.configure_column("_best_date", hide=True)
+    gb.configure_column("_eid_click_token", hide=True)
 
     grid_options = gb.build()
     grid_options["rowStyle"] = JsCode("""
@@ -3410,7 +3473,29 @@ else:
     else:
         selected_rows = []
 
+    # Bazı streamlit-aggrid sürümlerinde seçilen satır yerine yalnızca data döner.
+    # EİD tıklamasındaki gizli token'ı iki dönüş yolundan da okuyabil.
+    if not selected_rows:
+        try:
+            returned_data = grid_response.get("data")
+            if isinstance(returned_data, pd.DataFrame):
+                token_rows = returned_data[returned_data["_eid_click_token"].astype(str).str.strip() != ""] if "_eid_click_token" in returned_data.columns else pd.DataFrame()
+                if not token_rows.empty:
+                    selected_rows = token_rows.to_dict(orient="records")
+            elif isinstance(returned_data, list):
+                selected_rows = [r for r in returned_data if isinstance(r, dict) and str(r.get("_eid_click_token") or "").strip()]
+        except Exception:
+            pass
+
+    eid_clicked = False
     if selected_rows:
+        eid_click_token = str(selected_rows[0].get("_eid_click_token") or "").strip()
+        eid_clicked = bool(eid_click_token)
+        if eid_clicked:
+            st.session_state["_last_eid_click_token"] = eid_click_token
+        else:
+            st.session_state["_last_eid_click_token"] = ""
+
         try:
             selected_horse_index = int(selected_rows[0].get("_horse_index"))
         except Exception:
@@ -3424,7 +3509,7 @@ else:
             st.session_state.selected_horse_index = selected_horse_index
             _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
+            if (not eid_clicked) and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 try:
