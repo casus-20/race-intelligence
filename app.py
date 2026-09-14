@@ -2815,6 +2815,16 @@ race_columns = st.columns(
 )
 
 
+def _select_race(race_number: int) -> None:
+    # Streamlit button callback: seçimi rerun'dan önce session_state'a yazar.
+    # Böylece koşu geçişi başka bir state/reset işlemi tarafından ezilmez.
+    st.session_state.selected_race = int(race_number)
+    st.session_state.selected_horse_no = None
+    st.session_state.selected_horse_index = None
+    st.session_state.real_analysis_requested = False
+    st.session_state.real_analysis_done = False
+
+
 for index, race in enumerate(races):
 
     race_number = get_race_number(
@@ -2843,7 +2853,7 @@ for index, race in enumerate(races):
 
     with race_columns[index]:
 
-        if st.button(
+        st.button(
             label,
             key=f"race_button_{race_number}",
             use_container_width=True,
@@ -2852,13 +2862,9 @@ for index, race in enumerate(races):
                 if selected
                 else "secondary"
             ),
-        ):
-
-            st.session_state.selected_race = (
-                race_number
-            )
-
-            st.rerun()
+            on_click=_select_race,
+            args=(race_number,),
+        )
 
 
 # ============================================================
