@@ -3076,7 +3076,7 @@ else:
     function(params) {
         const idx = params.data && params.data._horse_index;
         const selected = window.__ri_selected_horse_index;
-        const base = (params.node.rowIndex % 2 === 0) ? '#ffffff' : '#f1f3f5';
+        const base = (params.node.rowIndex % 2 === 0) ? '#e5e5e5' : '#dcdcdc';
         return {
             backgroundColor: (selected !== undefined && String(idx) === String(selected)) ? '#dceeff' : base,
             color: (selected !== undefined && String(idx) === String(selected)) ? '#062b55' : '#17212b',
@@ -3218,71 +3218,6 @@ else:
             span.style.color = '#d40000';
             span.style.fontWeight = '900';
             span.style.cursor = 'help';
-            span.style.position = 'relative';
-
-            const d = params.data || {};
-            const city = String(d._best_city || '').trim();
-            const date = String(d._best_date || '').trim();
-            const distance = String(d._best_distance || '').trim();
-            const info = String(d._best_info || '').trim();
-
-            let message = '';
-            if (city || date) {
-                const hipodrom = /hipodrom/i.test(city) ? city : `${city || 'TJK'} Hipodromu`;
-                message = `Bu derece ${hipodrom}'nda ${date || 'belirtilen tarihte'} yapılmıştır.`;
-                if (distance) message += `\nMesafe: ${distance}`;
-                if (info) message += `\n${info}`;
-            }
-
-            let tooltip = null;
-            const removeTooltip = () => {
-                if (tooltip && tooltip.parentNode) tooltip.parentNode.removeChild(tooltip);
-                tooltip = null;
-            };
-
-            span.addEventListener('mouseenter', function() {
-                if (!message) return;
-                removeTooltip();
-                tooltip = document.createElement('div');
-                tooltip.textContent = message;
-                tooltip.style.position = 'fixed';
-                tooltip.style.zIndex = '2147483647';
-                tooltip.style.width = '250px';
-                tooltip.style.maxWidth = '300px';
-                tooltip.style.padding = '10px';
-                tooltip.style.background = '#ffffff';
-                tooltip.style.color = '#ff0000';
-                tooltip.style.border = '1px solid #ff0000';
-                tooltip.style.borderRadius = '6px';
-                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)';
-                tooltip.style.textAlign = 'center';
-                tooltip.style.whiteSpace = 'pre-line';
-                tooltip.style.fontSize = '14px';
-                tooltip.style.fontWeight = '600';
-                tooltip.style.lineHeight = '1.35';
-                tooltip.style.pointerEvents = 'none';
-                document.body.appendChild(tooltip);
-
-                const r = span.getBoundingClientRect();
-                const tw = tooltip.offsetWidth;
-                const th = tooltip.offsetHeight;
-                let left = r.left + (r.width / 2) - (tw / 2);
-                let top = r.top - th - 10;
-                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
-                if (top < 8) top = r.bottom + 10;
-                tooltip.style.left = `${left}px`;
-                tooltip.style.top = `${top}px`;
-            });
-            span.addEventListener('mouseleave', removeTooltip);
-            span.addEventListener('mousedown', function(event) {
-                // EİD hücresi yalnızca bilgi gösterir; at seçimi/veri çekimi başlatmaz.
-                event.stopPropagation();
-            });
-            span.addEventListener('click', function(event) {
-                event.preventDefault();
-                event.stopPropagation();
-            });
-
             this.eGui = span;
         }
         getGui() { return this.eGui; }
@@ -3402,8 +3337,80 @@ else:
         "onGridReady": JsCode("""
             function(params) {
                 window.__ri_selected_horse_index = %s;
+                window.__ri_eid_tooltip = null;
+                window.__ri_remove_eid_tooltip = function() {
+                    const t = window.__ri_eid_tooltip;
+                    if (t && t.parentNode) t.parentNode.removeChild(t);
+                    window.__ri_eid_tooltip = null;
+                };
             }
         """ % ("null" if selected_horse_index is None else str(int(selected_horse_index)))),
+        "onCellMouseOver": JsCode("""
+            function(params) {
+                if (!params.column || params.column.getColId() !== 'EİD') return;
+                if (!params.data) return;
+
+                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+
+                const city = String(params.data._best_city || '').trim();
+                const date = String(params.data._best_date || '').trim();
+                const distance = String(params.data._best_distance || '').trim();
+                const info = String(params.data._best_info || '').trim();
+                const degree = String(params.data['EİD'] || '').trim();
+                if (!city && !date && !distance && !info) return;
+
+                let message = '';
+                if (city || date) {
+                    const hipodrom = /hipodrom/i.test(city) ? city : (city ? city + ' Hipodromu' : 'TJK Hipodromu');
+                    message = 'Bu derece ' + hipodrom + "'nda " + (date || 'belirtilen tarihte') + ' yapılmıştır.';
+                } else {
+                    message = 'En İyi Derece: ' + (degree || '-');
+                }
+                if (distance) message += '\nMesafe: ' + distance;
+                if (info) message += '\n' + info;
+
+                const tooltip = document.createElement('div');
+                tooltip.textContent = message;
+                tooltip.style.position = 'fixed';
+                tooltip.style.zIndex = '2147483647';
+                tooltip.style.width = '250px';
+                tooltip.style.maxWidth = '300px';
+                tooltip.style.padding = '10px';
+                tooltip.style.background = '#ffffff';
+                tooltip.style.color = '#ff0000';
+                tooltip.style.border = '1px solid #ff0000';
+                tooltip.style.borderRadius = '6px';
+                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)';
+                tooltip.style.textAlign = 'center';
+                tooltip.style.whiteSpace = 'pre-line';
+                tooltip.style.fontSize = '14px';
+                tooltip.style.fontWeight = '600';
+                tooltip.style.lineHeight = '1.35';
+                tooltip.style.pointerEvents = 'none';
+
+                document.body.appendChild(tooltip);
+                window.__ri_eid_tooltip = tooltip;
+
+                const cell = params.event && params.event.currentTarget ? params.event.currentTarget : null;
+                const r = cell && cell.getBoundingClientRect ? cell.getBoundingClientRect() : null;
+                if (!r) return;
+                const tw = tooltip.offsetWidth;
+                const th = tooltip.offsetHeight;
+                let left = r.left + (r.width / 2) - (tw / 2);
+                let top = r.top - th - 10;
+                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+                if (top < 8) top = r.bottom + 10;
+                tooltip.style.left = left + 'px';
+                tooltip.style.top = top + 'px';
+            }
+        """),
+        "onCellMouseOut": JsCode("""
+            function(params) {
+                if (params.column && params.column.getColId() === 'EİD') {
+                    if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+                }
+            }
+        """),
         "onCellClicked": JsCode("""
             function(params) {
                 if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
@@ -3421,6 +3428,7 @@ else:
     gb.configure_default_column(
         sortable=True, filter=True, resizable=True,
         wrapText=True, autoHeight=False,
+        cellStyle=cell_style_js,
     )
     gb.configure_selection(selection_mode="single", use_checkbox=False)
     gb.configure_grid_options(**grid_options)
@@ -3463,7 +3471,7 @@ else:
             if (selected !== undefined && selected !== null && params.data && String(params.data._horse_index) === String(selected)) {
                 return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'700'};
             }
-            return null;
+            return {backgroundColor: (params.node.rowIndex % 2 === 0) ? '#e5e5e5' : '#dcdcdc'};
         }
     """)
     grid_options["onSelectionChanged"] = JsCode("""
