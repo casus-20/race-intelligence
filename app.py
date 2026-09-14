@@ -2,7 +2,6 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
-import html as _html
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -333,36 +332,35 @@ st.markdown(
 
     .race-title-panel {
         width: 100% !important;
-        min-height: 96px;
-        border: 1px solid rgba(90,90,90,.30);
-        border-radius: 0;
-        background:#fffdf2;
-        color:#0b6b17;
-        padding: 7px 10px;
-        box-sizing:border-box;
-        display:block;
-        overflow:hidden;
+        min-height: 36px;
+        border: 1px solid #b9c8d8;
+        border-radius: 7px;
+        background: #ffffff;
+        color: #16324d;
+        padding: 7px 12px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: nowrap;
+        box-shadow: none;
+        text-transform: uppercase;
     }
-    .race-title-panel.grass { background:#fffdf2; color:#0b6b17; }
-    .race-title-panel.dirt { background:#fff4dc; color:#8a4b08; }
-    .race-title-panel.synthetic { background:#eef6ff; color:#07579f; }
-    .race-title-panel .race-main-line {
-        display:block;
-        font-size:16px;
-        line-height:1.25;
-        font-weight:900;
-        white-space:normal;
-        overflow:visible;
-        text-overflow:clip;
+    .race-title-panel .race-title-main {
+        font-size: 30px;
+        line-height: 1.0;
+        font-weight: 950;
+        white-space: nowrap;
     }
-    .race-title-panel .race-prize-line {
-        display:block;
-        font-size:13px;
-        line-height:1.35;
-        font-weight:800;
-        white-space:normal;
-        overflow:visible;
-        text-overflow:clip;
+    .race-title-panel .race-condition {
+        font-size: 16px;
+        line-height: 1.15;
+        font-weight: 900;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1 1 auto;
+        min-width: 0;
     }
     .race-title-panel .analysis-inline {
         display: inline-flex;
@@ -641,34 +639,62 @@ def load_program(
 # SEÇİLEN TARİHTEKİ AKTİF HİPODROMLAR
 # ============================================================
 
-@st.cache_data(ttl=900, show_spinner=False)
 def load_active_cities(selected_date: date) -> List[str]:
     """
-    Yalnızca seçilen tarihte yarış programı dönen hipodromları bulur.
+    Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
 
-    Mevcut Worker V1 /api/tjk/data endpoint'i kullanılır;
-    yeni Worker dosyası veya yeni API gerekmez.
-    İstekler paralel yapılır, böylece şehirler tek tek beklenmez.
+    ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
+    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
+    "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
+
+    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
+    gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
+    Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
     """
-    active = []
+    cache_key = selected_date.isoformat()
+    cached = st.session_state.get("_active_cities_cache", {})
+    if isinstance(cached, dict):
+        saved = cached.get(cache_key)
+        if isinstance(saved, list) and saved:
+            return [c for c in ALL_CITIES if c in saved]
 
     def check_city(city: str):
-        try:
-            data = get_program(selected_date, city)
-            races = data.get("races", []) if isinstance(data, dict) else []
-            return city if isinstance(races, list) and len(races) > 0 else None
-        except Exception:
-            return None
+        for attempt in range(3):
+            try:
+                data = get_program(selected_date, city)
+                if not isinstance(data, dict):
+                    continue
+                races = data.get("races", [])
+                if isinstance(races, list) and len(races) > 0:
+                    return city
+            except Exception:
+                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
+                pass
+        return None
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    active = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
-            city = future.result()
-            if city:
-                active.append(city)
+            try:
+                city = future.result()
+                if city:
+                    active.append(city)
+            except Exception:
+                pass
 
-    # Worker şehir sırasını koru; sonuçların tamamlanma sırasını kullanma.
-    return [city for city in ALL_CITIES if city in active]
+    # Worker şehir sırasını koru; tamamlanma sırasını kullanma.
+    active = [city for city in ALL_CITIES if city in active]
+
+    # SADECE dolu sonuç cache'e alınır. Boş sonuç asla cache'lenmez.
+    if active:
+        cached = st.session_state.get("_active_cities_cache", {})
+        if not isinstance(cached, dict):
+            cached = {}
+        cached[cache_key] = active
+        st.session_state["_active_cities_cache"] = cached
+
+    return active
 
 
 # ============================================================
@@ -1096,44 +1122,6 @@ def enrich_race_horses(
         item["_at_id"] = str(at_id) if at_id else ""
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
-        # Worker /horse cevabındaki resmi toplam/yıllık Kazanç alanlarını
-        # kaybetmeden at kaydına taşı. Ana tablo doğrudan bu değerleri kullanır.
-        if isinstance(data, dict):
-            for _src_key in (
-                "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-                "careerEarnings", "career_earnings", "earnings", "kazanc", "Kazanç",
-                "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-                "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-                "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
-            ):
-                if _src_key in data and data.get(_src_key) not in (None, "", "-"):
-                    item[_src_key] = data.get(_src_key)
-            # Bazı Worker cevapları resmi özetleri nested "horse" / "data"
-            # altında taşır; ana tablo için tamamını da koru.
-            for _container_key in ("horse", "horsedata", "data", "summary", "statistics", "stats"):
-                _container = data.get(_container_key)
-                if isinstance(_container, dict):
-                    for _src_key in (
-                        "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-                        "careerEarnings", "career_earnings", "earnings", "kazanc", "Kazanç",
-                        "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-                        "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-                        "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
-                    ):
-                        if _src_key in _container and _container.get(_src_key) not in (None, "", "-"):
-                            item[_src_key] = _container.get(_src_key)
-        # Resmi TJK özetindeki Kazanç alanını kanonik alanlara da taşı.
-        # Böylece ana tablo, Worker cevabındaki alan adı ne olursa olsun aynı
-        # extractor üzerinden okuyabilir.
-        if isinstance(data, dict):
-            _total_official = _horse_summary_earnings(data, None)
-            if _total_official:
-                item["totalEarnings"] = _total_official
-                item["earnings"] = _total_official
-            _year_official = _horse_summary_earnings(data, int(target_date.year) if hasattr(target_date, "year") else None)
-            if _year_official:
-                item["yearEarnings"] = _year_official
-
         if isinstance(data, dict) and data.get("error"):
             item["_enrichment_error"] = str(data.get("error"))
 
@@ -1159,27 +1147,16 @@ def enrich_race_horses(
                 break
         return item
 
-    # GERÇEK VERİLERİ AT NUMARASINA GÖRE SIRAYLA işle.
-    # Önceki sürüm ThreadPool/as_completed kullandığı için 7-2-5-1 gibi
-    # tamamlanma sırasına göre ilerleme gösteriyordu. Bu hem kullanıcıya
-    # karışık görünüyordu hem de hangi atın işlendiğini takip etmeyi
-    # zorlaştırıyordu. Sonuçların indeksleri yine programdaki konumlarını
-    # korur; yalnızca sorgu sırası 1,2,3... şeklindedir.
-    ordered_indices = sorted(
-        range(len(enriched)),
-        key=lambda i: (
-            get_horse_number(enriched[i], 999999),
-            i,
-        ),
-    )
-
     results = [None] * len(enriched)
-    done = 0
-    for idx in ordered_indices:
-        results[idx] = one(enriched[idx])
-        done += 1
-        if progress_callback:
-            progress_callback(done, len(enriched), get_horse_name(results[idx]))
+    with ThreadPoolExecutor(max_workers=min(3, len(enriched))) as executor:
+        future_map = {executor.submit(one, h): i for i, h in enumerate(enriched)}
+        done = 0
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            results[idx] = future.result()
+            done += 1
+            if progress_callback:
+                progress_callback(done, len(enriched), get_horse_name(results[idx]))
 
     return [r for r in results if isinstance(r, dict)]
 
@@ -1244,249 +1221,45 @@ def _format_tl(value: float) -> str:
     return f"{n:,}".replace(",", ".") + " ₺"
 
 
-_PRIZE_KEYS = (
-    "prize", "prizeAmount", "prize_amount",
-    "ikramiye", "Ikramiye", "İkramiye",
-    "earnings", "earning", "kazanc", "Kazanç",
-)
-
-# TJK'nin resmi at sayfasındaki toplam "Kazanç" değeri, yalnızca
-# geçmiş koşu ikramiyelerinin %20'si değildir. At Sahibi Primi ve diğer
-# resmi kalemler TJK tarafından ayrıca hesaplanır. Bu nedenle mümkünse
-# doğrudan TJK'nin resmi özet Kazanç değeri kullanılmalıdır.
-_SUMMARY_TOTAL_KEYS = (
-    "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-    "careerEarnings", "career_earnings", "kazanc", "Kazanç", "earnings",
-    "earning", "totalKazanc", "toplamKazanc", "toplam_kazanc",
-)
-_SUMMARY_YEAR_KEYS = (
-    "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-    "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-    "yearKazanc", "year_kazanc", "kazanc",
-)
-_OWNER_EARNINGS_KEYS = (
-    "ownerEarnings", "owner_earnings", "atSahibiPrimi", "at_sahibi_primi",
-    "ownerPremium", "owner_premium", "sahipPrimi", "sahip_primi",
-)
-
-
-def _prize_value(value: Any) -> float:
-    """TJK para alanını düz veya iç içe JSON'dan güvenli biçimde çıkarır."""
-    if value is None or value == "":
-        return 0.0
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str):
-        return _money_number(value)
-    if isinstance(value, dict):
-        for key in _PRIZE_KEYS + _SUMMARY_TOTAL_KEYS + _SUMMARY_YEAR_KEYS + _OWNER_EARNINGS_KEYS:
-            if key in value and value.get(key) not in (None, "", "-"):
-                amount = _prize_value(value.get(key))
-                if amount:
-                    return amount
-        for key in ("value", "amount", "tutar", "total", "sum"):
-            if key in value and value.get(key) not in (None, "", "-"):
-                amount = _prize_value(value.get(key))
-                if amount:
-                    return amount
-        return 0.0
-    if isinstance(value, list):
-        for item in value:
-            amount = _prize_value(item)
-            if amount:
-                return amount
-    return 0.0
-
-
-def _recursive_key_value(obj: Any, keys: tuple[str, ...]) -> float:
-    """Worker /horse cevabındaki resmi özet alanını nerede olursa olsun bulur."""
-    wanted = {str(k).casefold() for k in keys}
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if str(key).casefold() in wanted and value not in (None, "", "-"):
-                amount = _prize_value(value)
-                if amount:
-                    return amount
-        for value in obj.values():
-            amount = _recursive_key_value(value, keys)
-            if amount:
-                return amount
-    elif isinstance(obj, list):
-        for value in obj:
-            amount = _recursive_key_value(value, keys)
-            if amount:
-                return amount
-    return 0.0
-
-
-def _row_prize(row: Dict[str, Any]) -> float:
-    """Bir TJK koşu satırındaki tüm bilinen ikramiye alanlarını kontrol eder."""
-    if not isinstance(row, dict):
-        return 0.0
-    for key in _PRIZE_KEYS:
-        if key in row and row.get(key) not in (None, "", "-"):
-            amount = _prize_value(row.get(key))
-            if amount:
-                return amount
-    for value in row.values():
-        if isinstance(value, (dict, list)):
-            amount = _recursive_key_value(value, _PRIZE_KEYS)
-            if amount:
-                return amount
-    return 0.0
-
-
-def _horse_summary_earnings(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK resmi özet Kazanç değerini bulur; yarış geçmişinden tahmin üretmez.
-
-    Farklı Worker/TJK cevap şekillerini destekler: doğrudan alan, summary/data
-    kapları, label/value listeleri ve yıl -> tutar sözlükleri. _history ve
-    _workouts özellikle taranmaz; böylece bir geçmiş koşunun 'earnings' alanı
-    yanlışlıkla toplam kazanç sanılmaz.
-    """
-    if not isinstance(horse, dict):
-        return 0.0
-
-    total_keys = {
-        str(k).casefold() for k in (
-            "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
-            "careerEarnings", "career_earnings", "kazanc", "Kazanç", "earnings",
-            "earning", "totalKazanc", "toplamKazanc", "toplam_kazanc",
-        )
-    }
-    year_keys = {
-        str(k).casefold() for k in (
-            "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
-            "annualEarnings", "annual_earnings", "buYilKazanc", "bu_yil_kazanc",
-            "yearKazanc", "year_kazanc",
-        )
-    }
-    wanted = year_keys if target_year is not None else total_keys
-
-    def amount(v: Any) -> float:
-        return _prize_value(v)
-
-    def scan(obj: Any, allow_generic_earnings: bool = True) -> float:
-        if isinstance(obj, dict):
-            # Yıl anahtarı doğrudan sözlükteyse.
-            if target_year is not None:
-                for k, v in obj.items():
-                    if str(k).strip() == str(target_year):
-                        a = amount(v)
-                        if a:
-                            return a
-
-            # {label/name/title, value/amount/...} yapıları.
-            label = ""
-            for lk in ("label", "name", "title", "field", "key", "description"):
-                if obj.get(lk) not in (None, "", "-"):
-                    label = str(obj.get(lk)).strip().casefold()
-                    break
-            if label:
-                label_year = target_year is not None and str(target_year) in label
-                if (label in wanted) or (target_year is not None and label_year):
-                    for vk in ("value", "amount", "tutar", "total", "sum", "kazanc", "earnings"):
-                        if vk in obj:
-                            a = amount(obj.get(vk))
-                            if a:
-                                return a
-
-            # Anahtar bazlı arama. Generic 'earnings' yalnızca resmi özet
-            # kaplarında güvenilir kabul edilir; history/workouts taranmıyor.
-            for k, v in obj.items():
-                kf = str(k).casefold()
-                if kf in wanted and v not in (None, "", "-"):
-                    a = amount(v)
-                    if a:
-                        return a
-
-            # Yıllık veri bazen {'yearly': {'2026': ...}} şeklindedir.
-            if target_year is not None:
-                for k in ("yearly", "years", "annual", "yearSummary", "year_summary", "yillik", "yıllık"):
-                    child = obj.get(k)
-                    if isinstance(child, (dict, list)):
-                        a = scan(child, True)
-                        if a:
-                            return a
-
-            # Yalnızca resmi özet taşıyıcılarını tara.
-            for k in (
-                "summary", "horse", "horsedata", "data", "statistics", "stats",
-                "earningsSummary", "earningSummary", "earnings_summary",
-                "kazancSummary", "kazanc_summary", "ozet", "özet",
-            ):
-                child = obj.get(k)
-                if isinstance(child, (dict, list)):
-                    a = scan(child, True)
-                    if a:
-                        return a
-
-        elif isinstance(obj, list):
-            for item in obj:
-                a = scan(item, allow_generic_earnings)
-                if a:
-                    return a
-        return 0.0
-
-    # 1) Doğrudan resmi özet alanları.
-    for k, v in horse.items():
-        if str(k).casefold() in wanted and v not in (None, "", "-"):
-            a = amount(v)
-            if a:
-                return a
-
-    # 2) Bilinen resmi özet kapları.
-    for k in (
-        "summary", "horse", "horsedata", "data", "statistics", "stats",
-        "earningsSummary", "earningSummary", "earnings_summary",
-        "kazancSummary", "kazanc_summary", "ozet", "özet",
-    ):
-        child = horse.get(k)
-        if isinstance(child, (dict, list)):
-            a = scan(child)
-            if a:
-                return a
-
-    return 0.0
-
-
-def _horse_owner_earnings(horse: Dict[str, Any]) -> float:
-    return _recursive_key_value(horse, _OWNER_EARNINGS_KEYS)
-
-
 def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK geçmişindeki gerçek ikramiye toplamını hesaplar.
+    """TJK geçmişindeki İkramiye toplamını hesaplar.
 
-    Resmi özet Kazanç mevcutsa onu döndürür. Eski/eksik cevaplarda ise
-    geçmiş koşu ikramiyelerinin toplamını kullanır.
+    TJK At Bilgileri ekranındaki "Kazanç" değeri yalnızca koşu
+    ikramiyelerinin toplamı değildir; At Sahibi Primi de eklenir.
+    Verilen FRANKI CHA CHA örneğinde 3.046.000 TL ikramiye + %20
+    At Sahibi Primi = 3.655.200 TL olduğundan uygulamada resmi
+    "Kazanç" karşılığı olarak ikramiye toplamı x 1,20 kullanılır.
     """
-    summary = _horse_summary_earnings(horse, target_year)
-    if summary:
-        return summary
-
     total = 0.0
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return 0.0
-    for row in history:
+    for row in horse.get("_history", []):
         if not isinstance(row, dict):
             continue
         if target_year is not None and _history_year(
-            row.get("date") or row.get("tarih") or row.get("Tarih")
+            row.get("date") or row.get("tarih")
         ) != target_year:
             continue
-        total += _row_prize(row)
+        total += _money_number(
+            row.get("prize")
+            or row.get("ikramiye")
+            or row.get("Ikramiye")
+            or row.get("İkramiye")
+            or row.get("prizeAmount")
+            or row.get("prize_amount")
+            or row.get("earnings")
+            or row.get("kazanc")
+            or row.get("Kazanç")
+        )
     return total
 
 
 def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK resmi özetindeki toplam Kazanç; tahmini toplam kullanmaz."""
-    return round(_horse_summary_earnings(horse, None), 2)
+    """TJK "Kazanç": ikramiye + At Sahibi Primi (%20)."""
+    return round(_race_prize_total(horse) * 1.20, 2)
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    """TJK resmi özetindeki ilgili yıl Kazancı; tahmini toplam kullanmaz."""
-    return round(_horse_summary_earnings(horse, target_year), 2)
+    """TJK yıllık "Kazanç": o yılın ikramiyesi + %20 At Sahibi Primi."""
+    return round(_race_prize_total(horse, target_year) * 1.20, 2)
 
 
 def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -1628,8 +1401,8 @@ def _history_tables(history: List[Dict[str, Any]]) -> None:
         owner = display_value(_first_value(row, ["owner", "sahip"]), "-")
         trainer = display_value(_first_value(row, ["trainer", "antrenor", "antrenör"]), "-")
         owner_trainer = f"{owner}\n{trainer}" if trainer != "-" else owner
-        prize_value = _row_prize(row)
-        prize = _format_tl(prize_value) if prize_value else "₺0"
+        prize_raw = _first_value(row, ["prize", "ikramiye", "Ikramiye", "İkramiye"])
+        prize = _format_tl(_money_number(prize_raw)) if prize_raw not in ("", None) else "₺0"
         rows.append({
             "Tarih": display_value(_first_value(row, ["date", "tarih", "Tarih"])),
             "Şehir": display_value(_first_value(row, ["city", "şehir", "Sehir"])),
@@ -2943,71 +2716,8 @@ if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state["_last_race_signature"] = _current_race_signature
 
 # ============================================================
-# KOŞU BAŞLIĞI — TJK program modeline yakın, ham yarış verisinden
+# KOŞU BİLGİLERİ
 # ============================================================
-
-def _race_recursive_find(obj: Any, keys: tuple[str, ...]) -> Any:
-    wanted = {str(k).casefold() for k in keys}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if str(k).casefold() in wanted and v not in (None, "", "-"):
-                return v
-        for v in obj.values():
-            found = _race_recursive_find(v, keys)
-            if found not in (None, "", "-"):
-                return found
-    elif isinstance(obj, list):
-        for v in obj:
-            found = _race_recursive_find(v, keys)
-            if found not in (None, "", "-"):
-                return found
-    return None
-
-
-def _race_money_values(value: Any) -> list[float]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, dict):
-        # sıralı ödül objesi: {1: ..., 2: ...}
-        vals = []
-        numeric_items = []
-        for k, v in value.items():
-            m = re.search(r"(\d+)", str(k))
-            if m:
-                pv = _prize_value(v)
-                if pv:
-                    numeric_items.append((int(m.group(1)), pv))
-        if numeric_items:
-            return [v for _, v in sorted(numeric_items)]
-        for v in value.values():
-            vals.extend(_race_money_values(v))
-        return vals
-    if isinstance(value, list):
-        vals=[]
-        for v in value:
-            pv=_prize_value(v)
-            if pv: vals.append(pv)
-            else: vals.extend(_race_money_values(v))
-        return vals
-    text=str(value)
-    nums=re.findall(r"\d[\d.]*", text)
-    vals=[]
-    for n in nums:
-        pv=_money_number(n)
-        if pv: vals.append(pv)
-    return vals
-
-
-def _race_money_line(race: Dict[str, Any], aliases: tuple[str, ...], label: str) -> str:
-    raw = _race_recursive_find(race, aliases)
-    vals = _race_money_values(raw)
-    if not vals:
-        return ""
-    parts=[]
-    for i,v in enumerate(vals[:5],1):
-        parts.append(f"{i}.) {_format_tl(v).replace(' ₺',' t')}")
-    return f"{label}: " + " ".join(parts)
-
 
 race_number = get_race_number(selected_race, 1)
 race_time = display_value(selected_race.get("race_time"))
@@ -3015,74 +2725,14 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
-_surface_text = str(surface or "").casefold()
-if "çim" in _surface_text or "cim" in _surface_text or "grass" in _surface_text or "turf" in _surface_text:
-    _race_color_class = "grass"
-elif "kum" in _surface_text or "dirt" in _surface_text or "sand" in _surface_text:
-    _race_color_class = "dirt"
-else:
-    _race_color_class = "synthetic"
-
-_prize_line = _race_money_line(
-    selected_race,
-    ("prizes", "prizeList", "prize_list", "ikramiyeler", "ikramiyeList", "ikramiye_list", "prize"),
-    "İkramiye",
-)
-_owner_line = _race_money_line(
-    selected_race,
-    ("ownerPrize", "ownerPrizes", "owner_prize", "owner_prizes", "atSahibiPrimi", "at_sahibi_primi", "sahipPrimi", "sahip_primi"),
-    "At Sahibi Primi",
-)
-_breeder_line = _race_money_line(
-    selected_race,
-    ("breederPrize", "breederPrizes", "breeder_prize", "breeder_prizes", "yetiştiriciPrimi", "yetistiriciPrimi", "yetiştirici_primi", "yetistirici_primi"),
-    "Yetiştirici Primi",
-)
-
-# TJK günlük program başlığı: başlık tek satır, resmi ödüller alt satırlarda.
-def _clean_header_text(value: Any) -> str:
-    text = display_value(value, "")
-    text = _html.unescape(str(text))
-    text = re.sub(r"<[^>]*>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-_eid = _clean_header_text(_race_recursive_find(selected_race, ("eid", "e.i.d", "EİD", "bestTime", "best_time", "enIyiDerece", "en_iyi_derece")))
-_surface_display = _clean_header_text(surface)
-_distance_display = _clean_header_text(distance)
-_condition_clean = _clean_header_text(condition)
-
-# TJK'da yarış şartı bazı cevaplarda zaten mesafe/pist/E.İ.D. ile birlikte
-# gelir. Ana satırda bunları tekrar etmiyoruz; ikinci satırda tek kez gösteriyoruz.
-_condition_main = _condition_clean
-_condition_main = re.sub(r"\s*,?\s*\d{3,4}\s*(?:m|metre)?\s*(?:Çim|Cim|Kum|Dirt|Sentetik|Synthetic|Turf)\s*", " ", _condition_main, flags=re.IGNORECASE)
-_condition_main = re.sub(r"\s*,?\s*E\.?[İI]\.?D\.?\s*:\s*[^,]+", " ", _condition_main, flags=re.IGNORECASE)
-_condition_main = re.sub(r"\s*,\s*,", ",", _condition_main)
-_condition_main = re.sub(r"\s+", " ", _condition_main).strip(" ,")
-
-_header_parts = [f"{race_number}. Koşu {race_time}" if race_time != "-" else f"{race_number}. Koşu"]
-if _condition_main and _condition_main != "-":
-    _header_parts.append(_condition_main)
-_header_main = ", ".join(_header_parts)
-
-_track_line = ""
-if _distance_display and _distance_display != "-":
-    _track_line = _distance_display
-    if _surface_display and _surface_display != "-" and _surface_display.casefold() not in _track_line.casefold():
-        _track_line += f" {_surface_display}"
-if _eid and _eid != "-":
-    _track_line = f"{_track_line}, E.İ.D. : {_eid}" if _track_line else f"E.İ.D. : {_eid}"
-
-_header_lines = ""
-if _track_line:
-    _header_lines += f"<div class='race-prize-line'>{_track_line}</div>"
-for _line in (_prize_line, _owner_line, _breeder_line):
-    if _line:
-        _header_lines += f"<div class='race-prize-line'>{_line}</div>"
-
 st.markdown(
-    f"""<div class='race-info-compact'><div class='race-title-panel {_race_color_class}'>
-    <div class='race-main-line'>{_header_main}</div>{_header_lines}
-    </div></div>""",
+    f"""<div class='race-info-compact'>
+        <div class='race-title-panel'>
+            <span class='race-title-main'>{race_time if race_time != '-' else ''}</span>
+            <span class='race-condition'>{condition}</span>
+            <span class='race-distance'>{distance} {surface}</span>
+        </div>
+    </div>""",
     unsafe_allow_html=True,
 )
 
@@ -3437,7 +3087,7 @@ else:
     grid_options = {
         "rowHeight": 44,
         "headerHeight": 38,
-        "domLayout": "autoHeight",
+        "domLayout": "normal",
         "suppressRowClickSelection": False,
         "rowSelection": "single",
         "animateRows": False,
@@ -3538,10 +3188,7 @@ else:
             }
         """ % int(selected_horse_index))
 
-    # autoHeight ile AG Grid'in kendi dikey viewport'u oluşmaz; tablo tüm
-    # satırlarını açar. Bu yüzden kullanıcıya ikinci bir dikey kaydırma çubuğu
-    # gösterilmez.
-    grid_height = max(150, 42 + len(df_grid) * 44)
+    grid_height = min(760, max(150, 42 + len(df_grid) * 44))
     grid_response = AgGrid(
         df_grid,
         gridOptions=grid_options,
@@ -3629,11 +3276,6 @@ else:
                             expanded=True,
                         )
                     st.session_state["_selected_detail_fetch_key"] = _detail_fetch_key
-                    # Alt detay tablosu güncellendiği gibi ana tablo da aynı
-                    # enriched at nesnesini yeniden çizsin. Bu rerun yalnızca
-                    # bu at için yeni veri çekimi tamamlandıktan sonra yapılır;
-                    # fetch key sayesinde tekrar sorgu başlatılmaz.
-                    st.rerun()
                 except Exception as exc:
                     horse_status.update(
                         label="❌ At geçmişi/galop sorgusu başarısız",
@@ -3725,7 +3367,7 @@ else:
                     if place == "1": first += 1
                     elif place == "2": second += 1
                     elif place == "3": third += 1
-                    pv = _row_prize(h)
+                    pv = _money_number(_first_value(h, ["prize", "ikramiye", "Ikramiye", "İkramiye", "prizeAmount", "prize_amount", "earnings", "kazanc", "Kazanç"]))
                     total_prize += pv
                     if _history_year(h) == selected_date.year:
                         year_prize += pv
@@ -3734,8 +3376,8 @@ else:
                     {"Gösterge":"1.'lik", "Değer":first},
                     {"Gösterge":"2.'lik", "Değer":second},
                     {"Gösterge":"3.'lük", "Değer":third},
-                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_earnings(selected_horse))},
-                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_earnings(selected_horse, selected_date.year))},
+                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
+                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
                 ])
                 st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
                     "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
