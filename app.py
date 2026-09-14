@@ -1406,11 +1406,19 @@ def _normalize_surface_for_table(value: Any) -> str:
         .replace("ö", "o")
         .replace("ç", "c")
     )
+    # TJK geçmişinde pist çoğu zaman K:Normal / Ç:Normal / S:Normal
+    # biçiminde gelir. Prefix doğrudan pist türünü belirler.
+    if text.startswith("k:") or text.startswith("k-") or text == "k":
+        return "kum"
+    if text.startswith("ç:") or text.startswith("c:") or text.startswith("c-") or text.startswith("cim:") or text == "ç" or text == "c":
+        return "cim"
+    if text.startswith("s:") or text.startswith("s-") or text == "s":
+        return "sentetik"
     if any(x in text for x in ("cim", "grass", "turf")):
         return "cim"
     if any(x in text for x in ("sentetik", "synthetic", "polytrack", "fiber")):
         return "sentetik"
-    if any(x in text for x in ("kum", "dirt")):
+    if any(x in text for x in ("kum", "dirt", "sand")):
         return "kum"
     return ""
 
@@ -1433,6 +1441,22 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
             or row.get("Surface")
             or row.get("trackSurface")
             or row.get("track_surface")
+            or row.get("surfaceType")
+            or row.get("surface_type")
+            or row.get("track")
+            or row.get("trackType")
+            or row.get("track_type")
+            or row.get("zemin")
+            or row.get("Zemin")
+            or row.get("pistTuru")
+            or row.get("pist_turu")
+            or row.get("PistTuru")
+            or row.get("surfaceName")
+            or row.get("surface_name")
+            or row.get("pistAdi")
+            or row.get("pist_adi")
+            or row.get("zeminTuru")
+            or row.get("zemin_turu")
             or ""
         )
         values.append(surface)
@@ -1452,16 +1476,35 @@ def last_race_display(horse: Dict[str, Any]) -> str:
 
 
 def best_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
-    """TJK günlük programındaki En İyi D. tooltip bilgilerinin görünür karşılığı."""
+    """EİD için TJK programı + gerçek geçmişten tamamlanan bilgi."""
     best = display_value(horse.get("bestTime"), "")
     if not best:
         return {}
+
+    city = display_value(horse.get("bestCity"), "")
+    date = display_value(horse.get("bestDate"), "")
+    distance = display_value(horse.get("bestDistance"), "")
+    info = display_value(horse.get("bestInfo"), "")
+
+    # Günlük programdaki EİD hücresi yalnızca derece içeriyorsa, aynı
+    # dereceyi atın gerçek geçmişinde arayıp hipodrom/tarih/mesafeyi tamamla.
+    for row in horse.get("_history", []):
+        if not isinstance(row, dict):
+            continue
+        row_time = display_value(_first_value(row, ["time", "derece", "Derece"]), "")
+        if row_time and row_time == best:
+            city = city or display_value(_first_value(row, ["city", "şehir", "Sehir"]), "")
+            date = date or display_value(_first_value(row, ["date", "tarih", "Tarih"]), "")
+            distance = distance or display_value(_first_value(row, ["distance", "msf", "mesafe"]), "")
+            info = info or display_value(_first_value(row, ["surface", "pist", "Pist"]), "")
+            break
+
     return {
         "Derece": best,
-        "Hipodrom": display_value(horse.get("bestCity"), "-"),
-        "Tarih": display_value(horse.get("bestDate"), "-"),
-        "Mesafe": display_value(horse.get("bestDistance"), "-"),
-        "Bilgi": display_value(horse.get("bestInfo"), "-"),
+        "Hipodrom": city or "-",
+        "Tarih": date or "-",
+        "Mesafe": distance or "-",
+        "Bilgi": info or "-",
     }
 
 
@@ -3076,7 +3119,7 @@ else:
     function(params) {
         const idx = params.data && params.data._horse_index;
         const selected = window.__ri_selected_horse_index;
-        const base = (params.node.rowIndex % 2 === 0) ? '#e5e5e5' : '#dcdcdc';
+        const base = '#e8e8e8';
         return {
             backgroundColor: (selected !== undefined && String(idx) === String(selected)) ? '#dceeff' : base,
             color: (selected !== undefined && String(idx) === String(selected)) ? '#062b55' : '#17212b',
@@ -3092,6 +3135,16 @@ else:
         # JavaScript helper body used inside renderers; all external cell data
         # is escaped before being inserted into HTML.
         return f"String({expr} ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;')"
+
+    st.markdown("""
+    <style>
+    .ag-theme-streamlit .ag-cell.ri-eid-cell { overflow: visible !important; }
+    .ag-theme-streamlit .ag-row { background: #e8e8e8 !important; }
+    .ag-theme-streamlit .ag-row-odd { background: #e8e8e8 !important; }
+    .ag-theme-streamlit .ag-tooltip { background:#ffffff !important; color:#ff0000 !important; border:1px solid #ff0000 !important; border-radius:6px !important; font-weight:600 !important; white-space:pre-line !important; }
+    .ag-theme-streamlit .ag-cell { background: transparent !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
     # AG Grid 29+ / streamlit-aggrid: direct HTML string returns may be rendered
     # as literal text. Use class-based cell renderers that create real DOM nodes.
@@ -3214,10 +3267,73 @@ else:
     class EidRenderer {
         init(params) {
             const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
+            const degree = String(params.value ?? '').trim();
+            const city = String((params.data && params.data._best_city) || '').trim();
+            const date = String((params.data && params.data._best_date) || '').trim();
+            const distance = String((params.data && params.data._best_distance) || '').trim();
+            const info = String((params.data && params.data._best_info) || '').trim();
+
+            span.textContent = degree;
             span.style.color = '#d40000';
             span.style.fontWeight = '900';
             span.style.cursor = 'help';
+            span.style.position = 'relative';
+            span.style.display = 'inline-block';
+
+            let message = '';
+            if (city || date) {
+                const hipodrom = /hipodrom/i.test(city) ? city : (city ? city + ' Hipodromu' : 'TJK Hipodromu');
+                message = 'Bu derece ' + hipodrom + "'nda " + (date || 'belirtilen tarihte') + ' yapılmıştır.';
+            } else if (degree) {
+                message = 'En İyi Derece: ' + degree;
+            }
+            if (distance) message += '\nMesafe: ' + distance;
+            if (info) message += '\n' + info;
+
+            // Native title fallback: bilgi kutusu her tarayıcıda çalışır.
+            if (message) span.setAttribute('title', message);
+
+            span.addEventListener('mouseenter', function() {
+                if (!message) return;
+                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+
+                const tooltip = document.createElement('div');
+                tooltip.textContent = message;
+                tooltip.style.position = 'fixed';
+                tooltip.style.zIndex = '2147483647';
+                tooltip.style.width = '250px';
+                tooltip.style.maxWidth = '300px';
+                tooltip.style.padding = '10px';
+                tooltip.style.background = '#ffffff';
+                tooltip.style.color = '#ff0000';
+                tooltip.style.border = '1px solid #ff0000';
+                tooltip.style.borderRadius = '6px';
+                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.25)';
+                tooltip.style.textAlign = 'center';
+                tooltip.style.whiteSpace = 'pre-line';
+                tooltip.style.fontSize = '14px';
+                tooltip.style.fontWeight = '600';
+                tooltip.style.lineHeight = '1.35';
+                tooltip.style.pointerEvents = 'none';
+
+                document.body.appendChild(tooltip);
+                window.__ri_eid_tooltip = tooltip;
+
+                const r = span.getBoundingClientRect();
+                const tw = tooltip.offsetWidth;
+                const th = tooltip.offsetHeight;
+                let left = r.left + (r.width / 2) - (tw / 2);
+                let top = r.top - th - 10;
+                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+                if (top < 8) top = r.bottom + 10;
+                tooltip.style.left = left + 'px';
+                tooltip.style.top = top + 'px';
+            });
+
+            span.addEventListener('mouseleave', function() {
+                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+            });
+
             this.eGui = span;
         }
         getGui() { return this.eGui; }
@@ -3237,10 +3353,12 @@ else:
                 const span = document.createElement('span');
                 span.textContent = ch;
                 span.style.fontWeight = '900';
-                const surf = String(surfaces[i] || '').toLowerCase();
-                if (surf === 'cim') span.style.color = '#138a36';
-                else if (surf === 'kum') span.style.color = '#8b5a2b';
-                else if (surf === 'sentetik') span.style.color = '#7b2cbf';
+                const surf = String(surfaces[i] || '').toLowerCase()
+                    .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g')
+                    .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
+                if (surf.includes('cim') || surf.includes('grass') || surf.includes('turf')) span.style.color = '#138a36';
+                else if (surf.includes('kum') || surf.includes('dirt')) span.style.color = '#8b5a2b';
+                else if (surf.includes('sentetik') || surf.includes('synthetic') || surf.includes('polytrack') || surf.includes('fiber')) span.style.color = '#7b2cbf';
                 else span.style.color = '#17212b';
                 root.appendChild(span);
                 if (i < chars.length - 1) {
@@ -3268,26 +3386,35 @@ else:
     }
     """)
 
-    df_grid["_best_city"] = [
-        str(horses[int(hidx)].get("bestCity") or "")
-        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+    def _best_meta_for_table(h):
+        best = display_value(h.get("bestTime"), "")
+        city = display_value(h.get("bestCity"), "")
+        date = display_value(h.get("bestDate"), "")
+        distance = display_value(h.get("bestDistance"), "")
+        info = display_value(h.get("bestInfo"), "")
+        if best:
+            for row in h.get("_history", []):
+                if not isinstance(row, dict):
+                    continue
+                row_time = display_value(_first_value(row, ["time", "derece", "Derece"]), "")
+                if row_time == best:
+                    city = city or display_value(_first_value(row, ["city", "şehir", "Sehir"]), "")
+                    date = date or display_value(_first_value(row, ["date", "tarih", "Tarih"]), "")
+                    distance = distance or display_value(_first_value(row, ["distance", "msf", "mesafe"]), "")
+                    info = info or display_value(_first_value(row, ["surface", "pist", "Pist"]), "")
+                    break
+        return city, date, distance, info
+
+    _best_meta = [
+        _best_meta_for_table(horses[int(hidx)])
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict)
+        else ("", "", "", "")
         for hidx in df["_horse_index"].tolist()
     ]
-    df_grid["_best_date"] = [
-        str(horses[int(hidx)].get("bestDate") or "")
-        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
-        for hidx in df["_horse_index"].tolist()
-    ]
-    df_grid["_best_distance"] = [
-        str(horses[int(hidx)].get("bestDistance") or "")
-        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
-        for hidx in df["_horse_index"].tolist()
-    ]
-    df_grid["_best_info"] = [
-        str(horses[int(hidx)].get("bestInfo") or "")
-        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
-        for hidx in df["_horse_index"].tolist()
-    ]
+    df_grid["_best_city"] = [x[0] for x in _best_meta]
+    df_grid["_best_date"] = [x[1] for x in _best_meta]
+    df_grid["_best_distance"] = [x[2] for x in _best_meta]
+    df_grid["_best_info"] = [x[3] for x in _best_meta]
     df_grid["_eid_click_token"] = ["" for _ in range(len(df_grid))]
     df_grid["_horse_click_token"] = ["" for _ in range(len(df_grid))]
     last_race_renderer = JsCode(r"""
@@ -3326,6 +3453,8 @@ else:
         "rowSelection": "single",
         "animateRows": False,
         "enableCellTextSelection": True,
+        "tooltipShowDelay": 0,
+        "tooltipHideDelay": 0,
         "ensureDomOrder": True,
         "defaultColDef": {
             "sortable": True,
@@ -3446,7 +3575,24 @@ else:
     gb.configure_column("Son 6 Y.", width=85, minWidth=70, cellRenderer=form_renderer)
     gb.configure_column("KGS", width=58, minWidth=50)
     gb.configure_column("s20", width=58, minWidth=50)
-    gb.configure_column("EİD", width=75, minWidth=65, cellRenderer=eid_renderer)
+    gb.configure_column(
+        "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell",
+        tooltipValueGetter=JsCode("""
+            function(params) {
+                const d = String(params.value || '').trim();
+                const city = String((params.data && params.data._best_city) || '').trim();
+                const date = String((params.data && params.data._best_date) || '').trim();
+                const distance = String((params.data && params.data._best_distance) || '').trim();
+                const info = String((params.data && params.data._best_info) || '').trim();
+                if (!city && !date && !distance && !info) return d ? ('En İyi Derece: ' + d) : '';
+                const hip = /hipodrom/i.test(city) ? city : (city ? city + ' Hipodromu' : 'TJK Hipodromu');
+                let msg = 'Bu derece ' + hip + "'nda " + (date || 'belirtilen tarihte') + ' yapılmıştır.';
+                if (distance) msg += '\nMesafe: ' + distance;
+                if (info) msg += '\nPist: ' + info;
+                return msg;
+            }
+        """),
+    )
     gb.configure_column("Gny", width=60, minWidth=50)
     gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90)
@@ -3471,7 +3617,7 @@ else:
             if (selected !== undefined && selected !== null && params.data && String(params.data._horse_index) === String(selected)) {
                 return {backgroundColor:'#dceeff', color:'#062b55', fontWeight:'700'};
             }
-            return {backgroundColor: (params.node.rowIndex % 2 === 0) ? '#e5e5e5' : '#dcdcdc'};
+            return {backgroundColor:'#e8e8e8'};
         }
     """)
     grid_options["onSelectionChanged"] = JsCode("""
