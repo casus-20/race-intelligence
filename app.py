@@ -335,52 +335,84 @@ st.markdown(
 
     .race-title-panel {
         width: 100% !important;
-        min-height: 36px;
         border: 1px solid #b9c8d8;
         border-radius: 7px;
-        background: #ffffff;
+        overflow: hidden;
+        background: #f8f3e7;
         color: #16324d;
-        padding: 7px 12px;
+        padding: 0 !important;
         box-sizing: border-box;
+        display: block !important;
+        box-shadow: none;
+        text-transform: none !important;
+    }
+    .race-title-panel .race-header-line {
+        width: 100%;
+        min-height: 34px;
+        box-sizing: border-box;
+        padding: 5px 10px;
         display: flex;
         align-items: center;
-        gap: 16px;
-        flex-wrap: nowrap;
-        box-shadow: none;
-        text-transform: uppercase;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 15px;
+        line-height: 1.15;
+        font-weight: 900;
+        white-space: nowrap;
+        overflow: hidden;
     }
-    .race-title-panel {
-         flex-direction: column !important;
-         align-items: flex-start !important;
-         justify-content: center !important;
-         gap: 2px !important;
-         text-transform: none !important;
-     }
-     .race-title-panel .race-header-line {
-         width: 100%;
-         font-size: 15px;
-         line-height: 1.2;
-         font-weight: 900;
-         white-space: nowrap;
-         overflow: hidden;
-         text-overflow: ellipsis;
-     }
-     .race-title-panel .race-header-detail {
-         font-weight: 900;
-     }
-     .race-title-panel .race-prize-line {
-         width: 100%;
-         font-size: 12px;
-         line-height: 1.15;
-         font-weight: 700;
-         white-space: nowrap;
-         overflow: hidden;
-         text-overflow: ellipsis;
-         min-height: 15px;
-     }
-     .race-title-panel .race-prize-line .prize-label {
-         font-weight: 900;
-     }
+    .race-title-panel .race-header-detail {
+        font-weight: 900;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .race-title-panel .race-prize-row {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 4px 10px;
+        background: #f8f3e7;
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        min-height: 28px;
+        overflow: hidden;
+    }
+    .race-title-panel .race-prize-line {
+        flex: 1 1 50%;
+        min-width: 0;
+        font-size: 12px;
+        line-height: 1.25;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: #506f13;
+    }
+    .race-title-panel .race-prize-line .prize-label {
+        font-weight: 900;
+        color: #506f13;
+    }
+    .race-title-panel .race-owner-row {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 4px 10px 5px;
+        background: #f8f3e7;
+        min-height: 27px;
+    }
+    .race-title-panel .race-owner-row .race-prize-line {
+        width: 100%;
+    }
+    @media (max-width: 900px) {
+        .race-title-panel .race-header-line {
+            font-size: 13px;
+        }
+        .race-title-panel .race-prize-row {
+            gap: 12px;
+        }
+        .race-title-panel .race-prize-line {
+            font-size: 11px;
+        }
+    }
     .race-title-panel .race-title-main {
         font-size: 30px;
         line-height: 1.0;
@@ -3141,17 +3173,23 @@ def _prize_line(label: str, text: str) -> str:
         f"<div class='race-prize-line'><span class='prize-label'>{label}:</span> {_html.escape(text or '-')}</div>"
     )
 
-_prize_html = (
-    _prize_line("İkramiye", _prize_text)
-    + _prize_line("Yetiştirici Primi", _breeder_prize_text)
-    + _prize_line("At Sahibi Primi", _owner_prize_text)
-)
+_ikramiye_html = _prize_line("İkramiye", _prize_text)
+_breeder_html = _prize_line("Yetiştirici Primi", _breeder_prize_text)
+_owner_html = _prize_line("At Sahibi Primi", _owner_prize_text)
 
 st.markdown(
     f"""<div class='race-info-compact'>
-        <div class='race-title-panel' style='background:{_race_bg};color:{_race_fg};'>
-            <div class='race-header-line'>{_race_first_line}</div>
-            {_prize_html}
+        <div class='race-title-panel'>
+            <div class='race-header-line' style='background:{_race_bg};color:{_race_fg};'>
+                {_race_first_line}
+            </div>
+            <div class='race-prize-row'>
+                {_ikramiye_html}
+                {_breeder_html}
+            </div>
+            <div class='race-owner-row'>
+                {_owner_html}
+            </div>
         </div>
     </div>""",
     unsafe_allow_html=True,
