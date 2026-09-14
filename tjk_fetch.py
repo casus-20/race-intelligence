@@ -26,11 +26,11 @@ CITY_IDS = {
     "Kocaeli": 9,
     "İstanbul": 3,
     "Bursa": 4,
-    "İzmir": 1,
-    "Adana": 2,
+    "İzmir": 2,
+    "Adana": 1,
     "Elazığ": 6,
-    "Diyarbakır": 7,
-    "Şanlıurfa": 8,
+    "Diyarbakır": 8,
+    "Şanlıurfa": 7,
     "Antalya": 10,
 }
 
@@ -120,15 +120,6 @@ def fetch_worker(
             f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
         )
 
-    # -----------------------------------------------------
-    # ŞEHİR İSTEĞİ
-    #
-    # Kritik: Kullanıcının seçtiği hipodrom adı Worker'a
-    # AYNI şekilde gönderilir. Elazığ <-> Şanlıurfa gibi
-    # herhangi bir alias/ters eşleme yapılmaz.
-    # Worker kendi CITY_IDS tablosu ile TJK'ya doğru SehirId
-    # göndermelidir.
-    # -----------------------------------------------------
     params = {
         "date": iso_date,
         "city": city,
@@ -432,6 +423,16 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     )
 
+    # TJK programındaki gerçek Orijin alanını koru.
+    result["origin"] = (
+        result.get("origin")
+        or result.get("orijin")
+        or result.get("Orijin")
+        or result.get("pedigree")
+        or ""
+    )
+    result["orijin"] = result["origin"]
+
     result["trainer"] = (
         result.get("trainer")
         or result.get("antrenor")
@@ -706,6 +707,81 @@ def get_horse_workouts(
     )
 
 
+def _normalize_history_rows(rows: Any) -> List[Dict[str, Any]]:
+    """Worker/TJK geçmişini uygulamanın tek standart şemasına getirir."""
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        x = dict(row)
+        aliases = {
+            "date": ("date", "tarih", "Tarih"),
+            "city": ("city", "şehir", "Sehir"),
+            "distance": ("distance", "msf", "mesafe", "Msf"),
+            "surface": ("surface", "pist", "Pist"),
+            "place": ("place", "sira", "Sıra", "S"),
+            "time": ("time", "derece", "Derece"),
+            "weight": ("weight", "kilo", "siklet", "Sıklet"),
+            "equipment": ("equipment", "taki", "takı", "Takı"),
+            "jockey": ("jockey", "jokey", "Jokey"),
+            "post": ("post", "st", "start", "St"),
+            "odds": ("odds", "gny", "Gny"),
+            "group": ("group", "grup", "Grup"),
+            "raceName": ("raceName", "race_name", "race", "koşu", "kosu"),
+            "className": ("className", "class", "kcins", "K Cinsi", "raceType"),
+            "trainer": ("trainer", "antrenor", "antrenör", "Antrenör"),
+            "owner": ("owner", "sahip", "Sahip"),
+            "hp": ("hp", "HP"),
+            "prize": ("prize", "ikramiye", "Ikramiye", "İkramiye"),
+            "s20": ("s20", "S20"),
+        }
+        for canonical, keys in aliases.items():
+            if x.get(canonical) in (None, ""):
+                for key in keys:
+                    if x.get(key) not in (None, ""):
+                        x[canonical] = x[key]
+                        break
+        out.append(x)
+    return out
+
+
+def _normalize_workout_rows(rows: Any) -> List[Dict[str, Any]]:
+    """TJK galop kayıtlarını tek standart şemaya getirir."""
+    if not isinstance(rows, list):
+        return []
+    out = []
+    distance_keys = ("2200", "2000", "1800", "1600", "1400", "1200", "1000", "800", "600", "400", "200")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        x = dict(row)
+        for d in distance_keys:
+            canonical = f"m{d}"
+            if x.get(canonical) in (None, ""):
+                for key in (d, f"{d}m", f"time{d}"):
+                    if x.get(key) not in (None, ""):
+                        x[canonical] = x[key]
+                        break
+        if x.get("date") in (None, ""):
+            for key in ("tarih", "Tarih"):
+                if x.get(key) not in (None, ""):
+                    x["date"] = x[key]
+                    break
+        if x.get("city") in (None, ""):
+            for key in ("track", "hipodrom", "İdman Hipodromu", "şehir", "Sehir"):
+                if x.get(key) not in (None, ""):
+                    x["city"] = x[key]
+                    break
+        if x.get("surface") in (None, "") and x.get("pist") not in (None, ""):
+            x["surface"] = x["pist"]
+        if x.get("type") in (None, "") and x.get("tur") not in (None, ""):
+            x["type"] = x["tur"]
+        out.append(x)
+    return out
+
+
 def get_horse_enrichment(
     at_id: Any,
     horse: str,
@@ -716,56 +792,55 @@ def get_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """TJK /horsedata + eksikse /horse ve /workouts fallback.
+    """Worker /horsedata çağrısı + eksikse /horse ve /workouts fallback.
 
-    /horsedata özellikle resmi TJK Kazanç özetini taşıyorsa onu kaybetmeden
-    sonucu aynen korur. Yarış bağlamı da endpoint'e gönderilir.
+    Yarış bağlamı da Worker'a gönderilir; böylece YB/TJK karşılaştırması
+    seçilen tarih, şehir, mesafe, pist ve sınıfa göre yapılabilir.
     """
-    horse_name = normalize_text(horse)
-    errors: List[str] = []
+    if at_id in (None, ""):
+        return {
+            "ok": False,
+            "history": [],
+            "workouts": [],
+            "error": "atId yok",
+        }
+
+    errors = []
     data: Dict[str, Any] = {}
 
-    # 1) Önce /horsedata: resmi TJK at sayfasındaki özet + geçmiş.
-    if at_id not in (None, ""):
-        try:
-            data = _worker_json(
-                API_HORSEDATA,
-                {
-                    "atId": str(at_id),
-                    "horse": horse_name,
-                    "date": normalize_date(target_date) if target_date else "",
-                    "city": normalize_text(target_city),
-                    "distance": normalize_text(target_distance),
-                    "surface": normalize_text(target_surface),
-                    "raceClass": normalize_text(target_class),
-                },
-                timeout=timeout,
-            )
-        except Exception as exc:
-            errors.append(f"horsedata: {exc}")
+    try:
+        data = _worker_json(
+            API_HORSEDATA,
+            {
+                "atId": str(at_id),
+                "horse": normalize_text(horse),
+                "date": normalize_date(target_date) if target_date else "",
+                "city": normalize_text(target_city),
+                "distance": normalize_text(target_distance),
+                "surface": normalize_text(target_surface),
+                "raceClass": normalize_text(target_class),
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        errors.append(f"horsedata: {exc}")
 
-    history = data.get("history", []) if isinstance(data, dict) else []
-    workouts = data.get("workouts", []) if isinstance(data, dict) else []
-    if not isinstance(history, list):
-        history = []
-    if not isinstance(workouts, list):
-        workouts = []
+    history = _normalize_history_rows(data.get("history"))
+    workouts = _normalize_workout_rows(data.get("workouts"))
 
-    # 2) Geçmiş yoksa /horse.
-    if not history and at_id not in (None, ""):
+    if not history:
         try:
             h = get_horse_history(at_id, timeout=timeout)
             if isinstance(h.get("history"), list):
-                history = h.get("history") or []
+                history = _normalize_history_rows(h.get("history"))
         except Exception as exc:
             errors.append(f"horse: {exc}")
 
-    # 3) Galop yoksa /workouts.
-    if not workouts and horse_name:
+    if not workouts:
         try:
-            w = get_horse_workouts(horse_name, timeout=timeout)
+            w = get_horse_workouts(horse, timeout=timeout)
             if isinstance(w.get("workouts"), list):
-                workouts = w.get("workouts") or []
+                workouts = _normalize_workout_rows(w.get("workouts"))
         except Exception as exc:
             errors.append(f"workouts: {exc}")
 
@@ -774,19 +849,10 @@ def get_horse_enrichment(
     result["workouts"] = workouts
     result["historyCount"] = len(history)
     result["workoutCount"] = len(workouts)
-    result["ok"] = bool(history or workouts) or bool(result.get("ok"))
-
-    if errors and not (history or workouts or any(
-        result.get(k) not in (None, "", "-", 0, 0.0)
-        for k in (
-            "totalEarnings", "total_earnings", "lifetimeEarnings",
-            "careerEarnings", "kazanc", "Kazanç", "earnings",
-            "yearEarnings", "year_earnings", "yearlyEarnings",
-            "annualEarnings", "yearKazanc", "buYilKazanc",
-        )
-    )):
-        result["error"] = " | ".join(dict.fromkeys(errors))
-
+    result["dataSchema"] = "tjk-v54-standard"
+    result["ok"] = bool(history or workouts) or bool(data.get("ok")) if isinstance(data, dict) else bool(history or workouts)
+    if errors and not (history or workouts):
+        result["error"] = " | ".join(errors)
     return result
 
 # =========================================================
