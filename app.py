@@ -3736,22 +3736,62 @@ else:
     weight_renderer = JsCode(r"""
     class WeightRenderer {
         init(params) {
-            const root = document.createElement('span');
-            const v = String(params.value ?? '');
-            const m = v.match(/^(.*?)(\s*\+\s*\d+(?:[.,]\d+)?)\s*$/);
+            const root = document.createElement('div');
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.flexDirection = 'column';
+            root.style.alignItems = 'flex-start';
+            root.style.justifyContent = 'center';
+            root.style.textAlign = 'left';
+            root.style.overflow = 'hidden';
+            root.style.lineHeight = '1.0';
+
+            const v = String(params.value ?? '').trim();
+            const m = v.match(/^(.*?)(?:\s*(\+\s*\d+(?:[.,]\d+)?))\s*$/);
+
+            const base = document.createElement('span');
+            base.textContent = m ? m[1].trim() : v;
+            base.style.color = '#000000';
+            base.style.fontWeight = '900';
+            base.style.fontSize = '13px';
+            base.style.whiteSpace = 'nowrap';
+            base.style.overflow = 'hidden';
+            base.style.textOverflow = 'clip';
+            base.style.maxWidth = '100%';
+            root.appendChild(base);
+
             if (m) {
-                const base = document.createTextNode(m[1]);
-                root.appendChild(base);
                 const extra = document.createElement('span');
-                extra.textContent = m[2];
-                extra.style.color = '#000000';
-                extra.style.fontWeight = '900';
+                extra.textContent = m[2].replace(/\s+/g, '');
+                extra.style.color = '#d40000';
+                extra.style.fontWeight = '400';
+                extra.style.fontSize = '10px';
+                extra.style.whiteSpace = 'nowrap';
+                extra.style.maxWidth = '100%';
+                extra.style.overflow = 'hidden';
+                extra.style.textOverflow = 'clip';
                 root.appendChild(extra);
-            } else {
-                root.textContent = v;
             }
+
             this.eGui = root;
+            requestAnimationFrame(() => {
+                let size = 13;
+                while (size > 8 && base.scrollWidth > root.clientWidth) {
+                    size -= 0.5;
+                    base.style.fontSize = size + 'px';
+                }
+                if (m) {
+                    let extraSize = 10;
+                    const extra = root.children[1];
+                    while (extraSize > 8 && extra.scrollWidth > root.clientWidth) {
+                        extraSize -= 0.5;
+                        extra.style.fontSize = extraSize + 'px';
+                    }
+                }
+            });
         }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -3916,10 +3956,25 @@ else:
         init(params) {
             const span = document.createElement('span');
             span.textContent = String(params.value ?? '');
+            span.style.display = 'block';
+            span.style.width = '100%';
+            span.style.overflow = 'hidden';
+            span.style.whiteSpace = 'nowrap';
+            span.style.textOverflow = 'clip';
+            span.style.textAlign = 'left';
             span.style.color = '#138a36';
             span.style.fontWeight = '900';
+            span.style.fontSize = '13px';
             this.eGui = span;
+            requestAnimationFrame(() => {
+                let size = 13;
+                while (size > 8 && span.scrollWidth > span.clientWidth) {
+                    size -= 0.5;
+                    span.style.fontSize = size + 'px';
+                }
+            });
         }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -4147,19 +4202,19 @@ else:
     gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=145, maxWidth=145, resizable=False, cellRenderer=horse_name_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("Yaş", width=55, minWidth=55, maxWidth=55, resizable=False, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=165, maxWidth=165, resizable=False, cellRenderer=origin_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"))
+    gb.configure_column("Kilo", width=75, minWidth=75, maxWidth=75, resizable=False, cellRenderer=weight_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("Jokey", width=105, minWidth=105, maxWidth=105, resizable=False, cellRenderer=jockey_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("Sahip / Antrenör", width=150, minWidth=150, maxWidth=150, resizable=False, cellRenderer=owner_trainer_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("St", width=78, minWidth=78, maxWidth=78, resizable=False, cellRenderer=start_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("HP", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=hp_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("Son 6 Y.", width=85, minWidth=85, maxWidth=85, resizable=False, cellRenderer=form_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("KGS", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=kgs_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("s20", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=compact_black_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("s20", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=compact_black_renderer, cellClass="ri-left-centered-cell", cellStyle=JsCode("function(params){return {color:'#0f766e',fontWeight:'900'};}"))
     gb.configure_column(
         "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell"
     )
-    gb.configure_column("Gny", width=60, minWidth=50, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"))
-    gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
+    gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
+    gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
     gb.configure_column("ŞART UYUMU", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
