@@ -1393,6 +1393,35 @@ def workout_display(horse: Dict[str, Any]) -> str:
     return "-"
 
 
+def _last_six_surface_data(horse: Dict[str, Any]) -> str:
+    """Ana tabloda Son 6 Y. rakamlarının pist türünü taşıyan gizli veri."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return ""
+
+    values = []
+    for row in history[:6]:
+        if not isinstance(row, dict):
+            values.append("")
+            continue
+        surface = str(
+            row.get("surface")
+            or row.get("pist")
+            or row.get("Pist")
+            or ""
+        ).strip().lower()
+        if "çim" in surface or "cim" in surface or "grass" in surface or "turf" in surface:
+            values.append("cim")
+        elif "sentetik" in surface or "synthetic" in surface or "polytrack" in surface or "fiber" in surface:
+            values.append("sentetik")
+        elif "kum" in surface or "dirt" in surface:
+            values.append("kum")
+        else:
+            values.append("")
+
+    return "|".join(values)
+
+
 def last_race_display(horse: Dict[str, Any]) -> str:
     """Ana tabloda SON KOŞU sütununda yalnızca gerçek dereceyi gösterir."""
     row = horse.get("_last_race")
@@ -3016,6 +3045,11 @@ else:
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
         for hidx in df["_horse_index"].tolist()
     ]
+    df_grid["_form_surfaces"] = [
+        _last_six_surface_data(horses[int(hidx)])
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+        for hidx in df["_horse_index"].tolist()
+    ]
 
     def _js_safe(v):
         return str(v if v is not None else "").replace("\\", "\\\\").replace("'", "\\'")
@@ -3043,6 +3077,27 @@ else:
 
     # AG Grid 29+ / streamlit-aggrid: direct HTML string returns may be rendered
     # as literal text. Use class-based cell renderers that create real DOM nodes.
+    horse_name_renderer = JsCode(r"""
+    class HorseNameRenderer {
+        init(params) {
+            const root = document.createElement('div');
+            root.style.lineHeight = '1.18';
+            root.style.whiteSpace = 'pre-line';
+            const parts = String(params.value ?? '').split(/\r?\n/);
+            parts.forEach((part, i) => {
+                if (i > 0) root.appendChild(document.createElement('br'));
+                const span = document.createElement('span');
+                span.textContent = part;
+                span.style.color = '#f1c40f';
+                span.style.fontWeight = '900';
+                root.appendChild(span);
+            });
+            this.eGui = root;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
     origin_renderer = JsCode(r"""
     class OriginRenderer {
         init(params) {
@@ -3059,7 +3114,7 @@ else:
                 root.appendChild(document.createElement('br'));
                 const dam = document.createElement('span');
                 dam.textContent = parts[1] || '';
-                dam.style.color = '#111111';
+                dam.style.color = '#800020';
                 dam.style.fontWeight = '700';
                 root.appendChild(dam);
             }
@@ -3079,10 +3134,8 @@ else:
                 if (i > 0) root.appendChild(document.createElement('br'));
                 const span = document.createElement('span');
                 span.textContent = part;
-                if (/^Ap$/i.test(part.trim())) {
-                    span.style.color = '#d40000';
-                    span.style.fontWeight = '900';
-                }
+                span.style.color = '#138a36';
+                span.style.fontWeight = '900';
                 root.appendChild(span);
             });
             this.eGui = root;
@@ -3146,12 +3199,60 @@ else:
             span.textContent = String(params.value ?? '');
             span.style.color = '#d40000';
             span.style.fontWeight = '900';
+            const d = params.data || {};
+            const city = String(d._best_city || '').trim();
+            const date = String(d._best_date || '').trim();
+            if (city || date) {
+                const hipodrom = /hipodrom/i.test(city) ? city : `${city || 'TJK'} Hipodromu`;
+                span.title = `Bu derece ${hipodrom}'nda ${date || 'belirtilen tarihte'} yapılmıştır.`;
+            }
             this.eGui = span;
         }
         getGui() { return this.eGui; }
     }
     """)
 
+    form_renderer = JsCode(r"""
+    class FormRenderer {
+        init(params) {
+            const root = document.createElement('div');
+            root.style.whiteSpace = 'nowrap';
+            root.style.fontWeight = '900';
+            const text = String(params.value ?? '');
+            const surfaces = String((params.data && params.data._form_surfaces) || '').split('|');
+            const chars = Array.from(text);
+            chars.forEach((ch, i) => {
+                const span = document.createElement('span');
+                span.textContent = ch;
+                span.style.fontWeight = '900';
+                const surf = String(surfaces[i] || '').toLowerCase();
+                if (surf === 'cim') span.style.color = '#138a36';
+                else if (surf === 'kum') span.style.color = '#8b5a2b';
+                else if (surf === 'sentetik') span.style.color = '#7b2cbf';
+                else span.style.color = '#17212b';
+                root.appendChild(span);
+                if (i < chars.length - 1) {
+                    const space = document.createElement('span');
+                    space.textContent = ' ';
+                    root.appendChild(space);
+                }
+            });
+            this.eGui = root;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    df_grid["_best_city"] = [
+        str(horses[int(hidx)].get("bestCity") or "")
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+        for hidx in df["_horse_index"].tolist()
+    ]
+    df_grid["_best_date"] = [
+        str(horses[int(hidx)].get("bestDate") or "")
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
+        for hidx in df["_horse_index"].tolist()
+    ]
     last_race_renderer = JsCode(r"""
     class LastRaceRenderer {
         init(params) {
@@ -3173,7 +3274,7 @@ else:
     grid_options = {
         "rowHeight": 44,
         "headerHeight": 38,
-        "domLayout": "normal",
+        "domLayout": "autoHeight",
         "suppressRowClickSelection": False,
         "rowSelection": "single",
         "animateRows": False,
@@ -3201,7 +3302,7 @@ else:
         """),
         "onCellClicked": JsCode("""
             function(params) {
-                if (params.colDef && params.colDef.field === 'At İsmi' && params.node) {
+                if (params.colDef && (params.colDef.field === 'At İsmi' || params.colDef.field === 'EİD') && params.node) {
                     params.node.setSelected(true);
                     if (params.data && params.data._horse_index !== undefined) {
                         window.__ri_selected_horse_index = params.data._horse_index;
@@ -3221,7 +3322,7 @@ else:
 
     # Sabit sütunlar.
     gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"])
-    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120)
+    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120, cellRenderer=horse_name_renderer)
     gb.configure_column("Yaş", width=55, minWidth=48)
     gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
     gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer)
@@ -3229,7 +3330,7 @@ else:
     gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
     gb.configure_column("St", width=52, minWidth=45)
     gb.configure_column("HP", width=58, minWidth=50)
-    gb.configure_column("Son 6 Y.", width=85, minWidth=70)
+    gb.configure_column("Son 6 Y.", width=85, minWidth=70, cellRenderer=form_renderer)
     gb.configure_column("KGS", width=58, minWidth=50)
     gb.configure_column("s20", width=58, minWidth=50)
     gb.configure_column("EİD", width=75, minWidth=65, cellRenderer=eid_renderer)
@@ -3244,6 +3345,9 @@ else:
     gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105)
     gb.configure_column("_horse_index", hide=True)
     gb.configure_column("_last_surface", hide=True)
+    gb.configure_column("_form_surfaces", hide=True)
+    gb.configure_column("_best_city", hide=True)
+    gb.configure_column("_best_date", hide=True)
 
     grid_options = gb.build()
     grid_options["rowStyle"] = JsCode("""
@@ -3274,7 +3378,7 @@ else:
             }
         """ % int(selected_horse_index))
 
-    grid_height = min(760, max(150, 42 + len(df_grid) * 44))
+    grid_height = max(150, 42 + len(df_grid) * 44)
     grid_response = AgGrid(
         df_grid,
         gridOptions=grid_options,
