@@ -370,12 +370,16 @@ st.markdown(
      }
      .race-title-panel .race-prize-line {
          width: 100%;
-         font-size: 13px;
-         line-height: 1.2;
+         font-size: 12px;
+         line-height: 1.15;
          font-weight: 700;
          white-space: nowrap;
          overflow: hidden;
          text-overflow: ellipsis;
+         min-height: 15px;
+     }
+     .race-title-panel .race-prize-line .prize-label {
+         font-weight: 900;
      }
     .race-title-panel .race-title-main {
         font-size: 30px;
@@ -2991,6 +2995,92 @@ def _race_prize_text(race: Dict[str, Any]) -> str:
     return ""
 
 
+def _race_prize_lines(race: Dict[str, Any]) -> tuple[str, str, str]:
+    """Koşu başlığında 3 ayrı satır için gerçek/uygulanabilir ikramiye metni üretir.
+
+    Öncelik TJK/Worker'dan gelen ayrı prim alanlarındadır. Tek bir 1-5 ikramiye
+    listesi geldiyse Yetiştirici Primi %30 ve At Sahibi Primi %20 olarak aynı
+    resmi program formatına dönüştürülür. Hiç veri yoksa değer uydurulmaz.
+    """
+    def pick(keys):
+        value = _race_value(race, keys)
+        if value not in (None, ""):
+            return value
+        horses = race.get("horses") if isinstance(race, dict) else None
+        if isinstance(horses, list) and horses and isinstance(horses[0], dict):
+            return _first_value(horses[0], keys)
+        return ""
+
+    base_value = pick([
+        "prize", "prizes", "ikramiye", "ikramiyeler",
+        "prizeText", "prize_text", "prizeInfo", "prize_info",
+        "ikramiyeText", "ikramiye_text", "ikramiyeInfo",
+    ])
+    breeder_value = pick([
+        "breederPrize", "breeder_prize", "breederPremium", "breeder_premium",
+        "yettiriciPrize", "yetistiriciPrize", "yetistirici_primi",
+        "yetiştiriciPrimi", "yetiştiricilikPrimi", "yeticilik_primi",
+        "breeder", "breederPrizes",
+    ])
+    owner_value = pick([
+        "ownerPrize", "owner_prize", "ownerPremium", "owner_premium",
+        "atSahibiPrimi", "at_sahibi_primi", "atSahibiPrize",
+        "owner", "ownerPrizes",
+    ])
+
+    base_text = _format_prize_text(base_value)
+    breeder_text = _format_prize_text(breeder_value)
+    owner_text = _format_prize_text(owner_value)
+
+    # Bazı Worker sürümlerinde tüm kategoriler tek metin halinde gelebilir.
+    combined = " ".join(x for x in (base_text, breeder_text, owner_text) if x)
+    if combined:
+        def section_text(pattern):
+            m = re.search(pattern + r"\s*[:\-]?\s*(.*?)(?=\s+(?:Yetiştirici(?:lik)?\s+Primi|Yetiştiricilik\s+Primi|At\s+Sahibi\s+Primi)\s*[:\-]?|$)", combined, re.I)
+            return m.group(1).strip() if m else ""
+        if not breeder_text:
+            breeder_text = section_text(r"Yetiştirici(?:lik)?\s+Primi")
+        if not owner_text:
+            owner_text = section_text(r"At\s+Sahibi\s+Primi")
+        if not base_text:
+            base_text = section_text(r"İkramiye")
+
+    # 1-5 ana ikramiye tutarlarını bul.
+    def amounts(text):
+        vals = []
+        for m in re.finditer(r"(?:\b[1-5]\s*\.?\s*\)?\s*)?(\d{1,3}(?:[\.,]\d{3})+(?:[\.,]\d+)?)\s*(?:TL|t)?", text or "", re.I):
+            raw = m.group(1).replace(".", "").replace(",", ".")
+            try:
+                vals.append(float(raw))
+            except Exception:
+                pass
+        return vals[:5]
+
+    base_amounts = amounts(base_text)
+    breeder_amounts = amounts(breeder_text)
+    owner_amounts = amounts(owner_text)
+
+    def fmt_amounts(vals):
+        if not vals:
+            return ""
+        def f(v):
+            if abs(v - round(v)) < 1e-9:
+                return f"{int(round(v)):,}".replace(",", ".") + " t"
+            return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " t"
+        return "  ".join(f"{i+1}.) {f(v)}" for i, v in enumerate(vals))
+
+    if base_amounts and len(breeder_amounts) < 5:
+        breeder_amounts = [round(v * 0.30) for v in base_amounts]
+    if base_amounts and len(owner_amounts) < 5:
+        owner_amounts = [round(v * 0.20) for v in base_amounts]
+
+    return (
+        fmt_amounts(base_amounts) or base_text,
+        fmt_amounts(breeder_amounts) or breeder_text,
+        fmt_amounts(owner_amounts) or owner_text,
+    )
+
+
 def _race_surface_color(surface_value: Any) -> tuple[str, str]:
     normalized = _normalize_surface_for_table(surface_value)
     if normalized == "cim":
@@ -3029,7 +3119,7 @@ _race_href = f"{_daily_url}#{_race_id}" if _race_id else _daily_url
 _race_title = (
     f"{race_number}. Koşu {race_time}" if race_time != "-" else f"{race_number}. Koşu"
 )
-_prize_text = _race_prize_text(selected_race)
+_prize_text, _breeder_prize_text, _owner_prize_text = _race_prize_lines(selected_race)
 _best_for_header = display_value(selected_race.get("bestTime"), "")
 if not _best_for_header:
     _best_for_header = display_value(
@@ -3046,10 +3136,15 @@ _race_first_line = (
 if _best_for_header:
     _race_first_line += f"<span class='race-header-detail'>, E.İ.D. : {_html.escape(_best_for_header)}</span>"
 
+def _prize_line(label: str, text: str) -> str:
+    return (
+        f"<div class='race-prize-line'><span class='prize-label'>{label}:</span> {_html.escape(text or '-')}</div>"
+    )
+
 _prize_html = (
-    f"<div class='race-prize-line'><strong>İkramiye:</strong> {_html.escape(_prize_text)}</div>"
-    if _prize_text else
-    "<div class='race-prize-line'><strong>İkramiye:</strong> -</div>"
+    _prize_line("İkramiye", _prize_text)
+    + _prize_line("Yetiştirici Primi", _breeder_prize_text)
+    + _prize_line("At Sahibi Primi", _owner_prize_text)
 )
 
 st.markdown(
@@ -3501,6 +3596,53 @@ else:
     }
     """)
 
+    start_renderer = JsCode(r"""
+    class StartRenderer {
+        init(params) {
+            const root = document.createElement('div');
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.flexDirection = 'column';
+            root.style.alignItems = 'center';
+            root.style.justifyContent = 'center';
+            root.style.textAlign = 'center';
+            root.style.lineHeight = '1.05';
+            root.style.whiteSpace = 'normal';
+            const raw = String(params.value ?? '').trim();
+            const m = raw.match(/^\s*(\d+)\s*(?:[-–—:]?\s*)?(.*)$/);
+            const number = document.createElement('div');
+            number.textContent = m ? m[1] : raw;
+            number.style.color = '#000000';
+            number.style.fontWeight = '900';
+            number.style.fontSize = '13px';
+            root.appendChild(number);
+            const detail = document.createElement('div');
+            const rest = m ? m[2].trim() : '';
+            const tokens = rest.split(/(\bDS\b|\bTS\b)/gi);
+            tokens.forEach(token => {
+                if (!token) return;
+                const span = document.createElement('span');
+                span.textContent = token;
+                if (/^(DS|TS)$/i.test(token.trim())) {
+                    span.style.color = '#d40000';
+                    span.style.fontWeight = '500';
+                } else {
+                    span.style.color = '#000000';
+                    span.style.fontWeight = '400';
+                }
+                detail.appendChild(span);
+            });
+            detail.style.fontSize = '9px';
+            detail.style.fontWeight = '400';
+            detail.style.color = '#000000';
+            root.appendChild(detail);
+            this.eGui = root;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
     form_renderer = JsCode(r"""
     class FormRenderer {
         init(params) {
@@ -3761,7 +3903,7 @@ else:
     gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=black_bold_style)
     gb.configure_column("Jokey", width=105, minWidth=90, cellRenderer=jockey_renderer)
     gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
-    gb.configure_column("St", width=52, minWidth=45, cellStyle=black_bold_style)
+    gb.configure_column("St", width=78, minWidth=68, cellRenderer=start_renderer)
     gb.configure_column("HP", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column("Son 6 Y.", width=85, minWidth=70, cellRenderer=form_renderer)
     gb.configure_column("KGS", width=58, minWidth=50, cellStyle=black_bold_style)
