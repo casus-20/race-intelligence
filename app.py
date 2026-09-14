@@ -3520,24 +3520,43 @@ else:
     class OriginRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
-            root.style.whiteSpace = 'nowrap';
-            const parts = String(params.value ?? '').split(/\r?\n/);
-            const sire = document.createElement('span');
-            sire.textContent = parts[0] || '';
-            sire.style.color = '#1565c0';
-            sire.style.fontWeight = '800';
-            root.appendChild(sire);
-            if (parts.length > 1) {
-                root.appendChild(document.createElement('br'));
-                const dam = document.createElement('span');
-                dam.textContent = parts[1] || '';
-                dam.style.color = '#800020';
-                dam.style.fontWeight = '700';
-                root.appendChild(dam);
-            }
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.flexDirection = 'column';
+            root.style.alignItems = 'flex-start';
+            root.style.justifyContent = 'center';
+            root.style.textAlign = 'left';
+            root.style.overflow = 'hidden';
+            root.style.lineHeight = '1.05';
+
+            const parts = String(params.value ?? '').split(/\r?\n/).filter(x => x !== '');
+            parts.forEach((part, i) => {
+                const span = document.createElement('span');
+                span.textContent = part;
+                span.style.whiteSpace = 'nowrap';
+                span.style.maxWidth = '100%';
+                span.style.overflow = 'hidden';
+                span.style.textOverflow = 'clip';
+                span.style.display = 'block';
+                span.style.fontSize = '13px';
+                span.style.fontWeight = i === 0 ? '800' : '700';
+                span.style.color = i === 0 ? '#1565c0' : '#800020';
+                root.appendChild(span);
+            });
+
             this.eGui = root;
+            const fit = () => root.querySelectorAll('span').forEach(span => {
+                let size = 13;
+                span.style.fontSize = size + 'px';
+                while (size > 8 && span.scrollWidth > root.clientWidth) {
+                    size -= 0.5;
+                    span.style.fontSize = size + 'px';
+                }
+            });
+            requestAnimationFrame(fit);
         }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -3590,23 +3609,126 @@ else:
     class OwnerTrainerRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
-            const parts = String(params.value ?? '').split(/\r?\n/);
-            const owner = document.createElement('span');
-            owner.textContent = parts[0] || '';
-            owner.style.color = '#1565c0';
-            owner.style.fontWeight = '800';
-            root.appendChild(owner);
-            if (parts.length > 1) {
-                root.appendChild(document.createElement('br'));
-                const trainer = document.createElement('span');
-                trainer.textContent = parts[1] || '';
-                trainer.style.color = '#d40000';
-                trainer.style.fontWeight = '800';
-                root.appendChild(trainer);
-            }
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.flexDirection = 'column';
+            root.style.alignItems = 'flex-start';
+            root.style.justifyContent = 'center';
+            root.style.textAlign = 'left';
+            root.style.overflow = 'hidden';
+            root.style.lineHeight = '1.05';
+
+            const parts = String(params.value ?? '').split(/\r?\n/).filter(x => x !== '');
+            parts.forEach((part, i) => {
+                const span = document.createElement('span');
+                span.textContent = part;
+                span.style.whiteSpace = 'nowrap';
+                span.style.maxWidth = '100%';
+                span.style.overflow = 'hidden';
+                span.style.textOverflow = 'clip';
+                span.style.display = 'block';
+                span.style.fontSize = '13px';
+                span.style.fontWeight = '800';
+                span.style.color = i === 0 ? '#1565c0' : '#d40000';
+                root.appendChild(span);
+            });
+
             this.eGui = root;
+            const fit = () => root.querySelectorAll('span').forEach(span => {
+                let size = 13;
+                span.style.fontSize = size + 'px';
+                while (size > 8 && span.scrollWidth > root.clientWidth) {
+                    size -= 0.5;
+                    span.style.fontSize = size + 'px';
+                }
+            });
+            requestAnimationFrame(fit);
         }
+        refresh(params) { return false; }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    compact_black_renderer = JsCode(r"""
+    class CompactBlackRenderer {
+        init(params) {
+            const span = document.createElement('span');
+            span.textContent = String(params.value ?? '');
+            span.style.display = 'block';
+            span.style.width = '100%';
+            span.style.overflow = 'hidden';
+            span.style.whiteSpace = 'nowrap';
+            span.style.textOverflow = 'clip';
+            span.style.textAlign = 'left';
+            span.style.fontWeight = '900';
+            span.style.fontSize = '13px';
+            this.eGui = span;
+            requestAnimationFrame(() => {
+                let size = 13;
+                while (size > 8 && span.scrollWidth > span.clientWidth) {
+                    size -= 0.5;
+                    span.style.fontSize = size + 'px';
+                }
+            });
+        }
+        refresh(params) { return false; }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    hp_renderer = JsCode(r"""
+    class HpRenderer {
+        init(params) {
+            const span = document.createElement('span');
+            span.textContent = String(params.value ?? '');
+            span.style.display = 'block';
+            span.style.width = '100%';
+            span.style.overflow = 'hidden';
+            span.style.whiteSpace = 'nowrap';
+            span.style.textOverflow = 'clip';
+            span.style.textAlign = 'left';
+            span.style.fontWeight = '900';
+            span.style.fontSize = '13px';
+            span.style.color = '#d40000';
+            this.eGui = span;
+            requestAnimationFrame(() => {
+                let size = 13;
+                while (size > 8 && span.scrollWidth > span.clientWidth) {
+                    size -= 0.5;
+                    span.style.fontSize = size + 'px';
+                }
+            });
+        }
+        refresh(params) { return false; }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    kgs_renderer = JsCode(r"""
+    class KgsRenderer {
+        init(params) {
+            const span = document.createElement('span');
+            span.textContent = String(params.value ?? '');
+            span.style.display = 'block';
+            span.style.width = '100%';
+            span.style.overflow = 'hidden';
+            span.style.whiteSpace = 'nowrap';
+            span.style.textOverflow = 'clip';
+            span.style.textAlign = 'left';
+            span.style.fontWeight = '900';
+            span.style.fontSize = '13px';
+            span.style.color = '#e67e00';
+            this.eGui = span;
+            requestAnimationFrame(() => {
+                let size = 13;
+                while (size > 8 && span.scrollWidth > span.clientWidth) {
+                    size -= 0.5;
+                    span.style.fontSize = size + 'px';
+                }
+            });
+        }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -3806,10 +3928,16 @@ else:
     class WorkoutRenderer {
         init(params) {
             const root = document.createElement('span');
+            root.style.display = 'block';
+            root.style.width = '100%';
+            root.style.overflow = 'hidden';
+            root.style.whiteSpace = 'nowrap';
+            root.style.textAlign = 'left';
             root.style.fontWeight = '900';
             root.style.color = '#8b5a2b';
+            root.style.fontSize = '13px';
             const text = String(params.value ?? '');
-            const m = text.match(/^(.*?)(\\s*\\(600\\))$/i);
+            const m = text.match(/^(.*?)(\s*\(600\))$/i);
             if (m) {
                 const main = document.createElement('span');
                 main.textContent = m[1].trim();
@@ -3825,7 +3953,15 @@ else:
                 root.textContent = text;
             }
             this.eGui = root;
+            requestAnimationFrame(() => {
+                let size = 13;
+                while (size > 8 && root.scrollWidth > root.clientWidth) {
+                    size -= 0.5;
+                    root.style.fontSize = size + 'px';
+                }
+            });
         }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -4007,28 +4143,27 @@ else:
     gb.configure_grid_options(**grid_options)
 
     # Sabit sütunlar.
-    black_bold_style = JsCode("function(params){return {color:'#000000',fontWeight:'900'};}")
-    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"], cellStyle=black_bold_style)
+    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"], cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"))
     gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=145, maxWidth=145, resizable=False, cellRenderer=horse_name_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("Yaş", width=55, minWidth=55, maxWidth=55, resizable=False, cellStyle=black_bold_style, cellClass="ri-left-centered-cell")
-    gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
-    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=black_bold_style)
+    gb.configure_column("Yaş", width=55, minWidth=55, maxWidth=55, resizable=False, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
+    gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=165, maxWidth=165, resizable=False, cellRenderer=origin_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"))
     gb.configure_column("Jokey", width=105, minWidth=105, maxWidth=105, resizable=False, cellRenderer=jockey_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
-    gb.configure_column("St", width=78, minWidth=68, cellRenderer=start_renderer)
-    gb.configure_column("HP", width=58, minWidth=50, cellStyle=black_bold_style)
+    gb.configure_column("Sahip / Antrenör", width=150, minWidth=150, maxWidth=150, resizable=False, cellRenderer=owner_trainer_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("St", width=78, minWidth=78, maxWidth=78, resizable=False, cellRenderer=start_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("HP", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=hp_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("Son 6 Y.", width=85, minWidth=85, maxWidth=85, resizable=False, cellRenderer=form_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("KGS", width=58, minWidth=50, cellStyle=black_bold_style)
-    gb.configure_column("s20", width=58, minWidth=50, cellStyle=black_bold_style)
+    gb.configure_column("KGS", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=kgs_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("s20", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=compact_black_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column(
         "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell"
     )
-    gb.configure_column("Gny", width=60, minWidth=50, cellStyle=black_bold_style)
+    gb.configure_column("Gny", width=60, minWidth=50, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"))
     gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
     gb.configure_column("ŞART UYUMU", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
-    gb.configure_column("SON GALOP", width=95, minWidth=80, cellRenderer=workout_renderer)
+    gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
