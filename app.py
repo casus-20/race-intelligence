@@ -1085,16 +1085,20 @@ def enrich_race_horses(
     progress_callback=None,
 ) -> List[Dict[str, Any]]:
     """
-    Seçili koşudaki atların gerçek TJK koşu + galop verisini alır.
+    Seçili koşudaki atları TJK bülten sırasını BOZMADAN tek tek zenginleştirir.
 
-    progress_callback(done, total, horse_name) verilirse işlem ilerlemesini
-    ana Streamlit akışına bildirir. Sonuç sırası programdaki at sırasıdır.
+    İstek sırası:
+        1 -> 2 -> 3 -> ... (bültendeki gerçek sıra)
+    Sonuç listesi de aynı sıradadır.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
     if not enriched:
         return []
 
-    def one(item):
+    results = []
+    total = len(enriched)
+
+    for idx, item in enumerate(enriched):
         at_id = (
             item.get("atId")
             or item.get("at_id")
@@ -1107,6 +1111,7 @@ def enrich_race_horses(
             or ""
         )
         name = get_horse_name(item)
+
         data = load_horse_enrichment(
             str(at_id),
             name,
@@ -1122,6 +1127,50 @@ def enrich_race_horses(
         item["_at_id"] = str(at_id) if at_id else ""
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
+
+        # TJK resmi Kazanç değerleri Worker/TJK'dan geldiyse aynen sakla.
+        if isinstance(data, dict):
+            for key in (
+                "totalEarnings", "total_earnings",
+                "lifetimeEarnings", "lifetime_earnings",
+                "careerEarnings", "career_earnings",
+                "totalKazanc", "toplamKazanc", "toplam_kazanc",
+                "kazanc", "Kazanç", "earnings", "earning",
+            ):
+                if data.get(key) not in (None, "", "-", 0, 0.0):
+                    item["_tjk_total_earnings"] = data.get(key)
+                    item["totalEarnings"] = data.get(key)
+                    break
+
+            for key in (
+                "yearEarnings", "year_earnings",
+                "yearlyEarnings", "yearly_earnings",
+                "annualEarnings", "annual_earnings",
+                "yearKazanc", "year_kazanc",
+                "buYilKazanc", "bu_yil_kazanc",
+            ):
+                if data.get(key) not in (None, "", "-", 0, 0.0):
+                    item["_tjk_year_earnings"] = data.get(key)
+                    item["yearEarnings"] = data.get(key)
+                    break
+
+            if data.get("earnings") and isinstance(data.get("earnings"), dict):
+                e = data["earnings"]
+                total_value = (
+                    e.get("total") or e.get("totalEarnings") or
+                    e.get("kazanc") or e.get("Kazanç")
+                )
+                year_value = (
+                    e.get("year") or e.get("yearEarnings") or
+                    e.get("yearly") or e.get("buYil")
+                )
+                if total_value not in (None, "", "-", 0, 0.0):
+                    item["_tjk_total_earnings"] = total_value
+                    item["totalEarnings"] = total_value
+                if year_value not in (None, "", "-", 0, 0.0):
+                    item["_tjk_year_earnings"] = year_value
+                    item["yearEarnings"] = year_value
+
         if isinstance(data, dict) and data.get("error"):
             item["_enrichment_error"] = str(data.get("error"))
 
@@ -1145,21 +1194,12 @@ def enrich_race_horses(
             if has_date and has_time:
                 item["_last_race"] = row
                 break
-        return item
 
-    results = [None] * len(enriched)
-    with ThreadPoolExecutor(max_workers=min(3, len(enriched))) as executor:
-        future_map = {executor.submit(one, h): i for i, h in enumerate(enriched)}
-        done = 0
-        for future in as_completed(future_map):
-            idx = future_map[future]
-            results[idx] = future.result()
-            done += 1
-            if progress_callback:
-                progress_callback(done, len(enriched), get_horse_name(results[idx]))
+        results.append(item)
+        if progress_callback:
+            progress_callback(idx + 1, total, name)
 
-    return [r for r in results if isinstance(r, dict)]
-
+    return results
 
 def _history_year(date_text: Any) -> int | None:
     m = re.search(r"(20\d{2})", str(date_text or ""))
@@ -1221,14 +1261,45 @@ def _format_tl(value: float) -> str:
     return f"{n:,}".replace(",", ".") + " ₺"
 
 
-def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
-    """TJK geçmişindeki İkramiye toplamını hesaplar.
+def _official_earnings_value(horse: Dict[str, Any], year: int | None = None) -> float:
+    """Worker/TJK'dan gelen resmi Kazanç değerini kullanır.
 
-    TJK At Bilgileri ekranındaki "Kazanç" değeri yalnızca koşu
-    ikramiyelerinin toplamı değildir; At Sahibi Primi de eklenir.
-    Verilen FRANKI CHA CHA örneğinde 3.046.000 TL ikramiye + %20
-    At Sahibi Primi = 3.655.200 TL olduğundan uygulamada resmi
-    "Kazanç" karşılığı olarak ikramiye toplamı x 1,20 kullanılır.
+    Öncelik:
+      1) enrichment sırasında kaydedilen _tjk_total_earnings / _tjk_year_earnings
+      2) Worker'ın doğrudan döndürdüğü resmi alanlar
+    Burada artık %20 tahmini yapılmaz.
+    """
+    if year is None:
+        keys = (
+            "_tjk_total_earnings",
+            "totalEarnings", "total_earnings",
+            "lifetimeEarnings", "lifetime_earnings",
+            "careerEarnings", "career_earnings",
+            "totalKazanc", "toplamKazanc", "toplam_kazanc",
+            "kazanc", "Kazanç", "earnings", "earning",
+        )
+    else:
+        keys = (
+            "_tjk_year_earnings",
+            "yearEarnings", "year_earnings",
+            "yearlyEarnings", "yearly_earnings",
+            "annualEarnings", "annual_earnings",
+            "yearKazanc", "year_kazanc",
+            "buYilKazanc", "bu_yil_kazanc",
+        )
+    for key in keys:
+        if key in horse and horse.get(key) not in (None, "", "-", 0, 0.0):
+            value = _money_number(horse.get(key))
+            if value > 0:
+                return value
+    return 0.0
+
+
+def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> float:
+    """Geçmiş satırlarından yalnızca ikramiye toplamını hesaplar.
+
+    Bu yalnızca resmi TJK Kazanç alanı hiç gelmezse son çare fallback'tir.
+    Resmi Kazanç mevcutsa total_earnings/year_earnings onu kullanır.
     """
     total = 0.0
     for row in horse.get("_history", []):
@@ -1245,22 +1316,26 @@ def _race_prize_total(horse: Dict[str, Any], target_year: int | None = None) -> 
             or row.get("İkramiye")
             or row.get("prizeAmount")
             or row.get("prize_amount")
-            or row.get("earnings")
-            or row.get("kazanc")
-            or row.get("Kazanç")
         )
     return total
 
 
 def total_earnings(horse: Dict[str, Any]) -> float:
-    """TJK "Kazanç": ikramiye + At Sahibi Primi (%20)."""
-    return round(_race_prize_total(horse) * 1.20, 2)
+    """Ana tabloda TJK'nın resmi toplam Kazanç değerini gösterir."""
+    official = _official_earnings_value(horse)
+    if official > 0:
+        return round(official, 2)
+    # Resmi alan yoksa mevcut geçmiş verisini yanlış %20 ile şişirmemek için
+    # yalnızca gerçek ikramiye toplamını döndür.
+    return round(_race_prize_total(horse), 2)
 
 
 def year_earnings(horse: Dict[str, Any], target_year: int) -> float:
-    """TJK yıllık "Kazanç": o yılın ikramiyesi + %20 At Sahibi Primi."""
-    return round(_race_prize_total(horse, target_year) * 1.20, 2)
-
+    """Ana tabloda TJK'nın resmi yıllık Kazanç değerini gösterir."""
+    official = _official_earnings_value(horse, target_year)
+    if official > 0:
+        return round(official, 2)
+    return round(_race_prize_total(horse, target_year), 2)
 
 def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
     workouts = horse.get("_workouts", [])
@@ -2897,14 +2972,10 @@ else:
             "Antrenör": trainer or "-",
         })
 
-    # Ekran sırası TJK programındaki gerçek AT NUMARASIDIR.
-    # Analiz sırası (_rank) yalnızca BİZİM SKOR / analiz özetinde kullanılır.
-    # Böylece program 1,2,3,4... şeklinde gelir; 3,2,4,9 gibi skor sıralaması
-    # ana program tablosunun düzenini bozmaz.
-    table_rows.sort(key=lambda row: (
-        int(row.get("_horse_no", 999999)),
-        int(row.get("_horse_index", 999999)),
-    ))
+    # KRİTİK: Ana tablo sırası TJK bülteninden gelen horses listesidir.
+    # At numarasına, skora veya analiz rank'ına göre yeniden sıralama YOK.
+    # _horse_index bülten sırasını temsil eder.
+    table_rows.sort(key=lambda row: int(row.get("_horse_index", 999999)))
 
     df = pd.DataFrame(table_rows)
     display_columns = [
