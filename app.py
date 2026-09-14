@@ -3450,6 +3450,14 @@ else:
     }
     .ag-theme-streamlit .ag-row .ag-cell {
         background: inherit !important;
+        vertical-align: middle !important;
+    }
+    .ag-theme-streamlit .ag-row .ag-cell.ri-left-centered-cell {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        overflow: hidden !important;
     }
     .ag-theme-streamlit .ag-pinned-left-cols-container .ag-row .ag-cell {
         background: inherit !important;
@@ -3464,8 +3472,16 @@ else:
     class HorseNameRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
-            root.style.whiteSpace = 'pre-line';
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.flexDirection = 'column';
+            root.style.alignItems = 'flex-start';
+            root.style.justifyContent = 'center';
+            root.style.textAlign = 'left';
+            root.style.overflow = 'hidden';
+            root.style.lineHeight = '1.08';
+            root.style.boxSizing = 'border-box';
             const parts = String(params.value ?? '').split(/\r?\n/);
             parts.forEach((part, i) => {
                 if (i > 0) root.appendChild(document.createElement('br'));
@@ -3473,10 +3489,29 @@ else:
                 span.textContent = part;
                 span.style.color = (i === 0) ? '#d40000' : '#f1c40f';
                 span.style.fontWeight = '900';
+                span.style.whiteSpace = 'nowrap';
+                span.style.maxWidth = '100%';
+                span.style.overflow = 'hidden';
+                span.style.textOverflow = 'clip';
+                span.style.display = 'block';
+                span.style.fontSize = '13px';
                 root.appendChild(span);
             });
             this.eGui = root;
+            this.fitText = () => {
+                const spans = root.querySelectorAll('span');
+                spans.forEach(span => {
+                    let size = 13;
+                    span.style.fontSize = size + 'px';
+                    while (size > 8 && span.scrollWidth > root.clientWidth) {
+                        size -= 0.5;
+                        span.style.fontSize = size + 'px';
+                    }
+                });
+            };
+            requestAnimationFrame(this.fitText);
         }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -3511,7 +3546,15 @@ else:
     class JockeyRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.lineHeight = '1.18';
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.flexDirection = 'column';
+            root.style.alignItems = 'flex-start';
+            root.style.justifyContent = 'center';
+            root.style.textAlign = 'left';
+            root.style.overflow = 'hidden';
+            root.style.lineHeight = '1.08';
             const parts = String(params.value ?? '').split(/\r?\n/);
             parts.forEach((part, i) => {
                 if (i > 0) root.appendChild(document.createElement('br'));
@@ -3519,10 +3562,26 @@ else:
                 span.textContent = part;
                 span.style.color = '#138a36';
                 span.style.fontWeight = '900';
+                span.style.whiteSpace = 'nowrap';
+                span.style.maxWidth = '100%';
+                span.style.overflow = 'hidden';
+                span.style.display = 'block';
+                span.style.fontSize = '13px';
                 root.appendChild(span);
             });
             this.eGui = root;
+            requestAnimationFrame(() => {
+                root.querySelectorAll('span').forEach(span => {
+                    let size = 13;
+                    span.style.fontSize = size + 'px';
+                    while (size > 8 && span.scrollWidth > root.clientWidth) {
+                        size -= 0.5;
+                        span.style.fontSize = size + 'px';
+                    }
+                });
+            });
         }
+        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -3950,15 +4009,15 @@ else:
     # Sabit sütunlar.
     black_bold_style = JsCode("function(params){return {color:'#000000',fontWeight:'900'};}")
     gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"], cellStyle=black_bold_style)
-    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=120, cellRenderer=horse_name_renderer)
-    gb.configure_column("Yaş", width=55, minWidth=48, cellStyle=black_bold_style)
+    gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=145, maxWidth=145, resizable=False, cellRenderer=horse_name_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("Yaş", width=55, minWidth=55, maxWidth=55, resizable=False, cellStyle=black_bold_style, cellClass="ri-left-centered-cell")
     gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
     gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=black_bold_style)
-    gb.configure_column("Jokey", width=105, minWidth=90, cellRenderer=jockey_renderer)
+    gb.configure_column("Jokey", width=105, minWidth=105, maxWidth=105, resizable=False, cellRenderer=jockey_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
     gb.configure_column("St", width=78, minWidth=68, cellRenderer=start_renderer)
     gb.configure_column("HP", width=58, minWidth=50, cellStyle=black_bold_style)
-    gb.configure_column("Son 6 Y.", width=85, minWidth=70, cellRenderer=form_renderer)
+    gb.configure_column("Son 6 Y.", width=85, minWidth=85, maxWidth=85, resizable=False, cellRenderer=form_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("KGS", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column("s20", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column(
