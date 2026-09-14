@@ -120,9 +120,23 @@ def fetch_worker(
             f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
         )
 
+    # -----------------------------------------------------
+    # UZAK WORKER / TJK ŞEHİR EŞLEŞMESİ
+    #
+    # Mevcut Worker sürümünde Elazığ ve Şanlıurfa istekleri
+    # ters eşleşiyor. Arayüzdeki isimleri değiştirmeden,
+    # yalnızca Worker'a gönderilen şehir adını tersine çevir.
+    # Böylece kullanıcı arayüzünde Elazığ -> Elazığ,
+    # Şanlıurfa -> Şanlıurfa kalır; doğru yarış programı gelir.
+    # -----------------------------------------------------
+    worker_city = {
+        "Elazığ": "Şanlıurfa",
+        "Şanlıurfa": "Elazığ",
+    }.get(city, city)
+
     params = {
         "date": iso_date,
-        "city": city,
+        "city": worker_city,
     }
 
     try:
@@ -700,88 +714,84 @@ def get_horse_workouts(
 def get_horse_enrichment(
     at_id: Any,
     horse: str,
-    timeout: int = 20,
+    timeout: int = 45,
     target_date: Any = None,
     target_city: str = "",
     target_distance: Any = None,
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """
-    Mevcut uygulama mimarisini bozmadan gerçek koşu geçmişi ve galop verisini
-    hafif Worker endpointlerinden alır.
+    """TJK /horsedata + eksikse /horse ve /workouts fallback.
 
-    ÖNEMLİ:
-    Eski sürüm önce /horsedata çağırıyordu. Bu endpoint tek at için birden
-    fazla TJK sayfası taradığı için Worker 503/resource-limit oluşturabiliyordu.
-    Burada doğrudan mevcut /horse ve /workouts endpointleri kullanılır.
-    target_* parametreleri uygulama ile geriye dönük uyumluluk için korunur.
+    /horsedata özellikle resmi TJK Kazanç özetini taşıyorsa onu kaybetmeden
+    sonucu aynen korur. Yarış bağlamı da endpoint'e gönderilir.
     """
     horse_name = normalize_text(horse)
     errors: List[str] = []
+    data: Dict[str, Any] = {}
 
-    def fetch_history() -> Dict[str, Any]:
-        if at_id in (None, ""):
-            return {"ok": False, "history": [], "error": "atId yok"}
+    # 1) Önce /horsedata: resmi TJK at sayfasındaki özet + geçmiş.
+    if at_id not in (None, ""):
         try:
-            return get_horse_history(at_id, timeout=timeout)
+            data = _worker_json(
+                API_HORSEDATA,
+                {
+                    "atId": str(at_id),
+                    "horse": horse_name,
+                    "date": normalize_date(target_date) if target_date else "",
+                    "city": normalize_text(target_city),
+                    "distance": normalize_text(target_distance),
+                    "surface": normalize_text(target_surface),
+                    "raceClass": normalize_text(target_class),
+                },
+                timeout=timeout,
+            )
         except Exception as exc:
-            return {"ok": False, "history": [], "error": str(exc)}
+            errors.append(f"horsedata: {exc}")
 
-    def fetch_workouts() -> Dict[str, Any]:
-        if not horse_name:
-            return {"ok": False, "workouts": [], "error": "At adı yok"}
-        try:
-            return get_horse_workouts(horse_name, timeout=timeout)
-        except Exception as exc:
-            return {"ok": False, "workouts": [], "error": str(exc)}
-
-    # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        history_future = executor.submit(fetch_history)
-        workout_future = executor.submit(fetch_workouts)
-        history_data = history_future.result()
-        workout_data = workout_future.result()
-
-    history = history_data.get("history", []) if isinstance(history_data, dict) else []
-    workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
-
+    history = data.get("history", []) if isinstance(data, dict) else []
+    workouts = data.get("workouts", []) if isinstance(data, dict) else []
     if not isinstance(history, list):
         history = []
     if not isinstance(workouts, list):
         workouts = []
 
-    # Sadece boş kalan tarafı bir kez tekrar dene.
+    # 2) Geçmiş yoksa /horse.
     if not history and at_id not in (None, ""):
-        retry = fetch_history()
-        if isinstance(retry, dict) and isinstance(retry.get("history"), list):
-            history = retry.get("history") or []
-        if not history and isinstance(retry, dict) and retry.get("error"):
-            errors.append(f"horse: {retry.get('error')}")
+        try:
+            h = get_horse_history(at_id, timeout=timeout)
+            if isinstance(h.get("history"), list):
+                history = h.get("history") or []
+        except Exception as exc:
+            errors.append(f"horse: {exc}")
 
+    # 3) Galop yoksa /workouts.
     if not workouts and horse_name:
-        retry = fetch_workouts()
-        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
-            workouts = retry.get("workouts") or []
-        if not workouts and isinstance(retry, dict) and retry.get("error"):
-            errors.append(f"workouts: {retry.get('error')}")
+        try:
+            w = get_horse_workouts(horse_name, timeout=timeout)
+            if isinstance(w.get("workouts"), list):
+                workouts = w.get("workouts") or []
+        except Exception as exc:
+            errors.append(f"workouts: {exc}")
 
-    if not history and isinstance(history_data, dict) and history_data.get("error"):
-        errors.append(f"horse: {history_data.get('error')}")
-    if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
-        errors.append(f"workouts: {workout_data.get('error')}")
+    result = dict(data) if isinstance(data, dict) else {}
+    result["history"] = history
+    result["workouts"] = workouts
+    result["historyCount"] = len(history)
+    result["workoutCount"] = len(workouts)
+    result["ok"] = bool(history or workouts) or bool(result.get("ok"))
 
-    errors = list(dict.fromkeys(errors))
+    if errors and not (history or workouts or any(
+        result.get(k) not in (None, "", "-", 0, 0.0)
+        for k in (
+            "totalEarnings", "total_earnings", "lifetimeEarnings",
+            "careerEarnings", "kazanc", "Kazanç", "earnings",
+            "yearEarnings", "year_earnings", "yearlyEarnings",
+            "annualEarnings", "yearKazanc", "buYilKazanc",
+        )
+    )):
+        result["error"] = " | ".join(dict.fromkeys(errors))
 
-    result: Dict[str, Any] = {
-        "ok": bool(history or workouts),
-        "history": history,
-        "workouts": workouts,
-        "historyCount": len(history),
-        "workoutCount": len(workouts),
-    }
-    if errors:
-        result["error"] = " | ".join(errors)
     return result
 
 # =========================================================
