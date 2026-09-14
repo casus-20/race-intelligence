@@ -610,9 +610,19 @@ with mode_col:
 # ============================================================
 
 def fetch_program_with_status(selected_date, selected_city, label):
-    """Programı alır; eski status/expander panelini ekrana basmaz."""
+    """Programı alır ve Worker tarafından dönen kimliği doğrular."""
     try:
-        return load_program(selected_date, selected_city)
+        program = load_program(selected_date, selected_city)
+        if not isinstance(program, dict):
+            raise RuntimeError("TJK program cevabı geçersiz.")
+        debug = program.get("debug") if isinstance(program.get("debug"), dict) else {}
+        worker_date = str(debug.get("worker_response_date") or "").strip()
+        worker_city = str(debug.get("worker_response_city") or "").strip()
+        if worker_date and worker_date != selected_date.isoformat():
+            raise RuntimeError(f"Yanlış tarih verisi: {worker_date}")
+        if worker_city and worker_city.casefold() != str(selected_city).casefold():
+            raise RuntimeError(f"Yanlış hipodrom verisi: {worker_city}")
+        return program
     except Exception as exc:
         raise RuntimeError(f"{label}: {exc}") from exc
 
