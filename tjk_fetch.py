@@ -102,12 +102,24 @@ def format_date_tr(value: Any) -> str:
 # WORKER BAĞLANTISI
 # =========================================================
 
-def _request_worker(
-    iso_date: str,
+def fetch_worker(
+    date_value: Any,
     city: str,
     timeout: int = 45,
 ) -> Dict[str, Any]:
-    """Worker'a tek bir şehir isteği gönderir ve ham JSON'u döndürür."""
+
+    iso_date = normalize_date(date_value)
+    city = normalize_text(city)
+
+    if not city:
+        raise ValueError("Hipodrom belirtilmedi.")
+
+    if city not in CITY_IDS:
+        raise ValueError(
+            f"Bilinmeyen hipodrom: {city}. "
+            f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
+        )
+
     params = {
         "date": iso_date,
         "city": city,
@@ -149,7 +161,9 @@ def _request_worker(
         ) from exc
 
     if not isinstance(data, dict):
-        raise RuntimeError("Worker cevabı beklenen JSON nesnesi değil.")
+        raise RuntimeError(
+            "Worker cevabı beklenen JSON nesnesi değil."
+        )
 
     if not data.get("ok", False):
         error = normalize_text(
@@ -157,88 +171,12 @@ def _request_worker(
             or data.get("message")
             or "Worker veri alamadı."
         )
-        raise RuntimeError(f"TJK Worker hatası: {error}")
 
-    return data
-
-
-def _source_city_identity(data: Dict[str, Any]) -> tuple[str, int | None]:
-    """Worker'ın sourceUrl alanından gerçek TJK şehir/id bilgisini çıkarır."""
-    source_url = normalize_text(
-        data.get("sourceUrl") or data.get("source_url") or ""
-    )
-    if not source_url:
-        return "", None
-
-    from urllib.parse import parse_qs, urlparse
-
-    try:
-        query = parse_qs(urlparse(source_url).query)
-    except Exception:
-        return "", None
-
-    raw_name = (query.get("SehirAdi") or [""])[0]
-    raw_id = (query.get("SehirId") or [""])[0]
-
-    try:
-        city_id = int(raw_id) if str(raw_id).strip() else None
-    except (TypeError, ValueError):
-        city_id = None
-
-    return normalize_text(raw_name), city_id
-
-
-def fetch_worker(
-    date_value: Any,
-    city: str,
-    timeout: int = 45,
-) -> Dict[str, Any]:
-    """
-    Worker'dan programı alır.
-
-    ÖNEMLİ DÜZELTME:
-    Elazığ/Şanlıurfa gibi iki şehirde Worker'ın yanlış şehir ID'si ile
-    cevap verme ihtimaline karşı, dönen sourceUrl içindeki SehirId gerçek
-    TJK kimliği olarak kontrol edilir. İstenen şehir için ID yanlışsa,
-    yalnızca aynı şehir çiftindeki alternatif istek denenir. Böylece
-    körlemesine "Elazığ -> Şanlıurfa" alias'ı kullanılmaz.
-    """
-    iso_date = normalize_date(date_value)
-    city = normalize_text(city)
-
-    if not city:
-        raise ValueError("Hipodrom belirtilmedi.")
-
-    if city not in CITY_IDS:
-        raise ValueError(
-            f"Bilinmeyen hipodrom: {city}. "
-            f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
+        raise RuntimeError(
+            f"TJK Worker hatası: {error}"
         )
 
-    data = _request_worker(iso_date, city, timeout)
-    source_name, source_id = _source_city_identity(data)
-    expected_id = CITY_IDS[city]
-
-    # Worker doğru TJK ID'sini döndürdüyse olduğu gibi kullan.
-    if source_id is None or source_id == expected_id:
-        return data
-
-    # Yalnızca bilinen problemli çiftte, gerçek ID'yi elde etmek için
-    # alternatif adı dene. Sonucu körlemesine kabul etmiyoruz; sourceUrl
-    # tekrar doğrulanıyor.
-    pair = {"Elazığ", "Şanlıurfa"}
-    if city in pair:
-        alternative = "Şanlıurfa" if city == "Elazığ" else "Elazığ"
-        alt_data = _request_worker(iso_date, alternative, timeout)
-        _, alt_id = _source_city_identity(alt_data)
-        if alt_id == expected_id:
-            return alt_data
-
-    raise RuntimeError(
-        "Worker yanlış hipodrom verisi döndürdü: "
-        f"istenen={city} (TJK ID {expected_id}), "
-        f"gelen={source_name or '?'} (TJK ID {source_id})."
-    )
+    return data
 
 
 # =========================================================
@@ -308,6 +246,22 @@ def get_program(
         total_horses += len(horses)
 
     # -----------------------------------------------------
+    # Worker kaynak URL'si ile gerçek TJK şehir isteğini doğrula.
+    # Worker cevabındaki `city` alanına güvenme; bu alan istenen
+    # şehirden üretilebildiği için yanlış programı maskeleyebilir.
+    # -----------------------------------------------------
+    source_url = normalize_text(data.get("sourceUrl", ""))
+    expected_city_id = CITY_IDS.get(city)
+    if source_url and expected_city_id is not None:
+        import re
+        id_match = re.search(r"[?&]SehirId=(\d+)", source_url, flags=re.I)
+        if id_match and int(id_match.group(1)) != int(expected_city_id):
+            raise RuntimeError(
+                f"Yanlış TJK hipodrom kaynağı: istenen={city} "
+                f"(SehirId={expected_city_id}), kaynak={id_match.group(1)}"
+            )
+
+    # -----------------------------------------------------
     # Streamlit'in beklediği standart cevap
     # -----------------------------------------------------
 
@@ -346,7 +300,7 @@ def get_program(
 
         "status": data.get("status"),
 
-        "source_url": data.get("sourceUrl", ""),
+        "source_url": source_url,
 
         "debug": {
             "transport": "Cloudflare Worker",
@@ -357,6 +311,12 @@ def get_program(
             "city_id": CITY_IDS.get(city),
 
             "worker_status": data.get("status"),
+            "worker_response_date": normalize_text(
+                data.get("date") or data.get("targetDate") or data.get("programDate") or ""
+            ),
+            "worker_response_city": normalize_text(
+                data.get("city") or data.get("hipodrom") or data.get("track") or data.get("venue") or ""
+            ),
 
             "race_count": len(races),
 
@@ -369,10 +329,7 @@ def get_program(
                 "TJK Günlük Yarış Programı",
             ),
 
-            "source_url": data.get(
-                "sourceUrl",
-                "",
-            ),
+            "source_url": source_url,
         },
     }
 
