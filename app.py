@@ -3516,90 +3516,28 @@ else:
     }
     """)
 
-    compact_text_renderer = JsCode(r"""
-    class CompactTextRenderer {
-        init(params) {
-            const root = document.createElement('div');
-            root.style.width = '100%';
-            root.style.height = '100%';
-            root.style.display = 'flex';
-            root.style.alignItems = 'center';
-            root.style.justifyContent = 'flex-start';
-            root.style.textAlign = 'left';
-            root.style.overflow = 'hidden';
-            root.style.whiteSpace = 'nowrap';
-            root.style.lineHeight = '1.1';
-            root.style.boxSizing = 'border-box';
-            const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
-            span.style.display = 'inline-block';
-            span.style.maxWidth = '100%';
-            span.style.whiteSpace = 'nowrap';
-            span.style.overflow = 'hidden';
-            span.style.textOverflow = 'clip';
-            span.style.fontSize = '13px';
-            span.style.fontWeight = '900';
-            span.style.color = (params.colDef && params.colDef.field === 'HP') ? '#d40000' :
-                               ((params.colDef && params.colDef.field === 'KGS') ? '#e67e22' : '#000000');
-            root.appendChild(span);
-            this.eGui = root;
-            this.fitText = () => {
-                let size = 13;
-                span.style.fontSize = size + 'px';
-                while (size > 8 && span.scrollWidth > root.clientWidth) {
-                    size -= 0.5;
-                    span.style.fontSize = size + 'px';
-                }
-            };
-            requestAnimationFrame(this.fitText);
-        }
-        refresh(params) { return false; }
-        getGui() { return this.eGui; }
-    }
-    """)
-
     origin_renderer = JsCode(r"""
     class OriginRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.width = '100%';
-            root.style.height = '100%';
-            root.style.display = 'flex';
-            root.style.flexDirection = 'column';
-            root.style.alignItems = 'flex-start';
-            root.style.justifyContent = 'center';
-            root.style.textAlign = 'left';
-            root.style.overflow = 'hidden';
-            root.style.lineHeight = '1.12';
-            root.style.boxSizing = 'border-box';
+            root.style.lineHeight = '1.18';
+            root.style.whiteSpace = 'nowrap';
             const parts = String(params.value ?? '').split(/\r?\n/);
-            parts.slice(0, 2).forEach((part, i) => {
-                const span = document.createElement('span');
-                span.textContent = part;
-                span.style.color = i === 0 ? '#1565c0' : '#800020';
-                span.style.fontWeight = '800';
-                span.style.fontSize = '13px';
-                span.style.whiteSpace = 'nowrap';
-                span.style.maxWidth = '100%';
-                span.style.overflow = 'hidden';
-                span.style.textOverflow = 'clip';
-                span.style.display = 'block';
-                root.appendChild(span);
-            });
+            const sire = document.createElement('span');
+            sire.textContent = parts[0] || '';
+            sire.style.color = '#1565c0';
+            sire.style.fontWeight = '800';
+            root.appendChild(sire);
+            if (parts.length > 1) {
+                root.appendChild(document.createElement('br'));
+                const dam = document.createElement('span');
+                dam.textContent = parts[1] || '';
+                dam.style.color = '#800020';
+                dam.style.fontWeight = '700';
+                root.appendChild(dam);
+            }
             this.eGui = root;
-            this.fitText = () => {
-                root.querySelectorAll('span').forEach(span => {
-                    let size = 13;
-                    span.style.fontSize = size + 'px';
-                    while (size > 8 && span.scrollWidth > root.clientWidth) {
-                        size -= 0.5;
-                        span.style.fontSize = size + 'px';
-                    }
-                });
-            };
-            requestAnimationFrame(this.fitText);
         }
-        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -3652,44 +3590,120 @@ else:
     class OwnerTrainerRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.width = '100%';
-            root.style.height = '100%';
-            root.style.display = 'flex';
-            root.style.flexDirection = 'column';
-            root.style.alignItems = 'flex-start';
-            root.style.justifyContent = 'center';
-            root.style.textAlign = 'left';
-            root.style.overflow = 'hidden';
-            root.style.lineHeight = '1.12';
-            root.style.boxSizing = 'border-box';
+            root.style.lineHeight = '1.18';
             const parts = String(params.value ?? '').split(/\r?\n/);
-            parts.slice(0, 2).forEach((part, i) => {
-                const span = document.createElement('span');
-                span.textContent = part;
-                span.style.color = i === 0 ? '#1565c0' : '#d40000';
-                span.style.fontWeight = '800';
-                span.style.fontSize = '13px';
-                span.style.whiteSpace = 'nowrap';
-                span.style.maxWidth = '100%';
-                span.style.overflow = 'hidden';
-                span.style.textOverflow = 'clip';
-                span.style.display = 'block';
-                root.appendChild(span);
-            });
+            const owner = document.createElement('span');
+            owner.textContent = parts[0] || '';
+            owner.style.color = '#1565c0';
+            owner.style.fontWeight = '800';
+            root.appendChild(owner);
+            if (parts.length > 1) {
+                root.appendChild(document.createElement('br'));
+                const trainer = document.createElement('span');
+                trainer.textContent = parts[1] || '';
+                trainer.style.color = '#d40000';
+                trainer.style.fontWeight = '800';
+                root.appendChild(trainer);
+            }
             this.eGui = root;
-            this.fitText = () => {
-                root.querySelectorAll('span').forEach(span => {
-                    let size = 13;
-                    span.style.fontSize = size + 'px';
-                    while (size > 8 && span.scrollWidth > root.clientWidth) {
-                        size -= 0.5;
-                        span.style.fontSize = size + 'px';
-                    }
-                });
-            };
-            requestAnimationFrame(this.fitText);
         }
-        refresh(params) { return false; }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    weight_renderer = JsCode(r"""
+    class WeightRenderer {
+        init(params) {
+            const root = document.createElement('span');
+            const v = String(params.value ?? '');
+            const m = v.match(/^(.*?)(\s*\+\s*\d+(?:[.,]\d+)?)\s*$/);
+            if (m) {
+                const base = document.createTextNode(m[1]);
+                root.appendChild(base);
+                const extra = document.createElement('span');
+                extra.textContent = m[2];
+                extra.style.color = '#000000';
+                extra.style.fontWeight = '900';
+                root.appendChild(extra);
+            } else {
+                root.textContent = v;
+            }
+            this.eGui = root;
+        }
+        getGui() { return this.eGui; }
+    }
+    """)
+
+    eid_renderer = JsCode(r"""
+    class EidRenderer {
+        init(params) {
+            const span = document.createElement('span');
+            const degree = String(params.value ?? '').trim();
+            const city = String((params.data && params.data._best_city) || '').trim();
+            const date = String((params.data && params.data._best_date) || '').trim();
+            const distance = String((params.data && params.data._best_distance) || '').trim();
+            const info = String((params.data && params.data._best_info) || '').trim();
+
+            span.textContent = degree;
+            span.style.color = '#d40000';
+            span.style.fontWeight = '900';
+            span.style.cursor = 'help';
+            span.style.position = 'relative';
+            span.style.display = 'inline-block';
+
+            let message = '';
+            if (city || date) {
+                const hipodrom = /hipodrom/i.test(city) ? city : (city ? city + ' Hipodromu' : 'TJK Hipodromu');
+                message = 'Bu derece ' + hipodrom + "'nda " + (date || 'belirtilen tarihte') + ' yapılmıştır.';
+            } else if (degree) {
+                message = 'En İyi Derece: ' + degree;
+            }
+            if (distance) message += '\nMesafe: ' + distance;
+            if (info) message += '\n' + info;
+
+            span.addEventListener('mouseenter', function() {
+                if (!message) return;
+                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+
+                const tooltip = document.createElement('div');
+                tooltip.textContent = message;
+                tooltip.style.position = 'fixed';
+                tooltip.style.zIndex = '2147483647';
+                tooltip.style.width = '250px';
+                tooltip.style.maxWidth = '300px';
+                tooltip.style.padding = '10px';
+                tooltip.style.background = '#ffffff';
+                tooltip.style.color = '#ff0000';
+                tooltip.style.border = '1px solid #ff0000';
+                tooltip.style.borderRadius = '6px';
+                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.25)';
+                tooltip.style.textAlign = 'center';
+                tooltip.style.whiteSpace = 'pre-line';
+                tooltip.style.fontSize = '14px';
+                tooltip.style.fontWeight = '600';
+                tooltip.style.lineHeight = '1.35';
+                tooltip.style.pointerEvents = 'none';
+
+                document.body.appendChild(tooltip);
+                window.__ri_eid_tooltip = tooltip;
+
+                const r = span.getBoundingClientRect();
+                const tw = tooltip.offsetWidth;
+                const th = tooltip.offsetHeight;
+                let left = r.left + (r.width / 2) - (tw / 2);
+                let top = r.top - th - 10;
+                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+                if (top < 8) top = r.bottom + 10;
+                tooltip.style.left = left + 'px';
+                tooltip.style.top = top + 'px';
+            });
+
+            span.addEventListener('mouseleave', function() {
+                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+            });
+
+            this.eGui = span;
+        }
         getGui() { return this.eGui; }
     }
     """)
@@ -3791,48 +3805,27 @@ else:
     workout_renderer = JsCode(r"""
     class WorkoutRenderer {
         init(params) {
-            const root = document.createElement('div');
-            root.style.width = '100%';
-            root.style.height = '100%';
-            root.style.display = 'flex';
-            root.style.alignItems = 'center';
-            root.style.justifyContent = 'flex-start';
-            root.style.textAlign = 'left';
-            root.style.overflow = 'hidden';
-            root.style.whiteSpace = 'nowrap';
-            root.style.boxSizing = 'border-box';
+            const root = document.createElement('span');
+            root.style.fontWeight = '900';
+            root.style.color = '#8b5a2b';
             const text = String(params.value ?? '');
-            const m = text.match(/^(.*?)(\s*\(600\))$/i);
-            const main = document.createElement('span');
-            main.textContent = m ? m[1].trim() : text;
-            main.style.color = '#8b5a2b';
-            main.style.fontWeight = '900';
-            main.style.fontSize = '13px';
-            main.style.whiteSpace = 'nowrap';
-            main.style.display = 'inline-block';
-            root.appendChild(main);
+            const m = text.match(/^(.*?)(\\s*\\(600\\))$/i);
             if (m) {
+                const main = document.createElement('span');
+                main.textContent = m[1].trim();
+                main.style.fontWeight = '900';
+                root.appendChild(main);
                 const suffix = document.createElement('span');
                 suffix.textContent = m[2];
-                suffix.style.color = '#8b5a2b';
-                suffix.style.fontSize = '9px';
+                suffix.style.fontSize = '10px';
                 suffix.style.fontWeight = '700';
                 suffix.style.marginLeft = '2px';
-                suffix.style.whiteSpace = 'nowrap';
                 root.appendChild(suffix);
+            } else {
+                root.textContent = text;
             }
             this.eGui = root;
-            this.fitText = () => {
-                let size = 13;
-                main.style.fontSize = size + 'px';
-                while (size > 8 && root.scrollWidth > root.clientWidth) {
-                    size -= 0.5;
-                    main.style.fontSize = size + 'px';
-                }
-            };
-            requestAnimationFrame(this.fitText);
         }
-        refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
@@ -4014,27 +4007,28 @@ else:
     gb.configure_grid_options(**grid_options)
 
     # Sabit sütunlar.
-    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"], cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}") )
+    black_bold_style = JsCode("function(params){return {color:'#000000',fontWeight:'900'};}")
+    gb.configure_column("No", header_name="No", pinned="left", width=62, minWidth=55, maxWidth=75, type=["numericColumn"], cellStyle=black_bold_style)
     gb.configure_column("At İsmi", header_name="At İsmi", pinned="left", width=145, minWidth=145, maxWidth=145, resizable=False, cellRenderer=horse_name_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("Yaş", width=55, minWidth=55, maxWidth=55, resizable=False, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
-    gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=165, maxWidth=165, resizable=False, cellRenderer=origin_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("Kilo", width=75, minWidth=75, maxWidth=75, resizable=False, cellRenderer=weight_renderer, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}"))
+    gb.configure_column("Yaş", width=55, minWidth=55, maxWidth=55, resizable=False, cellStyle=black_bold_style, cellClass="ri-left-centered-cell")
+    gb.configure_column("Orijin (Baba-Anne)", width=165, minWidth=145, cellRenderer=origin_renderer)
+    gb.configure_column("Kilo", width=75, minWidth=65, cellRenderer=weight_renderer, cellStyle=black_bold_style)
     gb.configure_column("Jokey", width=105, minWidth=105, maxWidth=105, resizable=False, cellRenderer=jockey_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("Sahip / Antrenör", width=150, minWidth=150, maxWidth=150, resizable=False, cellRenderer=owner_trainer_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("Sahip / Antrenör", width=150, minWidth=125, cellRenderer=owner_trainer_renderer)
     gb.configure_column("St", width=78, minWidth=68, cellRenderer=start_renderer)
-    gb.configure_column("HP", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=compact_text_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("HP", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column("Son 6 Y.", width=85, minWidth=85, maxWidth=85, resizable=False, cellRenderer=form_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("KGS", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=compact_text_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("s20", width=58, minWidth=58, maxWidth=58, resizable=False, cellRenderer=compact_text_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("KGS", width=58, minWidth=50, cellStyle=black_bold_style)
+    gb.configure_column("s20", width=58, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column(
         "EİD", width=75, minWidth=65, cellRenderer=eid_renderer, cellClass="ri-eid-cell"
     )
-    gb.configure_column("Gny", width=60, minWidth=50, cellStyle=JsCode("function(params){return {color:'#000000',fontWeight:'900'};}") )
+    gb.configure_column("Gny", width=60, minWidth=50, cellStyle=black_bold_style)
     gb.configure_column("AGF", width=70, minWidth=60, cellRenderer=agf_renderer, cellStyle=JsCode("function(params){return {color:'#138a36',fontWeight:'900'};}"))
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
     gb.configure_column("ŞART UYUMU", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
-    gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
+    gb.configure_column("SON GALOP", width=95, minWidth=80, cellRenderer=workout_renderer)
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
