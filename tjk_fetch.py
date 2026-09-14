@@ -26,11 +26,11 @@ CITY_IDS = {
     "Kocaeli": 9,
     "İstanbul": 3,
     "Bursa": 4,
-    "İzmir": 2,
-    "Adana": 1,
+    "İzmir": 1,
+    "Adana": 2,
     "Elazığ": 6,
-    "Diyarbakır": 8,
-    "Şanlıurfa": 7,
+    "Diyarbakır": 7,
+    "Şanlıurfa": 8,
     "Antalya": 10,
 }
 
@@ -102,41 +102,15 @@ def format_date_tr(value: Any) -> str:
 # WORKER BAĞLANTISI
 # =========================================================
 
-def fetch_worker(
-    date_value: Any,
+def _request_worker(
+    iso_date: str,
     city: str,
     timeout: int = 45,
 ) -> Dict[str, Any]:
-
-    iso_date = normalize_date(date_value)
-    city = normalize_text(city)
-
-    if not city:
-        raise ValueError("Hipodrom belirtilmedi.")
-
-    if city not in CITY_IDS:
-        raise ValueError(
-            f"Bilinmeyen hipodrom: {city}. "
-            f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
-        )
-
-    # -----------------------------------------------------
-    # UZAK WORKER / TJK ŞEHİR EŞLEŞMESİ
-    #
-    # Mevcut Worker sürümünde Elazığ ve Şanlıurfa istekleri
-    # ters eşleşiyor. Arayüzdeki isimleri değiştirmeden,
-    # yalnızca Worker'a gönderilen şehir adını tersine çevir.
-    # Böylece kullanıcı arayüzünde Elazığ -> Elazığ,
-    # Şanlıurfa -> Şanlıurfa kalır; doğru yarış programı gelir.
-    # -----------------------------------------------------
-    worker_city = {
-        "Elazığ": "Şanlıurfa",
-        "Şanlıurfa": "Elazığ",
-    }.get(city, city)
-
+    """Worker'a tek bir şehir isteği gönderir ve ham JSON'u döndürür."""
     params = {
         "date": iso_date,
-        "city": worker_city,
+        "city": city,
     }
 
     try:
@@ -175,9 +149,7 @@ def fetch_worker(
         ) from exc
 
     if not isinstance(data, dict):
-        raise RuntimeError(
-            "Worker cevabı beklenen JSON nesnesi değil."
-        )
+        raise RuntimeError("Worker cevabı beklenen JSON nesnesi değil.")
 
     if not data.get("ok", False):
         error = normalize_text(
@@ -185,12 +157,88 @@ def fetch_worker(
             or data.get("message")
             or "Worker veri alamadı."
         )
-
-        raise RuntimeError(
-            f"TJK Worker hatası: {error}"
-        )
+        raise RuntimeError(f"TJK Worker hatası: {error}")
 
     return data
+
+
+def _source_city_identity(data: Dict[str, Any]) -> tuple[str, int | None]:
+    """Worker'ın sourceUrl alanından gerçek TJK şehir/id bilgisini çıkarır."""
+    source_url = normalize_text(
+        data.get("sourceUrl") or data.get("source_url") or ""
+    )
+    if not source_url:
+        return "", None
+
+    from urllib.parse import parse_qs, urlparse
+
+    try:
+        query = parse_qs(urlparse(source_url).query)
+    except Exception:
+        return "", None
+
+    raw_name = (query.get("SehirAdi") or [""])[0]
+    raw_id = (query.get("SehirId") or [""])[0]
+
+    try:
+        city_id = int(raw_id) if str(raw_id).strip() else None
+    except (TypeError, ValueError):
+        city_id = None
+
+    return normalize_text(raw_name), city_id
+
+
+def fetch_worker(
+    date_value: Any,
+    city: str,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    """
+    Worker'dan programı alır.
+
+    ÖNEMLİ DÜZELTME:
+    Elazığ/Şanlıurfa gibi iki şehirde Worker'ın yanlış şehir ID'si ile
+    cevap verme ihtimaline karşı, dönen sourceUrl içindeki SehirId gerçek
+    TJK kimliği olarak kontrol edilir. İstenen şehir için ID yanlışsa,
+    yalnızca aynı şehir çiftindeki alternatif istek denenir. Böylece
+    körlemesine "Elazığ -> Şanlıurfa" alias'ı kullanılmaz.
+    """
+    iso_date = normalize_date(date_value)
+    city = normalize_text(city)
+
+    if not city:
+        raise ValueError("Hipodrom belirtilmedi.")
+
+    if city not in CITY_IDS:
+        raise ValueError(
+            f"Bilinmeyen hipodrom: {city}. "
+            f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
+        )
+
+    data = _request_worker(iso_date, city, timeout)
+    source_name, source_id = _source_city_identity(data)
+    expected_id = CITY_IDS[city]
+
+    # Worker doğru TJK ID'sini döndürdüyse olduğu gibi kullan.
+    if source_id is None or source_id == expected_id:
+        return data
+
+    # Yalnızca bilinen problemli çiftte, gerçek ID'yi elde etmek için
+    # alternatif adı dene. Sonucu körlemesine kabul etmiyoruz; sourceUrl
+    # tekrar doğrulanıyor.
+    pair = {"Elazığ", "Şanlıurfa"}
+    if city in pair:
+        alternative = "Şanlıurfa" if city == "Elazığ" else "Elazığ"
+        alt_data = _request_worker(iso_date, alternative, timeout)
+        _, alt_id = _source_city_identity(alt_data)
+        if alt_id == expected_id:
+            return alt_data
+
+    raise RuntimeError(
+        "Worker yanlış hipodrom verisi döndürdü: "
+        f"istenen={city} (TJK ID {expected_id}), "
+        f"gelen={source_name or '?'} (TJK ID {source_id})."
+    )
 
 
 # =========================================================
