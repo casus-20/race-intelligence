@@ -612,9 +612,29 @@ with mode_col:
 def fetch_program_with_status(selected_date, selected_city, label):
     """Programı alır; eski status/expander panelini ekrana basmaz."""
     try:
-        return load_program(selected_date, selected_city)
+        result = load_program(selected_date, selected_city)
+        return validate_program_identity(result, selected_date, selected_city)
     except Exception as exc:
         raise RuntimeError(f"{label}: {exc}") from exc
+
+
+def validate_program_identity(program: Dict[str, Any], selected_date: date, selected_city: str) -> Dict[str, Any]:
+    """Programın gerçekten seçilen tarih + hipodroma ait olduğunu doğrular."""
+    if not isinstance(program, dict):
+        raise RuntimeError("TJK program cevabı geçersiz.")
+    expected_date = selected_date.isoformat()
+    expected_city = str(selected_city).strip()
+    debug = program.get("debug") if isinstance(program.get("debug"), dict) else {}
+    worker_date = str(debug.get("worker_response_date") or "").strip()
+    worker_city = str(debug.get("worker_response_city") or "").strip()
+    if worker_date and worker_date != expected_date:
+        raise RuntimeError(f"Yanlış tarih verisi engellendi: istenen {expected_date}, gelen {worker_date}.")
+    if worker_city and worker_city.casefold() != expected_city.casefold():
+        raise RuntimeError(f"Yanlış hipodrom verisi engellendi: istenen {expected_city}, gelen {worker_city}.")
+    races = program.get("races", [])
+    if not isinstance(races, list) or not races:
+        raise RuntimeError(f"{expected_date} / {expected_city} için yarış programı bulunamadı.")
+    return program
 
 # ============================================================
 # PROGRAM GETİRME
@@ -641,15 +661,11 @@ def load_program(
 
 def load_active_cities(selected_date: date) -> List[str]:
     """
-    Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
+    SADECE seçilen tarihte gerçekten programı bulunan hipodromları döndürür.
 
-    ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
-    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
-    "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
-
-    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
-    gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
-    Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
+    Bir şehrin cevap vermesi tek başına yeterli değildir: dönen programın
+    Worker kimliği seçilen gün/hipodrom ile uyuşmuyorsa şehir aktif kabul edilmez.
+    Cache yalnızca seçilen tarihin sonucunu tutar.
     """
     cache_key = selected_date.isoformat()
     cached = st.session_state.get("_active_cities_cache", {})
@@ -658,17 +674,25 @@ def load_active_cities(selected_date: date) -> List[str]:
         if isinstance(saved, list) and saved:
             return [c for c in ALL_CITIES if c in saved]
 
+    requested_iso = selected_date.isoformat()
+
     def check_city(city: str):
         for attempt in range(3):
             try:
                 data = get_program(selected_date, city)
                 if not isinstance(data, dict):
                     continue
+                debug = data.get("debug") if isinstance(data.get("debug"), dict) else {}
+                worker_date = str(debug.get("worker_response_date") or "").strip()
+                worker_city = str(debug.get("worker_response_city") or "").strip()
+                if worker_date and worker_date != requested_iso:
+                    continue
+                if worker_city and worker_city.casefold() != city.casefold():
+                    continue
                 races = data.get("races", [])
                 if isinstance(races, list) and len(races) > 0:
                     return city
             except Exception:
-                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
                 pass
         return None
 
@@ -2463,6 +2487,18 @@ selected_city = st.sidebar.selectbox(
     active_cities,
     index=default_city_index,
 )
+
+# Tarih veya hipodrom değiştiği anda eski programı düşür.
+_selection_key = (selected_date.isoformat(), selected_city)
+_previous_selection_key = st.session_state.get("_program_selection_key")
+if _previous_selection_key != _selection_key:
+    st.session_state.program_data = None
+    st.session_state.loaded_date = None
+    st.session_state.loaded_city = None
+    st.session_state.selected_race = 1
+    st.session_state.real_analysis_done = False
+    st.session_state.real_analysis_requested = False
+    st.session_state["_program_selection_key"] = _selection_key
 
 # ============================================================
 # PROGRAMI GETİR
