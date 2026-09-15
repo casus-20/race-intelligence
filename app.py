@@ -4221,11 +4221,11 @@ else:
         top_horse = horses[top["horse_index"]]
         st.success(
             f"🏆 1. Sıra: {get_horse_number(top_horse, top['horse_index'] + 1)} "
-            f"- {get_horse_name(top_horse)} • {top['score']:.2f} puan • {top['label']}"
+            f"- {get_horse_name(top_horse)} • {float(top.get('score', top.get('bizim_skor', 0))):.2f} puan • {top.get('label', 'BİZİM SKOR')}"
         )
         if len(ranking) >= 3:
             summary = "  |  ".join(
-                f"{x['rank']}. {get_horse_name(horses[x['horse_index']])} ({x['score']:.2f})"
+                f"{x.get('rank', '-')}. {get_horse_name(horses[x['horse_index']])} ({float(x.get('score', x.get('bizim_skor', 0))):.2f})"
                 for x in ranking[:3]
             )
             st.caption(summary)
