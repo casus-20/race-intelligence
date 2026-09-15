@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tjk_fetch import get_program, get_horse_enrichment
 from bizim_skor_features import attach_feature_vectors
 from bizim_skor_model import calculate_bizim_ranking
+from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test
 
 
 # ============================================================
@@ -3024,6 +3025,25 @@ else:
 
 
     ranking = calculate_bizim_ranking(horses, selected_race)
+
+    # Yarıştan ÖNCE oluşan gerçek özellik snapshot'ı otomatik eğitim arşivine alınır.
+    # Aynı yarış anahtarı varsa güncellenir; sonuç varsa ayrıca tamamlanır.
+    if any(isinstance(h, dict) and h.get("_feature_data_ready") for h in horses):
+        try:
+            _snapshot = snapshot_record(
+                selected_race,
+                horses,
+                selected_date=selected_date,
+                city=selected_city,
+            )
+            upsert_snapshot(_snapshot)
+            _result_map = extract_result_map(horses)
+            if _result_map:
+                add_result(_snapshot["key"], _result_map)
+        except Exception:
+            # Arşiv disk sorunu ana analiz ekranını bozmaz.
+            pass
+
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
@@ -4221,11 +4241,11 @@ else:
         top_horse = horses[top["horse_index"]]
         st.success(
             f"🏆 1. Sıra: {get_horse_number(top_horse, top['horse_index'] + 1)} "
-            f"- {get_horse_name(top_horse)} • {float(top.get('score', top.get('bizim_skor', 0))):.2f} puan • {top.get('label', 'BİZİM SKOR')}"
+            f"- {get_horse_name(top_horse)} • {top['score']:.2f} puan • {top['label']}"
         )
         if len(ranking) >= 3:
             summary = "  |  ".join(
-                f"{x.get('rank', '-')}. {get_horse_name(horses[x['horse_index']])} ({float(x.get('score', x.get('bizim_skor', 0))):.2f})"
+                f"{x['rank']}. {get_horse_name(horses[x['horse_index']])} ({x['score']:.2f})"
                 for x in ranking[:3]
             )
             st.caption(summary)
