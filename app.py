@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tjk_fetch import get_program, get_horse_enrichment
 from bizim_skor_features import attach_feature_vectors
 from bizim_skor_model import calculate_bizim_ranking
-from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test
+from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test, load_records, race_key
 
 
 # ============================================================
@@ -1085,78 +1085,6 @@ def load_horse_enrichment(
         }
 
 
-def _extract_earnings_value(data: Any, year: int | None = None) -> Any:
-    """Worker cevabındaki resmi kazanç alanını farklı iç içe şemalardan bulur.
-    Veri yoksa None döner; değer uydurmaz.
-    """
-    if not isinstance(data, (dict, list)):
-        return None
-    if year is None:
-        keys = (
-            "_tjk_total_earnings", "totalEarnings", "total_earnings",
-            "lifetimeEarnings", "lifetime_earnings", "careerEarnings",
-            "career_earnings", "totalKazanc", "toplamKazanc",
-            "toplam_kazanc", "kazanc", "Kazanç", "earnings", "earning",
-            "totalPrize", "total_prize", "careerPrize", "career_prize",
-            "lifetimePrize", "lifetime_prize", "prizeTotal", "prize_total",
-        )
-    else:
-        keys = (
-            "_tjk_year_earnings", "yearEarnings", "year_earnings",
-            "yearlyEarnings", "yearly_earnings", "annualEarnings",
-            "annual_earnings", "yearKazanc", "year_kazanc",
-            "buYilKazanc", "bu_yil_kazanc", "yearPrize", "year_prize",
-            "annualPrize", "annual_prize", "thisYearEarnings",
-            "this_year_earnings",
-        )
-    if isinstance(data, dict):
-        for key in keys:
-            value = data.get(key)
-            if value not in (None, "", "-", 0, 0.0):
-                if isinstance(value, (dict, list)):
-                    nested = _extract_earnings_value(value, year)
-                    if nested not in (None, "", "-"):
-                        return nested
-                else:
-                    return value
-        # earnings/kazanc nesnesi veya yıllık harita
-        for key in ("earnings", "kazanc", "Kazanç", "prizes", "prizeInfo", "prize_info"):
-            value = data.get(key)
-            if isinstance(value, dict):
-                direct_keys = (
-                    ("total", "totalEarnings", "total_earnings", "kazanc", "Kazanç", "prizeTotal", "totalPrize")
-                    if year is None else
-                    ("year", "yearEarnings", "year_earnings", "yearly", "annual", "buYil", "yearPrize", "annualPrize")
-                )
-                for dk in direct_keys:
-                    dv = value.get(dk)
-                    if dv not in (None, "", "-", 0, 0.0) and not isinstance(dv, (dict, list)):
-                        return dv
-            if isinstance(value, (dict, list)):
-                nested = _extract_earnings_value(value, year)
-                if nested not in (None, "", "-"):
-                    return nested
-        # 2026 gibi yıl anahtarlı sözlüklerde yıllık kazancı bul.
-        if year is not None:
-            value = data.get(str(year))
-            if value not in (None, "", "-", 0, 0.0):
-                if isinstance(value, (dict, list)):
-                    nested = _extract_earnings_value(value, None)
-                    if nested not in (None, "", "-"):
-                        return nested
-                return value
-        for value in data.values():
-            nested = _extract_earnings_value(value, year)
-            if nested not in (None, "", "-"):
-                return nested
-    else:
-        for value in data:
-            nested = _extract_earnings_value(value, year)
-            if nested not in (None, "", "-"):
-                return nested
-    return None
-
-
 def enrich_race_horses(
     horses: List[Dict[str, Any]],
     target_date: Any = None,
@@ -1210,16 +1138,48 @@ def enrich_race_horses(
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
 
-        # TJK/Worker resmi Kazanç alanlarını farklı cevap şemalarından al.
+        # TJK resmi Kazanç değerleri Worker/TJK'dan geldiyse aynen sakla.
         if isinstance(data, dict):
-            total_value = _extract_earnings_value(data, None)
-            year_value = _extract_earnings_value(data, _history_year(target_date))
-            if total_value not in (None, "", "-", 0, 0.0):
-                item["_tjk_total_earnings"] = total_value
-                item["totalEarnings"] = total_value
-            if year_value not in (None, "", "-", 0, 0.0):
-                item["_tjk_year_earnings"] = year_value
-                item["yearEarnings"] = year_value
+            for key in (
+                "totalEarnings", "total_earnings",
+                "lifetimeEarnings", "lifetime_earnings",
+                "careerEarnings", "career_earnings",
+                "totalKazanc", "toplamKazanc", "toplam_kazanc",
+                "kazanc", "Kazanç", "earnings", "earning",
+            ):
+                if data.get(key) not in (None, "", "-", 0, 0.0):
+                    item["_tjk_total_earnings"] = data.get(key)
+                    item["totalEarnings"] = data.get(key)
+                    break
+
+            for key in (
+                "yearEarnings", "year_earnings",
+                "yearlyEarnings", "yearly_earnings",
+                "annualEarnings", "annual_earnings",
+                "yearKazanc", "year_kazanc",
+                "buYilKazanc", "bu_yil_kazanc",
+            ):
+                if data.get(key) not in (None, "", "-", 0, 0.0):
+                    item["_tjk_year_earnings"] = data.get(key)
+                    item["yearEarnings"] = data.get(key)
+                    break
+
+            if data.get("earnings") and isinstance(data.get("earnings"), dict):
+                e = data["earnings"]
+                total_value = (
+                    e.get("total") or e.get("totalEarnings") or
+                    e.get("kazanc") or e.get("Kazanç")
+                )
+                year_value = (
+                    e.get("year") or e.get("yearEarnings") or
+                    e.get("yearly") or e.get("buYil")
+                )
+                if total_value not in (None, "", "-", 0, 0.0):
+                    item["_tjk_total_earnings"] = total_value
+                    item["totalEarnings"] = total_value
+                if year_value not in (None, "", "-", 0, 0.0):
+                    item["_tjk_year_earnings"] = year_value
+                    item["yearEarnings"] = year_value
 
         if isinstance(data, dict) and data.get("error"):
             item["_enrichment_error"] = str(data.get("error"))
@@ -1412,7 +1372,7 @@ def workout_display(horse: Dict[str, Any]) -> str:
     if not w:
         return "-"
     value = display_value(
-        _first_value(w, ["m400", "400", "400m", "m_400"]),
+        _first_value(w, ["m400", "400", "400m", "m_400", "time400"]),
         "",
     )
     return f"{value} (400)" if value else "-"
@@ -1452,22 +1412,6 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     if not isinstance(history, list):
         return ""
 
-    # Worker sırasına güvenmek yerine tarih ile gerçekten son 6 koşuyu seç.
-    # Böylece Son 6 Y. rakamı ile pist renkleri aynı koşulara bağlanır.
-    def _row_date(row):
-        if not isinstance(row, dict):
-            return None
-        value = str(row.get("date") or row.get("tarih") or "").strip()
-        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
-            try:
-                return datetime.strptime(value[:10], fmt).date()
-            except Exception:
-                pass
-        return None
-    dated = [row for row in history if isinstance(row, dict) and _row_date(row) is not None]
-    dated.sort(key=lambda row: _row_date(row), reverse=True)
-    history = dated if dated else [row for row in history if isinstance(row, dict)]
-
     values = []
     for row in history[:6]:
         if not isinstance(row, dict):
@@ -1501,6 +1445,86 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
         values.append(surface)
 
     return "|".join(values)
+
+
+def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
+    """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
+
+    Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
+    Sonuç yoksa hiçbir derece uydurulmaz.
+    """
+    def _position(value: Any) -> int | None:
+        if isinstance(value, dict):
+            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition"):
+                if value.get(k) not in (None, "", "-"):
+                    return _position(value.get(k))
+            return None
+        if value is None:
+            return None
+        m = re.search(r"\d+", str(value).strip())
+        if not m:
+            return None
+        try:
+            n = int(m.group(0))
+            return n if n > 0 else None
+        except Exception:
+            return None
+
+    # 1) TJK program/result nesnesindeki gerçek sonuç.
+    for key in (
+        "finish", "place", "sira", "S", "result", "sonuc",
+        "position", "finishPosition", "finish_position", "rank",
+    ):
+        if key in horse and horse.get(key) not in (None, "", "-"):
+            pos = _position(horse.get(key))
+            if pos is not None:
+                return f"({pos}.)"
+
+    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
+    no = get_horse_number(horse, horse_index + 1)
+    for container in (
+        race.get("results"), race.get("result"), race.get("resultMap"),
+        race.get("result_map"), race.get("finish"),
+    ):
+        if isinstance(container, dict):
+            for key in (no, str(no), horse.get("no"), horse.get("numara")):
+                if key in container:
+                    pos = _position(container.get(key))
+                    if pos is not None:
+                        return f"({pos}.)"
+
+    # 3) Daha önce doğrulanmış yarış sonucu yerel arşivdeyse onu kullan.
+    try:
+        key = race_key(race, race.get("date") or race.get("tarih"), race.get("city") or "")
+        for record in reversed(load_records()):
+            if record.get("key") != key:
+                continue
+            for row in record.get("horses", []):
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    row_no = int(row.get("no"))
+                except Exception:
+                    continue
+                if row_no == int(no):
+                    pos = _position(row.get("finish"))
+                    if pos is not None:
+                        return f"({pos}.)"
+            break
+    except Exception:
+        pass
+
+    # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
+    status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
+    try:
+        equipment_text = get_horse_equipment(horse)
+    except Exception:
+        equipment_text = ""
+    status_text += " " + str(equipment_text)
+    if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
+        return "(Koşmaz)"
+
+    return ""
 
 
 def last_race_display(horse: Dict[str, Any]) -> str:
@@ -1809,6 +1833,7 @@ def _history_class_text(row: Dict[str, Any]) -> str:
     ]), "")
 
 
+
 # ============================================================
 # STANDART 100 PUANLIK REYTİNG MOTORU
 # ============================================================
@@ -2046,7 +2071,6 @@ def calculate_standard_rating(
             "Kilo Avantajı": round(weight, 2),
         },
     }
-
 
 # ============================================================
 # TJK-ONLY ŞART UYUMU ENDEKSİ
@@ -3375,7 +3399,7 @@ else:
         comps = r.get("components", {})
         # GÜNCEL SINIF gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
         current_class = calculate_guncel_sinif(horse)
-        # REYTİNG: tüm atlara aynı sabit 100 puanlık formül uygulanır.
+        # REYTİNG yalnızca standart 100 puanlık formülle hesaplanır.
         rating_result = calculate_standard_rating(
             horse,
             horses,
@@ -3390,7 +3414,13 @@ else:
             # No = TJK'nın gerçek programdaki AT NUMARASI.
             # Analiz sırası ile at numarasını birbirine karıştırma.
             "No": int(get_horse_number(horse, horse_index + 1)),
-            "At İsmi": "\n".join([x for x in (get_horse_name(horse), get_horse_equipment(horse)) if x]),
+            "At İsmi": "\n".join(
+                [x for x in (
+                    get_horse_name(horse),
+                    get_horse_equipment(horse),
+                    _race_finish_label(horse, selected_race, horse_index),
+                ) if x]
+            ),
             "Yaş": get_horse_age(horse),
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
             "Kilo": get_horse_weight(horse),
@@ -3539,7 +3569,8 @@ else:
                 if (i > 0) root.appendChild(document.createElement('br'));
                 const span = document.createElement('span');
                 span.textContent = part;
-                span.style.color = (i === 0) ? '#d40000' : '#f1c40f';
+                const isResult = /^\(\d+\.\)$/.test(part.trim()) || /^\(Koşmaz\)$/i.test(part.trim());
+                span.style.color = isResult ? '#d40000' : ((i === 0) ? '#d40000' : '#f1c40f');
                 span.style.fontWeight = '900';
                 span.style.whiteSpace = 'nowrap';
                 span.style.maxWidth = '100%';
@@ -4133,7 +4164,7 @@ else:
     selected_horse = None
 
     grid_options = {
-        "rowHeight": 44,
+        "rowHeight": 52,
         "headerHeight": 38,
         "domLayout": "autoHeight",
         "suppressRowClickSelection": True,
@@ -4568,8 +4599,8 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "BİZİM SKOR yalnızca gerçek TJK verisi ve ampirik olarak öğrenilmiş "
-                "1500 puanlık model etkin olduğunda hesaplanır. Eksik veriye nötr puan verilmez."
+                "REYTİNG formülü: Son 6 %30 + 1700 Performans %30 + 1700 Hız %15 + HP %15 + Kilo %10. "
+                "Tüm atlara aynı formül uygulanır."
             )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
@@ -4583,12 +4614,11 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**BİZİM SKOR MOTORU:** 20 gerçek veri ailesi • 1500 puanlık ampirik model • "
+    f"**REYTİNG MOTORU:** Son 6 %30 • 1700 Performans %30 • 1700 Hız %15 • HP %15 • Kilo %10 • "
     f"Seçili koşu: {race_number}. koşu",
 )
 st.caption(
-    "Gerçek TJK geçmişi ve galop verileri olmadan BİZİM SKOR hesaplanmaz. "
-    "1500 puanlık ağırlıklar veri sonuçlarından öğrenilecektir."
+    "REYTİNG, GERÇEK VERİ İLE ANALİZ ET butonundan sonra her at için aynı sabit 100 puanlık formülle hesaplanır."
 )
 
 # ============================================================
