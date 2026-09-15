@@ -4819,8 +4819,11 @@ div.ri-header {
     visibility: visible !important;
     opacity: 1 !important;
     height: auto !important;
+    min-height: 72px !important;
     max-height: none !important;
     overflow: visible !important;
+    padding-top: 16px !important;
+    box-sizing: border-box !important;
 }
 div.ri-title {
     display: block !important;
@@ -4828,11 +4831,16 @@ div.ri-title {
     color: #FFFFFF !important;
     font-size: 40px !important;
     font-weight: 950 !important;
-    line-height: 1.15 !important;
+    line-height: 1.25 !important;
+    height: auto !important;
+    min-height: 50px !important;
     white-space: nowrap !important;
     text-align: center !important;
     width: 100% !important;
-    margin-top: 5mm !important;
+    margin-top: 0 !important;
+    margin-bottom: 2px !important;
+    padding-top: 2px !important;
+    overflow: visible !important;
 }
 div.ri-subtitle {
     display: block !important;
