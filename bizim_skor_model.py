@@ -412,7 +412,10 @@ def calculate_bizim_ranking(horses,race):
             info=next(x for x in model["families"] if x["family"]==fam)
             if info["direction"]<0:v=1-v
             available.append((fam,w,max(0,min(1,float(v)))))
-        if len(available)<2:continue
+        # Bir atın yalnızca tek öğrenilmiş gerçek veri ailesi mevcutsa da
+        # skorunu hesapla. Eksik aileler zaten aşağıda mevcut ağırlıklarla
+        # yeniden ölçekleniyor; at tamamen sonuç listesinden çıkarılmamalı.
+        if not available:continue
         raw_weight=sum(w for _,w,_ in available)
         # Eksik aileleri nötr puanla doldurmuyoruz: mevcut ağırlıklar 1500'e yeniden ölçekleniyor.
         scale=1500/raw_weight
