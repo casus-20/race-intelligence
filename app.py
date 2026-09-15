@@ -1085,6 +1085,78 @@ def load_horse_enrichment(
         }
 
 
+def _extract_earnings_value(data: Any, year: int | None = None) -> Any:
+    """Worker cevabındaki resmi kazanç alanını farklı iç içe şemalardan bulur.
+    Veri yoksa None döner; değer uydurmaz.
+    """
+    if not isinstance(data, (dict, list)):
+        return None
+    if year is None:
+        keys = (
+            "_tjk_total_earnings", "totalEarnings", "total_earnings",
+            "lifetimeEarnings", "lifetime_earnings", "careerEarnings",
+            "career_earnings", "totalKazanc", "toplamKazanc",
+            "toplam_kazanc", "kazanc", "Kazanç", "earnings", "earning",
+            "totalPrize", "total_prize", "careerPrize", "career_prize",
+            "lifetimePrize", "lifetime_prize", "prizeTotal", "prize_total",
+        )
+    else:
+        keys = (
+            "_tjk_year_earnings", "yearEarnings", "year_earnings",
+            "yearlyEarnings", "yearly_earnings", "annualEarnings",
+            "annual_earnings", "yearKazanc", "year_kazanc",
+            "buYilKazanc", "bu_yil_kazanc", "yearPrize", "year_prize",
+            "annualPrize", "annual_prize", "thisYearEarnings",
+            "this_year_earnings",
+        )
+    if isinstance(data, dict):
+        for key in keys:
+            value = data.get(key)
+            if value not in (None, "", "-", 0, 0.0):
+                if isinstance(value, (dict, list)):
+                    nested = _extract_earnings_value(value, year)
+                    if nested not in (None, "", "-"):
+                        return nested
+                else:
+                    return value
+        # earnings/kazanc nesnesi veya yıllık harita
+        for key in ("earnings", "kazanc", "Kazanç", "prizes", "prizeInfo", "prize_info"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                direct_keys = (
+                    ("total", "totalEarnings", "total_earnings", "kazanc", "Kazanç", "prizeTotal", "totalPrize")
+                    if year is None else
+                    ("year", "yearEarnings", "year_earnings", "yearly", "annual", "buYil", "yearPrize", "annualPrize")
+                )
+                for dk in direct_keys:
+                    dv = value.get(dk)
+                    if dv not in (None, "", "-", 0, 0.0) and not isinstance(dv, (dict, list)):
+                        return dv
+            if isinstance(value, (dict, list)):
+                nested = _extract_earnings_value(value, year)
+                if nested not in (None, "", "-"):
+                    return nested
+        # 2026 gibi yıl anahtarlı sözlüklerde yıllık kazancı bul.
+        if year is not None:
+            value = data.get(str(year))
+            if value not in (None, "", "-", 0, 0.0):
+                if isinstance(value, (dict, list)):
+                    nested = _extract_earnings_value(value, None)
+                    if nested not in (None, "", "-"):
+                        return nested
+                return value
+        for value in data.values():
+            nested = _extract_earnings_value(value, year)
+            if nested not in (None, "", "-"):
+                return nested
+    else:
+        for value in data:
+            nested = _extract_earnings_value(value, year)
+            if nested not in (None, "", "-"):
+                return nested
+    return None
+
+
 def enrich_race_horses(
     horses: List[Dict[str, Any]],
     target_date: Any = None,
@@ -1138,48 +1210,16 @@ def enrich_race_horses(
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
 
-        # TJK resmi Kazanç değerleri Worker/TJK'dan geldiyse aynen sakla.
+        # TJK/Worker resmi Kazanç alanlarını farklı cevap şemalarından al.
         if isinstance(data, dict):
-            for key in (
-                "totalEarnings", "total_earnings",
-                "lifetimeEarnings", "lifetime_earnings",
-                "careerEarnings", "career_earnings",
-                "totalKazanc", "toplamKazanc", "toplam_kazanc",
-                "kazanc", "Kazanç", "earnings", "earning",
-            ):
-                if data.get(key) not in (None, "", "-", 0, 0.0):
-                    item["_tjk_total_earnings"] = data.get(key)
-                    item["totalEarnings"] = data.get(key)
-                    break
-
-            for key in (
-                "yearEarnings", "year_earnings",
-                "yearlyEarnings", "yearly_earnings",
-                "annualEarnings", "annual_earnings",
-                "yearKazanc", "year_kazanc",
-                "buYilKazanc", "bu_yil_kazanc",
-            ):
-                if data.get(key) not in (None, "", "-", 0, 0.0):
-                    item["_tjk_year_earnings"] = data.get(key)
-                    item["yearEarnings"] = data.get(key)
-                    break
-
-            if data.get("earnings") and isinstance(data.get("earnings"), dict):
-                e = data["earnings"]
-                total_value = (
-                    e.get("total") or e.get("totalEarnings") or
-                    e.get("kazanc") or e.get("Kazanç")
-                )
-                year_value = (
-                    e.get("year") or e.get("yearEarnings") or
-                    e.get("yearly") or e.get("buYil")
-                )
-                if total_value not in (None, "", "-", 0, 0.0):
-                    item["_tjk_total_earnings"] = total_value
-                    item["totalEarnings"] = total_value
-                if year_value not in (None, "", "-", 0, 0.0):
-                    item["_tjk_year_earnings"] = year_value
-                    item["yearEarnings"] = year_value
+            total_value = _extract_earnings_value(data, None)
+            year_value = _extract_earnings_value(data, _history_year(target_date))
+            if total_value not in (None, "", "-", 0, 0.0):
+                item["_tjk_total_earnings"] = total_value
+                item["totalEarnings"] = total_value
+            if year_value not in (None, "", "-", 0, 0.0):
+                item["_tjk_year_earnings"] = year_value
+                item["yearEarnings"] = year_value
 
         if isinstance(data, dict) and data.get("error"):
             item["_enrichment_error"] = str(data.get("error"))
@@ -1367,15 +1407,15 @@ def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def workout_display(horse: Dict[str, Any]) -> str:
-    """Ana tabloda yalnızca en son galobun 600 m derecesini göster."""
+    """Ana tabloda yalnızca en son galobun 400 m derecesini göster."""
     w = latest_workout(horse)
     if not w:
         return "-"
     value = display_value(
-        _first_value(w, ["m600", "600", "600m", "m_600"]),
+        _first_value(w, ["m400", "400", "400m", "m_400"]),
         "",
     )
-    return f"{value} (600)" if value else "-"
+    return f"{value} (400)" if value else "-"
 
 
 def _normalize_surface_for_table(value: Any) -> str:
@@ -1411,6 +1451,22 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     history = horse.get("_history", [])
     if not isinstance(history, list):
         return ""
+
+    # Worker sırasına güvenmek yerine tarih ile gerçekten son 6 koşuyu seç.
+    # Böylece Son 6 Y. rakamı ile pist renkleri aynı koşulara bağlanır.
+    def _row_date(row):
+        if not isinstance(row, dict):
+            return None
+        value = str(row.get("date") or row.get("tarih") or "").strip()
+        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(value[:10], fmt).date()
+            except Exception:
+                pass
+        return None
+    dated = [row for row in history if isinstance(row, dict) and _row_date(row) is not None]
+    dated.sort(key=lambda row: _row_date(row), reverse=True)
+    history = dated if dated else [row for row in history if isinstance(row, dict)]
 
     values = []
     for row in history[:6]:
@@ -1752,245 +1808,6 @@ def _history_class_text(row: Dict[str, Any]) -> str:
         "raceName", "race_name", "kosu", "Koşu",
     ]), "")
 
-
-
-# ============================================================
-# STANDART 100 PUANLIK REYTİNG MOTORU
-# ============================================================
-# Sabit formül:
-#   Son 6 formu                 %30
-#   1700 m pist-mesafe          %30
-#   1700 m hız                  %15
-#   HP / kalite                 %15
-#   Kilo avantajı               %10
-#
-# Her at için aynı formül uygulanır. Manuel/ata özel katsayı yoktur.
-# Kilo puanı 100 ile sınırlandırılır.
-# ============================================================
-
-_FORM_COEFFS = (1.00, 0.90, 0.80, 0.70, 0.60, 0.50)
-_FORM_POINTS = {
-    1: 100.0, 2: 90.0, 3: 80.0, 4: 70.0, 5: 60.0,
-    6: 50.0, 7: 40.0, 8: 30.0, 9: 20.0,
-}
-
-def _rating_place_number(value: Any) -> int | None:
-    if value is None:
-        return None
-    m = re.search(r"\d+", str(value).strip())
-    if not m:
-        return None
-    try:
-        return int(m.group(0))
-    except Exception:
-        return None
-
-
-def _rating_surface(value: Any) -> str:
-    return _normalize_surface_for_table(value)
-
-
-def _rating_distance(row: Dict[str, Any]) -> float | None:
-    return _number(_first_value(row, [
-        "distance", "msf", "mesafe", "Msf"
-    ]))
-
-
-def _rating_is_target_1700(row: Dict[str, Any], target_surface: str = "") -> bool:
-    d = _rating_distance(row)
-    if d is None or abs(d - 1700.0) > 0.01:
-        return False
-    if target_surface:
-        return _rating_surface(
-            _first_value(row, [
-                "surface", "pist", "Pist", "Surface",
-                "trackSurface", "track_surface", "surfaceType", "surface_type",
-                "track", "trackType", "track_type", "zemin", "Zemin",
-                "pistTuru", "pist_turu", "PistTuru",
-            ])
-        ) == _rating_surface(target_surface)
-    return True
-
-
-def _rating_last_six_form(horse: Dict[str, Any]) -> float:
-    """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        history = []
-
-    vals = []
-    for row in history[:6]:
-        if not isinstance(row, dict):
-            continue
-        place = _rating_place_number(_first_value(
-            row, ["place", "sira", "Sıra", "S"]
-        ))
-        if place is None or place <= 0:
-            # Koşulmuş ama 10+ / okunamayan derece: 10 puan.
-            point = 10.0
-        else:
-            point = _FORM_POINTS.get(place, 10.0)
-        vals.append(point)
-
-    # Eksik geçmişi varsayımsal dereceyle doldurmaz.
-    # Mevcut gerçek yarışların ağırlıklı ortalaması alınır.
-    if not vals:
-        return 0.0
-
-    coeffs = _FORM_COEFFS[:len(vals)]
-    return max(0.0, min(100.0,
-        sum(p * c for p, c in zip(vals, coeffs)) / sum(coeffs)
-    ))
-
-
-def _rating_1700_performance(horse: Dict[str, Any], target_surface: str = "") -> float:
-    """1700 m: %60 kazanma + %40 ilk dört oranı."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return 0.0
-
-    matching = [
-        row for row in history
-        if isinstance(row, dict) and _rating_is_target_1700(row, target_surface)
-    ]
-    if not matching:
-        return 0.0
-
-    starts = len(matching)
-    wins = 0
-    top4 = 0
-    for row in matching:
-        p = _rating_place_number(_first_value(
-            row, ["place", "sira", "Sıra", "S"]
-        ))
-        if p == 1:
-            wins += 1
-        if p is not None and 1 <= p <= 4:
-            top4 += 1
-
-    win_rate = wins / starts * 100.0
-    top4_rate = top4 / starts * 100.0
-    return max(0.0, min(100.0, win_rate * 0.60 + top4_rate * 0.40))
-
-
-def _rating_time_seconds(value: Any) -> float | None:
-    """TJK derece biçimlerini saniyeye çevirir; çözülemeyeni kullanmaz."""
-    if value is None:
-        return None
-    s = str(value).strip().replace(",", ".")
-    if not s or s == "-":
-        return None
-
-    # 1.45.32 / 1:45.32 / 1'45"32
-    m = re.search(r"^(\d+)[\.:'](\d{1,2})[\.:](\d{1,2})$", s)
-    if m:
-        a, b, c = map(int, m.groups())
-        return a * 60.0 + b + c / (100.0 if len(m.group(3)) == 2 else 10.0)
-
-    m = re.search(r"^(\d+):(\d{1,2})(?:\.(\d+))?$", s)
-    if m:
-        a = int(m.group(1)); b = int(m.group(2))
-        frac = float("0." + (m.group(3) or "0"))
-        return a * 60.0 + b + frac
-
-    # 1.45.32 gibi noktalar yukarıda yakalanmadıysa sayısal parçaları dene.
-    parts = re.findall(r"\d+(?:\.\d+)?", s)
-    if len(parts) == 3:
-        try:
-            a, b, c = parts
-            return float(a) * 60.0 + float(b) + float("0." + str(c).split(".")[-1])
-        except Exception:
-            pass
-
-    # Tek sayısal değer: saniye kabul edilir.
-    m = re.search(r"\d+(?:\.\d+)?", s)
-    if m:
-        try:
-            v = float(m.group(0))
-            return v if v > 20 else None
-        except Exception:
-            return None
-    return None
-
-
-def _rating_1700_speed_raw(horse: Dict[str, Any], target_surface: str = "") -> float | None:
-    """1700 m gerçek geçmiş derecelerinden en yüksek m/s hızını üretir."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return None
-
-    speeds = []
-    for row in history:
-        if not isinstance(row, dict) or not _rating_is_target_1700(row, target_surface):
-            continue
-        sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
-        if sec and sec > 0:
-            speeds.append(1700.0 / sec)
-    return max(speeds) if speeds else None
-
-
-def _rating_speed_score(horse: Dict[str, Any], horses: List[Dict[str, Any]], target_surface: str = "") -> float:
-    raws = [
-        _rating_1700_speed_raw(h, target_surface)
-        for h in horses if isinstance(h, dict)
-    ]
-    raws = [x for x in raws if x is not None and x > 0]
-    own = _rating_1700_speed_raw(horse, target_surface)
-    if own is None or not raws:
-        return 0.0
-    return max(0.0, min(100.0, own / max(raws) * 100.0))
-
-
-def _rating_hp_score(horse: Dict[str, Any], horses: List[Dict[str, Any]]) -> float:
-    own = _number(get_horse_hp(horse))
-    vals = [
-        _number(get_horse_hp(h))
-        for h in horses if isinstance(h, dict)
-    ]
-    vals = [x for x in vals if x is not None and x >= 0]
-    if own is None or not vals or max(vals) <= 0:
-        return 0.0
-    return max(0.0, min(100.0, own / max(vals) * 100.0))
-
-
-def _rating_weight_score(horse: Dict[str, Any]) -> float:
-    """K=(63-kilo)/(63-54)*100, üst sınır 100; negatif değerler 0."""
-    raw = get_horse_weight(horse).split("\n")[0].replace(",", ".")
-    kg = _number(raw)
-    if kg is None:
-        return 0.0
-    return max(0.0, min(100.0, (63.0 - kg) / 9.0 * 100.0))
-
-
-def calculate_standard_rating(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_surface: str = "",
-) -> Dict[str, Any]:
-    """Sabit 100 puanlık REYTİNG ve tüm alt bileşenleri."""
-    form = _rating_last_six_form(horse)
-    perf = _rating_1700_performance(horse, target_surface)
-    speed = _rating_speed_score(horse, horses, target_surface)
-    hp = _rating_hp_score(horse, horses)
-    weight = _rating_weight_score(horse)
-
-    total = (
-        form * 0.30 +
-        perf * 0.30 +
-        speed * 0.15 +
-        hp * 0.15 +
-        weight * 0.10
-    )
-    return {
-        "score": round(max(0.0, min(100.0, total)), 2),
-        "components": {
-            "Son 6 Form": round(form, 2),
-            "1700 Performans": round(perf, 2),
-            "1700 Hız": round(speed, 2),
-            "HP / Kalite": round(hp, 2),
-            "Kilo Avantajı": round(weight, 2),
-        },
-    }
 
 # ============================================================
 # TJK-ONLY ŞART UYUMU ENDEKSİ
@@ -3317,15 +3134,11 @@ else:
                 break
 
         comps = r.get("components", {})
-        # GÜNCEL SINIF gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
+        # GÜNCEL SINIF artık Güncel Form bileşeninden alınmaz.
+        # Gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
         current_class = calculate_guncel_sinif(horse)
-        # REYTİNG yalnızca standart 100 puanlık formülle hesaplanır.
-        rating_result = calculate_standard_rating(
-            horse,
-            horses,
-            target_surface=surface,
-        )
-        rating_score = rating_result["score"]
+        sart_result = calculate_sart_uyumu(horse, selected_race)
+        sart_uyumu = float(sart_result.get("score", 50.0))
 
         table_rows.append({
             "_horse_index": horse_index,
@@ -3357,7 +3170,7 @@ else:
                 round(float(r["score"]), 2)
                 if r.get("score") is not None else "—"
             ),
-            "REYTİNG": rating_score,
+            "ŞART UYUMU": sart_uyumu,
             "GÜNCEL SINIF": current_class,
             "SON GALOP": workout_display(horse),
             "SON KOŞU": last_race_display(horse),
@@ -3376,7 +3189,7 @@ else:
     display_columns = [
         "No", "At İsmi", "Yaş", "Orijin (Baba-Anne)", "Kilo", "Jokey",
         "Sahip / Antrenör", "St", "HP", "Son 6 Y.", "KGS", "s20", "EİD", "Gny", "AGF",
-        "BİZİM SKOR", "REYTİNG", "GÜNCEL SINIF",
+        "BİZİM SKOR", "ŞART UYUMU", "GÜNCEL SINIF",
         "SON GALOP", "SON KOŞU", "BU YIL KAZANÇ", "TOPLAM KAZANÇ",
     ]
     df = pd.DataFrame(table_rows)
@@ -4212,7 +4025,7 @@ else:
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
-    gb.configure_column("REYTİNG", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
+    gb.configure_column("ŞART UYUMU", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
@@ -4512,8 +4325,8 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "REYTİNG formülü: Son 6 %30 + 1700 Performans %30 + 1700 Hız %15 + HP %15 + Kilo %10. "
-                "Tüm atlara aynı formül uygulanır."
+                "BİZİM SKOR yalnızca gerçek TJK verisi ve ampirik olarak öğrenilmiş "
+                "1500 puanlık model etkin olduğunda hesaplanır. Eksik veriye nötr puan verilmez."
             )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
@@ -4527,11 +4340,12 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Son 6 %30 • 1700 Performans %30 • 1700 Hız %15 • HP %15 • Kilo %10 • "
+    f"**BİZİM SKOR MOTORU:** 20 gerçek veri ailesi • 1500 puanlık ampirik model • "
     f"Seçili koşu: {race_number}. koşu",
 )
 st.caption(
-    "REYTİNG, GERÇEK VERİ İLE ANALİZ ET butonundan sonra her at için aynı sabit 100 puanlık formülle hesaplanır."
+    "Gerçek TJK geçmişi ve galop verileri olmadan BİZİM SKOR hesaplanmaz. "
+    "1500 puanlık ağırlıklar veri sonuçlarından öğrenilecektir."
 )
 
 # ============================================================
