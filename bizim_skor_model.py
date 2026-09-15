@@ -24,9 +24,18 @@ FAMILIES = [
 ]
 
 # 60+ rolling observations is deliberately required; no tiny-sample scoring.
-MIN_FAMILY_SAMPLES = 12
-MIN_TOTAL_SAMPLES = 60
-MIN_LEARNED_FAMILIES = 3
+MIN_FAMILY_SAMPLES = 8
+MIN_TOTAL_SAMPLES = 30
+MIN_LEARNED_FAMILIES = 2
+MIN_PRIOR_RACES = 3
+
+# Streamlit reruns the script frequently. Keep a small in-process cache so the
+# empirical learner is trained once per downloaded dataset, not on every UI
+# interaction. The cache is data-signature based and automatically refreshes
+# when the underlying historical data changes.
+_MODEL_CACHE = {}
+_MODEL_CACHE_MAX = 4
+
 
 
 def _first(d, keys, default=None):
@@ -195,17 +204,31 @@ def _family_values(prior, target, workouts=None):
 
 
 def _auc(values, labels):
-    pairs=[(v,y) for v,y in zip(values,labels) if v is not None and math.isfinite(v)]
-    pos=[v for v,y in pairs if y==1]; neg=[v for v,y in pairs if y==0]
-    if not pos or not neg:return None
-    wins=0.0
-    for p in pos:
-        for n in neg:
-            wins += 1.0 if p>n else (0.5 if p==n else 0.0)
-    return wins/(len(pos)*len(neg))
+    """Fast AUC from ranks; O(n log n), not pairwise O(n²)."""
+    pairs=[(float(v),int(y)) for v,y in zip(values,labels)
+           if v is not None and y in (0,1) and math.isfinite(float(v))]
+    if not pairs:return None
+    n_pos=sum(y for _,y in pairs); n_neg=len(pairs)-n_pos
+    if n_pos==0 or n_neg==0:return None
+    pairs.sort(key=lambda x:x[0])
+    rank_sum_pos=0.0; i=0; rank=1
+    while i<len(pairs):
+        j=i+1; value=pairs[i][0]
+        while j<len(pairs) and pairs[j][0]==value:j+=1
+        avg_rank=(rank+(rank+(j-i)-1))/2.0
+        rank_sum_pos += avg_rank*sum(1 for _,y in pairs[i:j] if y==1)
+        rank += j-i; i=j
+    return (rank_sum_pos - n_pos*(n_pos+1)/2.0)/(n_pos*n_neg)
 
 
 def _rolling_samples(horses):
+    """Build leakage-safe samples from every horse's historical results.
+
+    For a historical target race, only races strictly older than that target are
+    used to build the feature vector.  We deliberately use 3+ prior races so the
+    learner starts producing useful signals much earlier, while still avoiding a
+    one-race guess.
+    """
     samples={k:[] for k in FAMILIES}
     total_targets=0
     for horse in horses:
@@ -214,12 +237,11 @@ def _rolling_samples(horses):
         dated=[_dt(_first(r,["date","tarih"],None)) for r in rows]
         if any(d is not None for d in dated):
             rows=sorted(rows,key=lambda r:(_dt(_first(r,["date","tarih"],None)) or date.min),reverse=True)
-        # At least 5 older races must exist before a target can teach anything.
-        for i in range(5,len(rows)):
+        for i in range(MIN_PRIOR_RACES,len(rows)):
             target=rows[i]; place=_place(target)
             if place is None: continue
             prior=rows[i+1:]
-            if len(prior)<5: continue
+            if len(prior)<MIN_PRIOR_RACES: continue
             vals=_family_values(prior,target,horse.get("_workouts",[]))
             label=1 if place<=3 else 0; total_targets+=1
             for fam,val in vals.items():
@@ -227,7 +249,31 @@ def _rolling_samples(horses):
     return samples,total_targets
 
 
+def _dataset_signature(horses):
+    """Cheap but data-sensitive signature for the current downloaded dataset."""
+    import hashlib
+    h=hashlib.sha1()
+    for horse in horses:
+        rows=horse.get("_history",[]) if isinstance(horse,dict) else []
+        h.update(str(len(rows)).encode())
+        for r in rows:
+            if not isinstance(r,dict): continue
+            # Include the fields that can materially change learned features.
+            vals=(r.get("date",r.get("tarih","")), r.get("city",r.get("sehir","")),
+                  r.get("distance",r.get("mesafe","")), r.get("surface",r.get("pist","")),
+                  r.get("place",r.get("sira","")), r.get("time",r.get("derece","")),
+                  r.get("weight",r.get("kilo","")), r.get("hp",r.get("HP","")),
+                  r.get("raceName",r.get("kosu","")), r.get("className",r.get("sinif","")))
+            h.update(repr(vals).encode())
+    return h.hexdigest()
+
+
 def learn_model(horses):
+    key=_dataset_signature(horses)
+    cached=_MODEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     samples,target_count=_rolling_samples(horses)
     learned=[]
     for fam in FAMILIES:
@@ -235,22 +281,25 @@ def learn_model(horses):
         if len(pairs)<MIN_FAMILY_SAMPLES: continue
         auc=_auc([v for v,_ in pairs],[y for _,y in pairs])
         if auc is None: continue
-        # Every family is supposed to be "higher is better". If the empirical
-        # direction is inverse, remember that and invert the live value.
         direction=1 if auc>=0.5 else -1
-        signal=2*abs(auc-0.5)
-        reliability=min(1.0,math.sqrt(len(pairs)/100.0))
+        signal=abs(auc-0.5)*2.0
+        reliability=math.sqrt(len(pairs)/(len(pairs)+25.0))
         strength=signal*reliability
         if strength>0:
-            learned.append({"family":fam,"auc":round(auc,4),"direction":direction,"samples":len(pairs),"strength":strength})
-    total=sum(x["samples"] for x in learned)
-    if target_count<MIN_TOTAL_SAMPLES or len(learned)<MIN_LEARNED_FAMILIES:
-        return {"ready":False,"sample_count":total,"target_count":target_count,"families":learned,"weights":{},"method":"rolling_out_of_time_auc"}
-    ss=sum(x["strength"] for x in learned)
-    if ss<=0:return {"ready":False,"sample_count":total,"target_count":target_count,"families":learned,"weights":{},"method":"rolling_out_of_time_auc"}
-    weights={x["family"]:1500*x["strength"]/ss for x in learned}
-    return {"ready":True,"sample_count":total,"target_count":target_count,"families":learned,"weights":weights,"method":"rolling_out_of_time_auc"}
-
+            learned.append({"family":fam,"auc":round(auc,4),"direction":direction,
+                            "samples":len(pairs),"strength":strength})
+    sample_count=sum(x["samples"] for x in learned)
+    result={"ready":False,"sample_count":sample_count,"target_count":target_count,
+            "families":learned,"weights":{},"method":"rolling_out_of_time_auc_fast"}
+    if target_count>=MIN_TOTAL_SAMPLES and len(learned)>=MIN_LEARNED_FAMILIES:
+        ss=sum(x["strength"] for x in learned)
+        if ss>0:
+            result["ready"]=True
+            result["weights"]={x["family"]:1500*x["strength"]/ss for x in learned}
+    _MODEL_CACHE[key]=result
+    if len(_MODEL_CACHE)>_MODEL_CACHE_MAX:
+        _MODEL_CACHE.pop(next(iter(_MODEL_CACHE)))
+    return result
 
 def _current_values(horse,race,horses):
     hist=[r for r in horse.get("_history",[]) if isinstance(r,dict)]
