@@ -490,6 +490,8 @@ def calculate_bizim_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any]) 
         results.append({
             "horse_index": idx,
             "score": round(score, 1),
+            "bizim_skor": round(score, 1),
+            "label": "BİZİM SKOR",
             "components": components,
             "model": model,
         })
