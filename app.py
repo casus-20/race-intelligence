@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from worker.tjk_fetch import get_program, get_horse_enrichment
+from tjk_fetch import get_program, get_horse_enrichment
 
 
 # ============================================================
