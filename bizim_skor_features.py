@@ -223,5 +223,6 @@ def attach_feature_vectors(horses, race, target_date=None):
 
 
 def calculate_bizim_ranking(horses, race):
-    # Ampirik 1500 puan modeli bağlanana kadar bilinçli olarak puan üretmez.
-    return []
+    # Geriye dönük uyumluluk: asıl 1500 puan motoru bizim_skor_model.py içindedir.
+    from bizim_skor_model import calculate_bizim_ranking as _calculate
+    return _calculate(horses, race)
