@@ -30,8 +30,8 @@ FAMILIES = [
     "12_dinlenme_kgs",
 ]
 
-MIN_FAMILY_SAMPLES = 25
-MIN_TOTAL_SAMPLES = 100
+MIN_FAMILY_SAMPLES = 12
+MIN_TOTAL_SAMPLES = 60
 
 
 def _first(d: Dict[str, Any], keys, default=None):
@@ -311,13 +311,20 @@ def _rolling_samples(horses: List[Dict[str, Any]]) -> Dict[str, List[Tuple[float
         if not isinstance(hist, list):
             continue
         rows = [r for r in hist if isinstance(r, dict)]
-        # History is newest -> oldest. For row i, rows[:i] are known before that race.
+        # TJK history is normally newest -> oldest.
+        # For a historical target race, ONLY rows after it in this list (older dates)
+        # were known before the target race. Never use newer rows as training features.
+        dated = [(idx, _dt(_first(r, ["date", "tarih"], None))) for idx, r in enumerate(rows)]
+        if any(d is not None for _, d in dated):
+            rows = sorted(rows, key=lambda r: (_dt(_first(r, ["date", "tarih"], None)) or date.min), reverse=True)
         for i in range(5, len(rows)):
             target = rows[i]
             label_place = _place(target)
             if label_place is None:
                 continue
-            prior = rows[:i]
+            prior = rows[i + 1:]
+            if len(prior) < 5:
+                continue
             vals = _family_values(prior, target, horse.get("_workouts", []))
             label = 1 if label_place <= 3 else 0
             total += 1
@@ -354,14 +361,14 @@ def learn_model(horses: List[Dict[str, Any]]) -> Dict[str, Any]:
         learned.append({"family": family, "auc": auc, "direction": direction, "samples": len(pairs), "strength": strength})
 
     if total < MIN_TOTAL_SAMPLES or len(learned) < 3:
-        return {"ready": False, "sample_count": total, "families": learned, "weights": {}}
+        return {"ready": False, "sample_count": total, "families": learned, "weights": {}, "method": "rolling_out_of_time_auc"}
 
     strength_sum = sum(x["strength"] for x in learned)
     if strength_sum <= 0:
-        return {"ready": False, "sample_count": total, "families": learned, "weights": {}}
+        return {"ready": False, "sample_count": total, "families": learned, "weights": {}, "method": "rolling_out_of_time_auc"}
 
     weights = {x["family"]: 1500.0 * x["strength"] / strength_sum for x in learned}
-    return {"ready": True, "sample_count": total, "families": learned, "weights": weights}
+    return {"ready": True, "sample_count": total, "families": learned, "weights": weights, "method": "rolling_out_of_time_auc"}
 
 
 def _current_family_values(horse, race, horses):
@@ -491,4 +498,3 @@ def calculate_bizim_ranking(horses: List[Dict[str, Any]], race: Dict[str, Any]) 
     for rank, item in enumerate(results, 1):
         item["rank"] = rank
     return results
-
