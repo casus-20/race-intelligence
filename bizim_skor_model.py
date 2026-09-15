@@ -38,18 +38,54 @@ def _first(d, keys, default=None):
 
 
 def _num(v):
-    if v is None or isinstance(v,bool): return None
-    m=re.search(r"-?\d+(?:[.,]\d+)?",str(v).strip())
-    if not m:return None
-    try:return float(m.group(0).replace(",","."))
-    except:return None
+    """TJK sayısal alanlarını güvenli biçimde float'a çevirir.
+
+    Özellikle 1.24.77 gibi derece değerlerini yanlışlıkla 1.24
+    olarak okumaz; virgüllü ondalıkları ve binlik ayraçlarını destekler.
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            x = float(v)
+            return x if math.isfinite(x) else None
+        except Exception:
+            return None
+    s = str(v).strip()
+    if not s or s in {"-", "—", "–", "None", "nan", "NaN"}:
+        return None
+    # TJK derece biçimi: 1.24.77 / 0.59.43. Bu alan _time tarafından okunmalı.
+    if re.fullmatch(r"\d{1,2}\.\d{2}\.\d{2}", s):
+        return None
+    # Ondalık virgül ve binlik nokta: 1.234,56 -> 1234.56
+    if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+,\d+", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        x = float(m.group(0))
+        return x if math.isfinite(x) else None
+    except Exception:
+        return None
 
 
 def _time(v):
-    if v is None:return None
-    s=str(v).strip().replace(",",".")
-    m=re.search(r"(\d+):([\d.]+)",s)
-    if m:return float(m.group(1))*60+float(m.group(2))
+    """TJK derece değerini saniyeye çevirir."""
+    if v is None:
+        return None
+    s = str(v).strip().replace(",", ".")
+    # 1.24.77 = 84.77 sn
+    m = re.fullmatch(r"(\d{1,2})\.(\d{2})\.(\d{2})", s)
+    if m:
+        return float(m.group(1))*60 + float(m.group(2)) + float(m.group(3))/100
+    # 1:24.77 = 84.77 sn
+    m = re.fullmatch(r"(\d{1,2}):([0-9]+(?:\.[0-9]+)?)", s)
+    if m:
+        return float(m.group(1))*60 + float(m.group(2))
+    # Zaten saniye olan 84.77 gibi değerler
     return _num(s)
 
 
@@ -90,8 +126,14 @@ def _workouts(h):return [r for r in h.get("_workouts",[]) if isinstance(r,dict)]
 
 
 def _mean(xs):
-    xs=[float(x) for x in xs if x is not None and math.isfinite(float(x))]
-    return sum(xs)/len(xs) if xs else None
+    clean=[]
+    for x in xs:
+        try:
+            y=float(x)
+            if math.isfinite(y): clean.append(y)
+        except Exception:
+            continue
+    return sum(clean)/len(clean) if clean else None
 
 
 def _stats(rows):
@@ -374,10 +416,17 @@ def calculate_bizim_ranking(horses,race):
         raw_weight=sum(w for _,w,_ in available)
         # Eksik aileleri nötr puanla doldurmuyoruz: mevcut ağırlıklar 1500'e yeniden ölçekleniyor.
         scale=1500/raw_weight
-        components={fam:round(w*scale*v,2) for fam,w,v in available}
+        raw_components={fam:w*scale*v for fam,w,v in available}
+        components={fam:round(value,2) for fam,value in raw_components.items()}
+        score=round(sum(raw_components.values()),2)
+        # Görünen bileşenlerin toplamı da ekranda 1500 ölçeğinde skorla birebir aynı olsun.
+        residual=round(score-sum(components.values()),2)
+        if residual and components:
+            anchor=max(components, key=lambda fam: raw_components[fam])
+            components[anchor]=round(components[anchor]+residual,2)
         score=round(sum(components.values()),2)
         h["_bizim_skor"]=score
-        h["_bizim_family_values"]={fam:round(w*scale*v,2) for fam,w,v in available}
+        h["_bizim_family_values"]=dict(components)
         results.append({"horse_index":idx,"score":score,"bizim_skor":score,"label":"BİZİM SKOR","components":components,"model":model})
     results.sort(key=lambda x:x["score"],reverse=True)
     for rank,item in enumerate(results,1):item["rank"]=rank
