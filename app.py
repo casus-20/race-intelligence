@@ -3,6 +3,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
 import html as _html
+import requests
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1447,15 +1448,83 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     return "|".join(values)
 
 
-def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
-    """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_official_tjk_result_map(selected_date: Any, selected_city: str) -> Dict[str, int]:
+    """TJK resmi Günlük Yarış Sonuçları sayfasından at adı -> bitiriş sırası çıkarır.
 
-    Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
-    Sonuç yoksa hiçbir derece uydurulmaz.
+    Program/worker cevabında sonuç alanı yoksa yalnızca sonuçlanmış geçmiş günlerde
+    yedek kaynak olarak kullanılır. Parse edilemeyen satır kesin sonuç kabul edilmez.
+    """
+    try:
+        if not selected_date or not selected_city:
+            return {}
+        if isinstance(selected_date, (date, datetime)):
+            d = selected_date.strftime("%d/%m/%Y")
+        else:
+            raw = str(selected_date).strip()
+            m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", raw)
+            d = f"{m.group(3)}/{m.group(2)}/{m.group(1)}" if m else raw
+        url = "https://www.tjk.org/TR/Kurumsal/Info/Page/GunlukYarisSonuclari"
+        resp = requests.get(
+            url,
+            params={"QueryParameter_Tarih": d, "SehirAdi": str(selected_city)},
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/xhtml+xml"},
+        )
+        if resp.status_code != 200 or not resp.text:
+            return {}
+        tables = pd.read_html(resp.text)
+        out: Dict[str, int] = {}
+        for table in tables:
+            if table is None or table.empty:
+                continue
+            cols = [str(c).strip().lower() for c in table.columns]
+            pos_col = next((c for c in table.columns if "sıra" in str(c).lower() or "sira" in str(c).lower() or "derece sırası" in str(c).lower()), None)
+            name_cols = [c for c in table.columns if any(x in str(c).lower() for x in ("at", "isim", "adı", "adi"))]
+            if not name_cols:
+                continue
+            name_col = name_cols[0]
+            for _, row in table.iterrows():
+                raw_name = str(row.get(name_col, "")).strip()
+                if not raw_name or raw_name.lower() in {"nan", "none"}:
+                    continue
+                # At adı hücresinden program numarasını ve parantez içlerini temizle.
+                clean = re.sub(r"\(\s*\d{1,2}\s*\)", " ", raw_name)
+                clean = re.sub(r"\s+", " ", clean).strip()
+                if not clean:
+                    continue
+                raw_pos = row.get(pos_col) if pos_col is not None else None
+                pos = None
+                if raw_pos not in (None, "", "-"):
+                    m = re.search(r"\d+", str(raw_pos))
+                    if m:
+                        try: pos = int(m.group(0))
+                        except Exception: pos = None
+                if pos is None:
+                    # Sonuç tablolarında sıra çoğunlukla ilk sayısal hücredir.
+                    for value in row.tolist():
+                        m = re.fullmatch(r"\s*(\d{1,2})\s*\.?\s*", str(value))
+                        if m:
+                            candidate = int(m.group(1))
+                            if 1 <= candidate <= 30:
+                                pos = candidate
+                                break
+                if pos is not None:
+                    out[clean.casefold()] = pos
+        return out
+    except Exception:
+        return {}
+
+
+def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
+    """Sonuçlanmış koşuda gerçek bitiriş derecesini At İsmi altında gösterir.
+
+    Kaynak sırası: at üzerindeki sonuç -> yarışın sonuç/horse listeleri ->
+    doğrulanmış yerel arşiv. Hiçbir durumda son 6 formdan sonuç türetilmez.
     """
     def _position(value: Any) -> int | None:
         if isinstance(value, dict):
-            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition"):
+            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
                 if value.get(k) not in (None, "", "-"):
                     return _position(value.get(k))
             return None
@@ -1470,30 +1539,73 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
         except Exception:
             return None
 
-    # 1) TJK program/result nesnesindeki gerçek sonuç.
-    for key in (
-        "finish", "place", "sira", "S", "result", "sonuc",
-        "position", "finishPosition", "finish_position", "rank",
-    ):
-        if key in horse and horse.get(key) not in (None, "", "-"):
+    def _horse_match(item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        no = get_horse_number(horse, horse_index + 1)
+        item_no = get_horse_number(item, 0)
+        if item_no == no and item_no != 0:
+            return True
+        names = [get_horse_name(horse), get_horse_name(item)]
+        a = re.sub(r"\s+", " ", names[0]).strip().casefold()
+        b = re.sub(r"\s+", " ", names[1]).strip().casefold()
+        return bool(a and b and a == b)
+
+    # 1) At nesnesindeki doğrudan sonuç alanları.
+    for key in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+        if horse.get(key) not in (None, "", "-"):
             pos = _position(horse.get(key))
             if pos is not None:
                 return f"({pos}.)"
 
-    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
-    no = get_horse_number(horse, horse_index + 1)
-    for container in (
+    # 2) Yarış içindeki sonuç kapsayıcıları. Dict ve list şemalarının ikisini de destekle.
+    containers = (
         race.get("results"), race.get("result"), race.get("resultMap"),
-        race.get("result_map"), race.get("finish"),
-    ):
+        race.get("result_map"), race.get("finish"), race.get("finishes"),
+        race.get("resultsByHorse"), race.get("result_by_horse"),
+    )
+    no = get_horse_number(horse, horse_index + 1)
+    for container in containers:
         if isinstance(container, dict):
-            for key in (no, str(no), horse.get("no"), horse.get("numara")):
+            # Doğrudan numara anahtarı.
+            for key in (no, str(no), horse.get("no"), horse.get("numara"), horse.get("number")):
                 if key in container:
                     pos = _position(container.get(key))
                     if pos is not None:
                         return f"({pos}.)"
+            # Sonuç sözlükleri at nesnesi olarak tutuluyorsa.
+            for item in container.values():
+                if _horse_match(item):
+                    pos = _position(item)
+                    if pos is not None:
+                        return f"({pos}.)"
+        elif isinstance(container, list):
+            for item in container:
+                if _horse_match(item):
+                    pos = _position(item)
+                    if pos is not None:
+                        return f"({pos}.)"
 
-    # 3) Daha önce doğrulanmış yarış sonucu yerel arşivdeyse onu kullan.
+    # 3) Yarışın horses listesinde ayrı sonuç alanı geldiyse tekrar kontrol et.
+    for item in race.get("horses", []) if isinstance(race.get("horses"), list) else []:
+        if _horse_match(item):
+            pos = _position(item)
+            if pos is not None:
+                return f"({pos}.)"
+
+    # 4) TJK resmi Günlük Yarış Sonuçları sayfası.
+    try:
+        selected_date = race.get("date") or race.get("tarih")
+        selected_city = race.get("city") or (race.get("meta") or {}).get("city") or ""
+        result_map = _load_official_tjk_result_map(selected_date, selected_city)
+        normalized_name = re.sub(r"\s+", " ", get_horse_name(horse)).strip().casefold()
+        pos = result_map.get(normalized_name)
+        if pos is not None:
+            return f"({pos}.)"
+    except Exception:
+        pass
+
+    # 5) Daha önce doğrulanmış yerel sonuç arşivi.
     try:
         key = race_key(race, race.get("date") or race.get("tarih"), race.get("city") or "")
         for record in reversed(load_records()):
@@ -1514,7 +1626,7 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
     except Exception:
         pass
 
-    # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
+    # 6) Koşmadı/çekildi bilgisi varsa bunu göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
     try:
         equipment_text = get_horse_equipment(horse)
@@ -1523,7 +1635,6 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
     status_text += " " + str(equipment_text)
     if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
         return "(Koşmaz)"
-
     return ""
 
 
@@ -4164,7 +4275,7 @@ else:
     selected_horse = None
 
     grid_options = {
-        "rowHeight": 52,
+        "rowHeight": 68,
         "headerHeight": 38,
         "domLayout": "autoHeight",
         "suppressRowClickSelection": True,
