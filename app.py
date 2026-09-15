@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tjk_fetch import get_program, get_horse_enrichment
 from bizim_skor_features import attach_feature_vectors
 from bizim_skor_model import calculate_bizim_ranking
-from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test, load_records, race_key
+from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test
 
 
 # ============================================================
@@ -1367,15 +1367,15 @@ def latest_workout(horse: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def workout_display(horse: Dict[str, Any]) -> str:
-    """Ana tabloda yalnızca en son galobun 400 m derecesini göster."""
+    """Ana tabloda yalnızca en son galobun 600 m derecesini göster."""
     w = latest_workout(horse)
     if not w:
         return "-"
     value = display_value(
-        _first_value(w, ["m400", "400", "400m", "m_400", "time400"]),
+        _first_value(w, ["m600", "600", "600m", "m_600"]),
         "",
     )
-    return f"{value} (400)" if value else "-"
+    return f"{value} (600)" if value else "-"
 
 
 def _normalize_surface_for_table(value: Any) -> str:
@@ -1445,86 +1445,6 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
         values.append(surface)
 
     return "|".join(values)
-
-
-def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
-    """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
-
-    Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
-    Sonuç yoksa hiçbir derece uydurulmaz.
-    """
-    def _position(value: Any) -> int | None:
-        if isinstance(value, dict):
-            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition"):
-                if value.get(k) not in (None, "", "-"):
-                    return _position(value.get(k))
-            return None
-        if value is None:
-            return None
-        m = re.search(r"\d+", str(value).strip())
-        if not m:
-            return None
-        try:
-            n = int(m.group(0))
-            return n if n > 0 else None
-        except Exception:
-            return None
-
-    # 1) TJK program/result nesnesindeki gerçek sonuç.
-    for key in (
-        "finish", "place", "sira", "S", "result", "sonuc",
-        "position", "finishPosition", "finish_position", "rank",
-    ):
-        if key in horse and horse.get(key) not in (None, "", "-"):
-            pos = _position(horse.get(key))
-            if pos is not None:
-                return f"({pos}.)"
-
-    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
-    no = get_horse_number(horse, horse_index + 1)
-    for container in (
-        race.get("results"), race.get("result"), race.get("resultMap"),
-        race.get("result_map"), race.get("finish"),
-    ):
-        if isinstance(container, dict):
-            for key in (no, str(no), horse.get("no"), horse.get("numara")):
-                if key in container:
-                    pos = _position(container.get(key))
-                    if pos is not None:
-                        return f"({pos}.)"
-
-    # 3) Daha önce doğrulanmış yarış sonucu yerel arşivdeyse onu kullan.
-    try:
-        key = race_key(race, race.get("date") or race.get("tarih"), race.get("city") or "")
-        for record in reversed(load_records()):
-            if record.get("key") != key:
-                continue
-            for row in record.get("horses", []):
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    row_no = int(row.get("no"))
-                except Exception:
-                    continue
-                if row_no == int(no):
-                    pos = _position(row.get("finish"))
-                    if pos is not None:
-                        return f"({pos}.)"
-            break
-    except Exception:
-        pass
-
-    # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
-    status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
-    try:
-        equipment_text = get_horse_equipment(horse)
-    except Exception:
-        equipment_text = ""
-    status_text += " " + str(equipment_text)
-    if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
-        return "(Koşmaz)"
-
-    return ""
 
 
 def last_race_display(horse: Dict[str, Any]) -> str:
@@ -3414,13 +3334,7 @@ else:
             # No = TJK'nın gerçek programdaki AT NUMARASI.
             # Analiz sırası ile at numarasını birbirine karıştırma.
             "No": int(get_horse_number(horse, horse_index + 1)),
-            "At İsmi": "\n".join(
-                [x for x in (
-                    get_horse_name(horse),
-                    get_horse_equipment(horse),
-                    _race_finish_label(horse, selected_race, horse_index),
-                ) if x]
-            ),
+            "At İsmi": "\n".join([x for x in (get_horse_name(horse), get_horse_equipment(horse)) if x]),
             "Yaş": get_horse_age(horse),
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
             "Kilo": get_horse_weight(horse),
@@ -3569,8 +3483,7 @@ else:
                 if (i > 0) root.appendChild(document.createElement('br'));
                 const span = document.createElement('span');
                 span.textContent = part;
-                const isResult = /^\(\d+\.\)$/.test(part.trim()) || /^\(Koşmaz\)$/i.test(part.trim());
-                span.style.color = isResult ? '#d40000' : ((i === 0) ? '#d40000' : '#f1c40f');
+                span.style.color = (i === 0) ? '#d40000' : '#f1c40f';
                 span.style.fontWeight = '900';
                 span.style.whiteSpace = 'nowrap';
                 span.style.maxWidth = '100%';
@@ -4164,7 +4077,7 @@ else:
     selected_horse = None
 
     grid_options = {
-        "rowHeight": 52,
+        "rowHeight": 44,
         "headerHeight": 38,
         "domLayout": "autoHeight",
         "suppressRowClickSelection": True,
@@ -4819,11 +4732,8 @@ div.ri-header {
     visibility: visible !important;
     opacity: 1 !important;
     height: auto !important;
-    min-height: 72px !important;
     max-height: none !important;
     overflow: visible !important;
-    padding-top: 16px !important;
-    box-sizing: border-box !important;
 }
 div.ri-title {
     display: block !important;
@@ -4831,16 +4741,11 @@ div.ri-title {
     color: #FFFFFF !important;
     font-size: 40px !important;
     font-weight: 950 !important;
-    line-height: 1.25 !important;
-    height: auto !important;
-    min-height: 50px !important;
+    line-height: 1.15 !important;
     white-space: nowrap !important;
     text-align: center !important;
     width: 100% !important;
-    margin-top: 0 !important;
-    margin-bottom: 2px !important;
-    padding-top: 2px !important;
-    overflow: visible !important;
+    margin-top: 5mm !important;
 }
 div.ri-subtitle {
     display: block !important;
