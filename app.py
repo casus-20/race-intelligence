@@ -8,7 +8,8 @@ from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tjk_fetch import get_program, get_horse_enrichment
-from bizim_skor_features import attach_feature_vectors, calculate_bizim_ranking
+from bizim_skor_features import attach_feature_vectors
+from bizim_skor_model import calculate_bizim_ranking
 
 
 # ============================================================
