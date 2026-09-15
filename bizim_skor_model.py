@@ -24,10 +24,10 @@ FAMILIES = [
 ]
 
 # 60+ rolling observations is deliberately required; no tiny-sample scoring.
-MIN_FAMILY_SAMPLES = 8
-MIN_TOTAL_SAMPLES = 30
+MIN_FAMILY_SAMPLES = 4
+MIN_TOTAL_SAMPLES = 12
 MIN_LEARNED_FAMILIES = 2
-MIN_PRIOR_RACES = 3
+MIN_PRIOR_RACES = 2
 
 # Streamlit reruns the script frequently. Keep a small in-process cache so the
 # empirical learner is trained once per downloaded dataset, not on every UI
@@ -237,7 +237,11 @@ def _rolling_samples(horses):
         dated=[_dt(_first(r,["date","tarih"],None)) for r in rows]
         if any(d is not None for d in dated):
             rows=sorted(rows,key=lambda r:(_dt(_first(r,["date","tarih"],None)) or date.min),reverse=True)
-        for i in range(MIN_PRIOR_RACES,len(rows)):
+        # Geçmiş satırlar yeniden eskiye sıralıdır. Bir hedef yarışın
+        # özelliklerini üretmek için yalnızca ondan daha eski yarışları kullan.
+        # En az 2 önceki yarış yeterlidir; böylece 5-7 geçmiş koşulu olan atlar
+        # da tamamen dışarıda kalmaz.
+        for i in range(MIN_PRIOR_RACES, len(rows)):
             target=rows[i]; place=_place(target)
             if place is None: continue
             prior=rows[i+1:]
@@ -364,6 +368,9 @@ def calculate_bizim_ranking(horses,race):
             v=max(0,min(1,float(v)))
             available.append((fam,w,v))
         # A horse needs at least two independent learned real-data families.
+        # En az iki bağımsız, gerçekten öğrenilmiş aile olmadan puan üretme.
+        # Eksik aileler nötr değerle doldurulmaz; yalnızca mevcut ağırlıklar
+        # yeniden normalize edilir.
         if len(available)<2:continue
         wsum=sum(w for _,w,_ in available)
         score=1500*sum(w*v for _,w,v in available)/wsum
