@@ -3160,9 +3160,12 @@ else:
             "EİD": display_value(horse.get("bestTime")),
             "Gny": display_value(horse.get("odds")),
             "AGF": get_horse_agf(horse),
+            # BİZİM SKOR üretilememişse hücreyi gerçekten boş bırak.
+            # "—" gibi metinleri numeric sütuna koymak AG Grid'in
+            # "Invalid Number" göstermesine neden olabiliyor.
             "BİZİM SKOR": (
                 round(float(r["score"]), 2)
-                if r.get("score") is not None else "—"
+                if r.get("score") is not None else None
             ),
             "REYTİNG": rating_score,
             "GÜNCEL SINIF": current_class,
