@@ -3,7 +3,6 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 import pandas as pd
 import re
 import html as _html
-import requests
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1448,83 +1447,15 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     return "|".join(values)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _load_official_tjk_result_map(selected_date: Any, selected_city: str) -> Dict[str, int]:
-    """TJK resmi Günlük Yarış Sonuçları sayfasından at adı -> bitiriş sırası çıkarır.
-
-    Program/worker cevabında sonuç alanı yoksa yalnızca sonuçlanmış geçmiş günlerde
-    yedek kaynak olarak kullanılır. Parse edilemeyen satır kesin sonuç kabul edilmez.
-    """
-    try:
-        if not selected_date or not selected_city:
-            return {}
-        if isinstance(selected_date, (date, datetime)):
-            d = selected_date.strftime("%d/%m/%Y")
-        else:
-            raw = str(selected_date).strip()
-            m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", raw)
-            d = f"{m.group(3)}/{m.group(2)}/{m.group(1)}" if m else raw
-        url = "https://www.tjk.org/TR/Kurumsal/Info/Page/GunlukYarisSonuclari"
-        resp = requests.get(
-            url,
-            params={"QueryParameter_Tarih": d, "SehirAdi": str(selected_city)},
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/xhtml+xml"},
-        )
-        if resp.status_code != 200 or not resp.text:
-            return {}
-        tables = pd.read_html(resp.text)
-        out: Dict[str, int] = {}
-        for table in tables:
-            if table is None or table.empty:
-                continue
-            cols = [str(c).strip().lower() for c in table.columns]
-            pos_col = next((c for c in table.columns if "sıra" in str(c).lower() or "sira" in str(c).lower() or "derece sırası" in str(c).lower()), None)
-            name_cols = [c for c in table.columns if any(x in str(c).lower() for x in ("at", "isim", "adı", "adi"))]
-            if not name_cols:
-                continue
-            name_col = name_cols[0]
-            for _, row in table.iterrows():
-                raw_name = str(row.get(name_col, "")).strip()
-                if not raw_name or raw_name.lower() in {"nan", "none"}:
-                    continue
-                # At adı hücresinden program numarasını ve parantez içlerini temizle.
-                clean = re.sub(r"\(\s*\d{1,2}\s*\)", " ", raw_name)
-                clean = re.sub(r"\s+", " ", clean).strip()
-                if not clean:
-                    continue
-                raw_pos = row.get(pos_col) if pos_col is not None else None
-                pos = None
-                if raw_pos not in (None, "", "-"):
-                    m = re.search(r"\d+", str(raw_pos))
-                    if m:
-                        try: pos = int(m.group(0))
-                        except Exception: pos = None
-                if pos is None:
-                    # Sonuç tablolarında sıra çoğunlukla ilk sayısal hücredir.
-                    for value in row.tolist():
-                        m = re.fullmatch(r"\s*(\d{1,2})\s*\.?\s*", str(value))
-                        if m:
-                            candidate = int(m.group(1))
-                            if 1 <= candidate <= 30:
-                                pos = candidate
-                                break
-                if pos is not None:
-                    out[clean.casefold()] = pos
-        return out
-    except Exception:
-        return {}
-
-
 def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
-    """Sonuçlanmış koşuda gerçek bitiriş derecesini At İsmi altında gösterir.
+    """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
 
-    Kaynak sırası: at üzerindeki sonuç -> yarışın sonuç/horse listeleri ->
-    doğrulanmış yerel arşiv. Hiçbir durumda son 6 formdan sonuç türetilmez.
+    Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
+    Sonuç yoksa hiçbir derece uydurulmaz.
     """
     def _position(value: Any) -> int | None:
         if isinstance(value, dict):
-            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition"):
                 if value.get(k) not in (None, "", "-"):
                     return _position(value.get(k))
             return None
@@ -1539,73 +1470,30 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
         except Exception:
             return None
 
-    def _horse_match(item: Any) -> bool:
-        if not isinstance(item, dict):
-            return False
-        no = get_horse_number(horse, horse_index + 1)
-        item_no = get_horse_number(item, 0)
-        if item_no == no and item_no != 0:
-            return True
-        names = [get_horse_name(horse), get_horse_name(item)]
-        a = re.sub(r"\s+", " ", names[0]).strip().casefold()
-        b = re.sub(r"\s+", " ", names[1]).strip().casefold()
-        return bool(a and b and a == b)
-
-    # 1) At nesnesindeki doğrudan sonuç alanları.
-    for key in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
-        if horse.get(key) not in (None, "", "-"):
+    # 1) TJK program/result nesnesindeki gerçek sonuç.
+    for key in (
+        "finish", "place", "sira", "S", "result", "sonuc",
+        "position", "finishPosition", "finish_position", "rank",
+    ):
+        if key in horse and horse.get(key) not in (None, "", "-"):
             pos = _position(horse.get(key))
             if pos is not None:
                 return f"({pos}.)"
 
-    # 2) Yarış içindeki sonuç kapsayıcıları. Dict ve list şemalarının ikisini de destekle.
-    containers = (
-        race.get("results"), race.get("result"), race.get("resultMap"),
-        race.get("result_map"), race.get("finish"), race.get("finishes"),
-        race.get("resultsByHorse"), race.get("result_by_horse"),
-    )
+    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
     no = get_horse_number(horse, horse_index + 1)
-    for container in containers:
+    for container in (
+        race.get("results"), race.get("result"), race.get("resultMap"),
+        race.get("result_map"), race.get("finish"),
+    ):
         if isinstance(container, dict):
-            # Doğrudan numara anahtarı.
-            for key in (no, str(no), horse.get("no"), horse.get("numara"), horse.get("number")):
+            for key in (no, str(no), horse.get("no"), horse.get("numara")):
                 if key in container:
                     pos = _position(container.get(key))
                     if pos is not None:
                         return f"({pos}.)"
-            # Sonuç sözlükleri at nesnesi olarak tutuluyorsa.
-            for item in container.values():
-                if _horse_match(item):
-                    pos = _position(item)
-                    if pos is not None:
-                        return f"({pos}.)"
-        elif isinstance(container, list):
-            for item in container:
-                if _horse_match(item):
-                    pos = _position(item)
-                    if pos is not None:
-                        return f"({pos}.)"
 
-    # 3) Yarışın horses listesinde ayrı sonuç alanı geldiyse tekrar kontrol et.
-    for item in race.get("horses", []) if isinstance(race.get("horses"), list) else []:
-        if _horse_match(item):
-            pos = _position(item)
-            if pos is not None:
-                return f"({pos}.)"
-
-    # 4) TJK resmi Günlük Yarış Sonuçları sayfası.
-    try:
-        selected_date = race.get("date") or race.get("tarih")
-        selected_city = race.get("city") or (race.get("meta") or {}).get("city") or ""
-        result_map = _load_official_tjk_result_map(selected_date, selected_city)
-        normalized_name = re.sub(r"\s+", " ", get_horse_name(horse)).strip().casefold()
-        pos = result_map.get(normalized_name)
-        if pos is not None:
-            return f"({pos}.)"
-    except Exception:
-        pass
-
-    # 5) Daha önce doğrulanmış yerel sonuç arşivi.
+    # 3) Daha önce doğrulanmış yarış sonucu yerel arşivdeyse onu kullan.
     try:
         key = race_key(race, race.get("date") or race.get("tarih"), race.get("city") or "")
         for record in reversed(load_records()):
@@ -1626,7 +1514,7 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
     except Exception:
         pass
 
-    # 6) Koşmadı/çekildi bilgisi varsa bunu göster.
+    # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
     try:
         equipment_text = get_horse_equipment(horse)
@@ -1635,6 +1523,7 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
     status_text += " " + str(equipment_text)
     if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
         return "(Koşmaz)"
+
     return ""
 
 
@@ -1946,23 +1835,17 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# ============================================================
 # STANDART 100 PUANLIK REYTİNG MOTORU
 # ============================================================
-# Sabit ağırlıklar korunur:
-#   Son 6 form                 %30
-#   Koşunun gerçek mesafesi    %30
-#   Koşunun gerçek mesafesi hız %15
-#   HP / kalite                %15
-#   Kilo avantajı              %10
+# Sabit formül:
+#   Son 6 formu                 %30
+#   1700 m pist-mesafe          %30
+#   1700 m hız                  %15
+#   HP / kalite                 %15
+#   Kilo avantajı               %10
 #
-# MESAFE KURALI:
-#   1) Seçilen koşunun gerçek mesafesi hedef alınır.
-#   2) Atın o mesafede geçmişi varsa yalnızca o mesafe kullanılır.
-#   3) O mesafede hiç koşusu yoksa, aynı pistteki EN YAKIN gerçek
-#      mesafe kullanılır. Uydurma/normalize edilmiş yeni bir derece
-#      üretilmez; kaydın kendi gerçek mesafesi korunur.
-#   4) Bu kural her at için aynıdır; 1700 m artık sabit değildir.
+# Her at için aynı formül uygulanır. Manuel/ata özel katsayı yoktur.
+# Kilo puanı 100 ile sınırlandırılır.
 # ============================================================
 
 _FORM_COEFFS = (1.00, 0.90, 0.80, 0.70, 0.60, 0.50)
@@ -1970,7 +1853,6 @@ _FORM_POINTS = {
     1: 100.0, 2: 90.0, 3: 80.0, 4: 70.0, 5: 60.0,
     6: 50.0, 7: 40.0, 8: 30.0, 9: 20.0,
 }
-
 
 def _rating_place_number(value: Any) -> int | None:
     if value is None:
@@ -1989,49 +1871,25 @@ def _rating_surface(value: Any) -> str:
 
 
 def _rating_distance(row: Dict[str, Any]) -> float | None:
-    return _number(_first_value(row, ["distance", "msf", "mesafe", "Msf"]))
-
-
-def _rating_row_surface(row: Dict[str, Any]) -> str:
-    return _rating_surface(_first_value(row, [
-        "surface", "pist", "Pist", "Surface",
-        "trackSurface", "track_surface", "surfaceType", "surface_type",
-        "track", "trackType", "track_type", "zemin", "Zemin",
-        "pistTuru", "pist_turu", "PistTuru",
+    return _number(_first_value(row, [
+        "distance", "msf", "mesafe", "Msf"
     ]))
 
 
-def _rating_distance_rows(
-    horse: Dict[str, Any],
-    target_distance: float | None,
-    target_surface: str = "",
-) -> tuple[list[Dict[str, Any]], float | None]:
-    """Hedef mesafeyi seçer; yoksa aynı pistte en yakın gerçek mesafeyi seçer."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list) or target_distance is None:
-        return [], None
-
-    rows = [r for r in history if isinstance(r, dict) and _rating_distance(r) is not None]
+def _rating_is_target_1700(row: Dict[str, Any], target_surface: str = "") -> bool:
+    d = _rating_distance(row)
+    if d is None or abs(d - 1700.0) > 0.01:
+        return False
     if target_surface:
-        wanted_surface = _rating_surface(target_surface)
-        same_surface = [r for r in rows if _rating_row_surface(r) == wanted_surface]
-        if same_surface:
-            rows = same_surface
-
-    exact = [r for r in rows if abs(_rating_distance(r) - target_distance) <= 0.01]
-    if exact:
-        return exact, target_distance
-
-    if not rows:
-        return [], None
-
-    # En yakın GERÇEK mesafe. Eşit uzaklıkta kısa mesafeyi tercih eder.
-    nearest_distance = min(
-        (_rating_distance(r) for r in rows),
-        key=lambda d: (abs(d - target_distance), d),
-    )
-    nearest = [r for r in rows if abs(_rating_distance(r) - nearest_distance) <= 0.01]
-    return nearest, nearest_distance
+        return _rating_surface(
+            _first_value(row, [
+                "surface", "pist", "Pist", "Surface",
+                "trackSurface", "track_surface", "surfaceType", "surface_type",
+                "track", "trackType", "track_type", "zemin", "Zemin",
+                "pistTuru", "pist_turu", "PistTuru",
+            ])
+        ) == _rating_surface(target_surface)
+    return True
 
 
 def _rating_last_six_form(horse: Dict[str, Any]) -> float:
@@ -2039,34 +1897,52 @@ def _rating_last_six_form(horse: Dict[str, Any]) -> float:
     history = horse.get("_history", [])
     if not isinstance(history, list):
         history = []
+
     vals = []
     for row in history[:6]:
         if not isinstance(row, dict):
             continue
-        place = _rating_place_number(_first_value(row, ["place", "sira", "Sıra", "S"]))
-        point = 10.0 if place is None or place <= 0 else _FORM_POINTS.get(place, 10.0)
+        place = _rating_place_number(_first_value(
+            row, ["place", "sira", "Sıra", "S"]
+        ))
+        if place is None or place <= 0:
+            # Koşulmuş ama 10+ / okunamayan derece: 10 puan.
+            point = 10.0
+        else:
+            point = _FORM_POINTS.get(place, 10.0)
         vals.append(point)
+
+    # Eksik geçmişi varsayımsal dereceyle doldurmaz.
+    # Mevcut gerçek yarışların ağırlıklı ortalaması alınır.
     if not vals:
         return 0.0
+
     coeffs = _FORM_COEFFS[:len(vals)]
-    return max(0.0, min(100.0, sum(p * c for p, c in zip(vals, coeffs)) / sum(coeffs)))
+    return max(0.0, min(100.0,
+        sum(p * c for p, c in zip(vals, coeffs)) / sum(coeffs)
+    ))
 
 
-def _rating_distance_performance(
-    horse: Dict[str, Any],
-    target_distance: float | None,
-    target_surface: str = "",
-) -> tuple[float, float | None]:
-    """Seçilen koşu mesafesinde; yoksa en yakın gerçek mesafede performans."""
-    matching, used_distance = _rating_distance_rows(horse, target_distance, target_surface)
+def _rating_1700_performance(horse: Dict[str, Any], target_surface: str = "") -> float:
+    """1700 m: %60 kazanma + %40 ilk dört oranı."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return 0.0
+
+    matching = [
+        row for row in history
+        if isinstance(row, dict) and _rating_is_target_1700(row, target_surface)
+    ]
     if not matching:
-        return 0.0, None
+        return 0.0
 
     starts = len(matching)
     wins = 0
     top4 = 0
     for row in matching:
-        p = _rating_place_number(_first_value(row, ["place", "sira", "Sıra", "S"]))
+        p = _rating_place_number(_first_value(
+            row, ["place", "sira", "Sıra", "S"]
+        ))
         if p == 1:
             wins += 1
         if p is not None and 1 <= p <= 4:
@@ -2074,8 +1950,7 @@ def _rating_distance_performance(
 
     win_rate = wins / starts * 100.0
     top4_rate = top4 / starts * 100.0
-    score = win_rate * 0.60 + top4_rate * 0.40
-    return max(0.0, min(100.0, score)), used_distance
+    return max(0.0, min(100.0, win_rate * 0.60 + top4_rate * 0.40))
 
 
 def _rating_time_seconds(value: Any) -> float | None:
@@ -2085,15 +1960,20 @@ def _rating_time_seconds(value: Any) -> float | None:
     s = str(value).strip().replace(",", ".")
     if not s or s == "-":
         return None
+
+    # 1.45.32 / 1:45.32 / 1'45"32
     m = re.search(r"^(\d+)[\.:'](\d{1,2})[\.:](\d{1,2})$", s)
     if m:
-        a, b, c = m.groups()
-        return int(a) * 60.0 + int(b) + int(c) / (100.0 if len(c) == 2 else 10.0)
+        a, b, c = map(int, m.groups())
+        return a * 60.0 + b + c / (100.0 if len(m.group(3)) == 2 else 10.0)
+
     m = re.search(r"^(\d+):(\d{1,2})(?:\.(\d+))?$", s)
     if m:
-        a, b = int(m.group(1)), int(m.group(2))
+        a = int(m.group(1)); b = int(m.group(2))
         frac = float("0." + (m.group(3) or "0"))
         return a * 60.0 + b + frac
+
+    # 1.45.32 gibi noktalar yukarıda yakalanmadıysa sayısal parçaları dene.
     parts = re.findall(r"\d+(?:\.\d+)?", s)
     if len(parts) == 3:
         try:
@@ -2101,6 +1981,8 @@ def _rating_time_seconds(value: Any) -> float | None:
             return float(a) * 60.0 + float(b) + float("0." + str(c).split(".")[-1])
         except Exception:
             pass
+
+    # Tek sayısal değer: saniye kabul edilir.
     m = re.search(r"\d+(?:\.\d+)?", s)
     if m:
         try:
@@ -2111,36 +1993,29 @@ def _rating_time_seconds(value: Any) -> float | None:
     return None
 
 
-def _rating_speed_raw(
-    horse: Dict[str, Any],
-    target_distance: float | None,
-    target_surface: str = "",
-) -> float | None:
-    """Seçilen/hedef mesafede veya en yakın gerçek mesafede gerçek m/s hızı."""
-    matching, used_distance = _rating_distance_rows(horse, target_distance, target_surface)
-    if not matching or used_distance is None:
+def _rating_1700_speed_raw(horse: Dict[str, Any], target_surface: str = "") -> float | None:
+    """1700 m gerçek geçmiş derecelerinden en yüksek m/s hızını üretir."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
         return None
+
     speeds = []
-    for row in matching:
+    for row in history:
+        if not isinstance(row, dict) or not _rating_is_target_1700(row, target_surface):
+            continue
         sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
-        dist = _rating_distance(row)
-        if sec and sec > 0 and dist and dist > 0:
-            speeds.append(dist / sec)
+        if sec and sec > 0:
+            speeds.append(1700.0 / sec)
     return max(speeds) if speeds else None
 
 
-def _rating_speed_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str = "",
-) -> float:
+def _rating_speed_score(horse: Dict[str, Any], horses: List[Dict[str, Any]], target_surface: str = "") -> float:
     raws = [
-        _rating_speed_raw(h, target_distance, target_surface)
+        _rating_1700_speed_raw(h, target_surface)
         for h in horses if isinstance(h, dict)
     ]
     raws = [x for x in raws if x is not None and x > 0]
-    own = _rating_speed_raw(horse, target_distance, target_surface)
+    own = _rating_1700_speed_raw(horse, target_surface)
     if own is None or not raws:
         return 0.0
     return max(0.0, min(100.0, own / max(raws) * 100.0))
@@ -2148,7 +2023,10 @@ def _rating_speed_score(
 
 def _rating_hp_score(horse: Dict[str, Any], horses: List[Dict[str, Any]]) -> float:
     own = _number(get_horse_hp(horse))
-    vals = [_number(get_horse_hp(h)) for h in horses if isinstance(h, dict)]
+    vals = [
+        _number(get_horse_hp(h))
+        for h in horses if isinstance(h, dict)
+    ]
     vals = [x for x in vals if x is not None and x >= 0]
     if own is None or not vals or max(vals) <= 0:
         return 0.0
@@ -2167,30 +2045,34 @@ def _rating_weight_score(horse: Dict[str, Any]) -> float:
 def calculate_standard_rating(
     horse: Dict[str, Any],
     horses: List[Dict[str, Any]],
-    target_distance: float | None = None,
     target_surface: str = "",
 ) -> Dict[str, Any]:
-    """100 puanlık REYTİNG; mesafe seçilen koşudan alınır."""
+    """Sabit 100 puanlık REYTİNG ve tüm alt bileşenleri."""
     form = _rating_last_six_form(horse)
-    perf, used_distance = _rating_distance_performance(horse, target_distance, target_surface)
-    speed = _rating_speed_score(horse, horses, target_distance, target_surface)
+    perf = _rating_1700_performance(horse, target_surface)
+    speed = _rating_speed_score(horse, horses, target_surface)
     hp = _rating_hp_score(horse, horses)
     weight = _rating_weight_score(horse)
 
-    total = form * 0.30 + perf * 0.30 + speed * 0.15 + hp * 0.15 + weight * 0.10
+    total = (
+        form * 0.30 +
+        perf * 0.30 +
+        speed * 0.15 +
+        hp * 0.15 +
+        weight * 0.10
+    )
     return {
         "score": round(max(0.0, min(100.0, total)), 2),
         "components": {
             "Son 6 Form": round(form, 2),
-            "Mesafe Performansı": round(perf, 2),
-            "Mesafe Hızı": round(speed, 2),
+            "1700 Performans": round(perf, 2),
+            "1700 Hız": round(speed, 2),
             "HP / Kalite": round(hp, 2),
             "Kilo Avantajı": round(weight, 2),
         },
-        "target_distance": target_distance,
-        "used_distance": used_distance,
     }
 
+# ============================================================
 # TJK-ONLY ŞART UYUMU ENDEKSİ
 # ============================================================
 # Bu skor yalnızca TJK'dan gelen koşu şartları ve TJK geçmiş
@@ -2699,13 +2581,15 @@ def calculate_sart_uyumu(
     }
 
 
-def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
-    """Atın son gerçek TJK yarışlarından güncel sınıf seviyesini hesaplar.
+def calculate_guncel_sinif(horse: Dict[str, Any]) -> float:
+    """Atın TÜM gerçek TJK geçmiş yarışlarından güncel sınıf seviyesini hesaplar.
 
     - Galop, AGF, jokey, bugünkü kilo ve bugünkü HP kullanılmaz.
     - Yalnızca atın gerçek geçmiş yarışlarındaki sınıf/koşu bilgisi kullanılır.
-    - En yeni yarış daha yüksek ağırlıklıdır.
     - Sınıf bilgisi olmayan kayıtlar puana dahil edilmez.
+    - TÜM geçmiş yarışlar kullanılır; son 5 yarışla sınırlandırılmaz.
+    - TJK geçmişi yeni -> eski sıralı kabul edilir ve yeni yarışlara daha yüksek
+      ağırlık verilir. Ağırlık tüm geçmişe uygulanır: 0.85 ** sıra.
     """
     history = horse.get("_history", [])
     if not isinstance(history, list):
@@ -2720,300 +2604,19 @@ def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
         if level is None:
             continue
         parsed.append((row, level))
-        if len(parsed) >= max_races:
-            break
 
     if not parsed:
         return 50.0
 
-    # TJK geçmişi yeni -> eski sıralı geliyor. Değilse tarih üzerinden sıralamayı
-    # zorlamıyoruz; Worker'ın verdiği gerçek sıra korunuyor.
-    weights = [1.00, 0.85, 0.70, 0.55, 0.40]
-    used = weights[:len(parsed)]
-    weighted = sum(level * w for (_, level), w in zip(parsed, used)) / sum(used)
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for i, (_, level) in enumerate(parsed):
+        weight = 0.85 ** i
+        weighted_sum += level * weight
+        weight_sum += weight
+
+    weighted = weighted_sum / weight_sum
     return round(max(0.0, min(100.0, weighted)), 1)
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.title("🏇 Yarış Programı")
-
-# Gün değiştiğinde önceki Streamlit widget state'inin (örn. 12/09)
-# yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
-# farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
-# otomatik olarak bugüne geçilir.
-try:
-    from zoneinfo import ZoneInfo
-    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
-except Exception:
-    _today = date.today()
-if st.session_state.get("_date_auto_sync_day") != _today:
-    st.session_state["selected_date_widget"] = _today
-    st.session_state["_date_auto_sync_day"] = _today
-
-selected_date = st.sidebar.date_input(
-    "Tarih",
-    key="selected_date_widget",
-)
-
-
-# ============================================================
-# HİPODROM
-# ============================================================
-
-with st.sidebar:
-    with st.spinner("TJK'daki aktif hipodromlar kontrol ediliyor..."):
-        active_cities = load_active_cities(selected_date)
-
-if not active_cities:
-    st.sidebar.warning(
-        f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
-    )
-    st.info(
-        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
-    )
-    st.stop()
-
-if st.session_state.loaded_city in active_cities:
-    default_city_index = active_cities.index(
-        st.session_state.loaded_city
-    )
-else:
-    default_city_index = 0
-
-selected_city = st.sidebar.selectbox(
-    "Hipodrom",
-    active_cities,
-    index=default_city_index,
-)
-
-# ============================================================
-# PROGRAMI GETİR
-# ============================================================
-
-get_program_clicked = st.sidebar.button(
-    "📥 PROGRAMI GETİR",
-    key="program_get_button",
-    use_container_width=True,
-)
-
-# Program özeti, program verisi alındıktan sonra sol panelde gösterilir.
-
-if get_program_clicked:
-
-    # Önce eski programı temizle
-    st.session_state.program_data = None
-
-    st.session_state.loaded_date = None
-    st.session_state.loaded_city = None
-
-    try:
-
-        result = fetch_program_with_status(
-            selected_date,
-            selected_city,
-            "PROGRAM GETİR",
-        )
-
-        st.session_state.program_data = result
-        st.session_state.loaded_date = selected_date
-        st.session_state.loaded_city = selected_city
-        st.session_state.selected_race = 1
-
-    except Exception as exc:
-
-        st.error(
-            "Program alınırken hata oluştu."
-        )
-
-        st.code(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# OTOMATİK PROGRAM YÜKLE
-# ============================================================
-
-program_data = st.session_state.program_data
-
-
-if program_data is None:
-
-    try:
-
-        program_data = fetch_program_with_status(
-            selected_date,
-            selected_city,
-            "PROGRAM HAZIRLANIYOR",
-        )
-
-        st.session_state.program_data = program_data
-        st.session_state.loaded_date = selected_date
-        st.session_state.loaded_city = selected_city
-        st.session_state.selected_race = 1
-
-    except Exception as exc:
-
-        st.error(
-            "Beklenmeyen hata oluştu."
-        )
-
-        st.code(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# PROGRAM GEÇERLİ Mİ?
-# ============================================================
-
-if not isinstance(
-    program_data,
-    dict,
-):
-
-    st.error(
-        "TJK'dan gelen program verisi geçersiz."
-    )
-
-    st.stop()
-
-
-# ============================================================
-# TARİH / HİPODROM DEĞİŞİKLİĞİ KONTROLÜ
-# ============================================================
-
-loaded_date = st.session_state.loaded_date
-loaded_city = st.session_state.loaded_city
-
-
-if (
-    loaded_date != selected_date
-    or loaded_city != selected_city
-):
-
-    try:
-
-        program_data = fetch_program_with_status(
-            selected_date,
-            selected_city,
-            "PROGRAM YENİLENİYOR",
-        )
-
-        st.session_state.program_data = program_data
-        st.session_state.loaded_date = selected_date
-        st.session_state.loaded_city = selected_city
-        st.session_state.selected_race = 1
-
-    except Exception as exc:
-
-        st.error(
-            "Program yenilenirken hata oluştu."
-        )
-
-        st.code(
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# KOŞULAR
-# ============================================================
-
-races = program_data.get(
-    "races",
-    [],
-)
-
-
-if not isinstance(
-    races,
-    list,
-):
-
-    races = []
-
-# Program özeti races tanımlandıktan sonra gösterilir.
-st.sidebar.markdown(
-    f"<div class='sidebar-program-status'>"
-    f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
-    f"{len(races)} koşu bulundu.<br>"
-    f"<b>✓ {len(races)} koşu • "
-    f"{sum(len(r.get('horses', [])) for r in races if isinstance(r, dict))} at verisi alındı</b>"
-    f"</div>",
-    unsafe_allow_html=True,
-)
-
-
-if not races:
-
-    st.warning(
-        f"{selected_city} — "
-        f"{selected_date.strftime('%d/%m/%Y')} "
-        "için koşu bulunamadı."
-    )
-
-    st.info(
-        "TJK'dan bu tarih ve hipodrom için "
-        "koşu verisi alınamadı."
-    )
-
-    # Debug göster
-    with st.expander(
-        "🔧 Teknik Debug"
-    ):
-
-        st.json(
-            program_data
-        )
-
-    st.stop()
-
-
-# ============================================================
-# PROGRAM BİLGİSİ
-# ============================================================
-
-# Üstteki yeşil program bilgi bandı bilinçli olarak kaldırıldı.
-# Program bilgisi yalnızca sol panelde, PROGRAMI GETİR butonunun altında gösterilir.
-
-
-# ============================================================
-# KOŞU SEÇİMİ
-# ============================================================
-
-st.subheader("Koşular")
-
-
-# Koşu butonları pist türüne göre V34 renk düzeninde boyanır.
-_race_css = ["<style>"]
-for _idx, _race in enumerate(races):
-    _surface = str(_race.get("surface") or (_race.get("meta") or {}).get("surface") or "").lower()
-    _is_dirt = "kum" in _surface
-    _bg = "#b77a2b" if _is_dirt else "#239447"
-    _race_css.append(
-        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button'
-        f'{{background:{_bg};border-color:{_bg};color:#fff;font-weight:800;}}'
-    )
-    _race_css.append(
-        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button:hover'
-        f'{{filter:brightness(1.08);color:#fff;}}'
-    )
-_race_css.append("</style>")
-st.markdown("\n".join(_race_css), unsafe_allow_html=True)
-
-race_columns = st.columns(
-    len(races)
-)
 
 
 def _select_race(race_number: int) -> None:
@@ -3521,7 +3124,6 @@ else:
         rating_result = calculate_standard_rating(
             horse,
             horses,
-            target_distance=_number(distance),
             target_surface=surface,
         )
         rating_score = rating_result["score"]
@@ -4283,7 +3885,7 @@ else:
     selected_horse = None
 
     grid_options = {
-        "rowHeight": 68,
+        "rowHeight": 52,
         "headerHeight": 38,
         "domLayout": "autoHeight",
         "suppressRowClickSelection": True,
