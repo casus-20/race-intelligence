@@ -162,13 +162,8 @@ def _family_values(prior,target,workouts=None,field=None):
     if not prior:return out
     surf=_surface(target); td=_dist(target); tw=_wt(target); th=_hp(target)
     exact=[r for r in prior if surf and _surface(r)==surf and td is not None and _dist(r)==td]
-    same_surf=[r for r in prior if surf and _surface(r)==surf and _dist(r) is not None]
-    # Hedef mesafede kayıt yoksa aynı pistteki en yakın GERÇEK mesafe kullanılır.
-    # Mesafe farkına 100 m gibi yapay bir üst sınır konulmaz.
-    near=[]
-    if not exact and td is not None and same_surf:
-        nearest_distance=min((_dist(r) for r in same_surf), key=lambda d:(abs(d-td), d))
-        near=[r for r in same_surf if abs(_dist(r)-nearest_distance)<=0.01]
+    near=[r for r in prior if surf and _surface(r)==surf and td is not None and _dist(r) is not None and abs(_dist(r)-td)<=100]
+    same_surf=[r for r in prior if surf and _surface(r)==surf]
     recent=prior[:6]
 
     # 01 koşu şartı
@@ -177,15 +172,14 @@ def _family_values(prior,target,workouts=None,field=None):
     if len(same)>=2:out["01_kosu_sarti_uyumu"]=_rate_score(same)
 
     # 02 pist + mesafe
-    base=exact if exact else near
-    if len(base)>=1:out["02_pist_mesafe"]=_rate_score(base)
+    base=exact if len(exact)>=2 else near
+    if len(base)>=2:out["02_pist_mesafe"]=_rate_score(base)
 
     # 03 pist performansı
     if len(same_surf)>=2:out["03_pist_performansi"]=_rate_score(same_surf)
 
     # 04 gerçek derece
-    distance_rows=exact if exact else near
-    times=[_rt(r)/(_dist(r)/1000) for r in distance_rows if _rt(r) is not None and _dist(r) and _dist(r)>0]
+    times=[_rt(r)/(_dist(r)/1000) for r in (exact if len(exact)>=2 else same_surf) if _rt(r) is not None and _dist(r) and _dist(r)>0]
     if len(times)>=2:
         avg=_mean(times); best=min(times); worst=max(times); out["04_gercek_derece"]=max(0,min(1,1-(avg-best)/max(worst-best,0.001)))
 
@@ -407,26 +401,15 @@ def calculate_bizim_ranking(horses,race):
     if not isinstance(horses,list) or not horses:return []
     if not any(isinstance(h,dict) and h.get("_feature_data_ready") for h in horses):return []
     model=learn_model(horses)
-    # Öğrenilmiş model hazır değilse bile gerçek özelliklerden skor üret.
-    # Bu bir tahmin katsayısı değildir: tüm mevcut aileler eşit ağırlıkla
-    # 1500 puana ölçeklenir. Öğrenilmiş model hazır olduğunda eski öğrenilmiş
-    # ağırlıklar aynen kullanılır.
-    fallback_mode = not model.get("ready")
-    active_model = model
-    if fallback_mode:
-        active_model = dict(model)
-        active_model["ready"] = True
-        active_model["method"] = "real_features_equal_weight_fallback"
-        active_model["weights"] = {fam: 1500.0 / len(FAMILIES) for fam in FAMILIES}
-        active_model["families"] = [{"family": fam, "direction": 1, "samples": 0, "auc": None, "strength": 1.0} for fam in FAMILIES]
+    if not model.get("ready"):return []
     results=[]
     for idx,h in enumerate(horses):
         if not isinstance(h,dict):continue
         vals=_current_values(h,race,horses);available=[]
-        for fam,w in active_model["weights"].items():
+        for fam,w in model["weights"].items():
             v=vals.get(fam)
             if v is None:continue
-            info=next(x for x in active_model["families"] if x["family"]==fam)
+            info=next(x for x in model["families"] if x["family"]==fam)
             if info["direction"]<0:v=1-v
             available.append((fam,w,max(0,min(1,float(v)))))
         if len(available)<2:continue
@@ -444,7 +427,7 @@ def calculate_bizim_ranking(horses,race):
         score=round(sum(components.values()),2)
         h["_bizim_skor"]=score
         h["_bizim_family_values"]=dict(components)
-        results.append({"horse_index":idx,"score":score,"bizim_skor":score,"label":"BİZİM SKOR","components":components,"model":active_model})
+        results.append({"horse_index":idx,"score":score,"bizim_skor":score,"label":"BİZİM SKOR","components":components,"model":model})
     results.sort(key=lambda x:x["score"],reverse=True)
     for rank,item in enumerate(results,1):item["rank"]=rank
     return results
