@@ -162,8 +162,13 @@ def _family_values(prior,target,workouts=None,field=None):
     if not prior:return out
     surf=_surface(target); td=_dist(target); tw=_wt(target); th=_hp(target)
     exact=[r for r in prior if surf and _surface(r)==surf and td is not None and _dist(r)==td]
-    near=[r for r in prior if surf and _surface(r)==surf and td is not None and _dist(r) is not None and abs(_dist(r)-td)<=100]
-    same_surf=[r for r in prior if surf and _surface(r)==surf]
+    same_surf=[r for r in prior if surf and _surface(r)==surf and _dist(r) is not None]
+    # Hedef mesafede kayıt yoksa aynı pistteki en yakın GERÇEK mesafe kullanılır.
+    # Mesafe farkına 100 m gibi yapay bir üst sınır konulmaz.
+    near=[]
+    if not exact and td is not None and same_surf:
+        nearest_distance=min((_dist(r) for r in same_surf), key=lambda d:(abs(d-td), d))
+        near=[r for r in same_surf if abs(_dist(r)-nearest_distance)<=0.01]
     recent=prior[:6]
 
     # 01 koşu şartı
@@ -172,14 +177,15 @@ def _family_values(prior,target,workouts=None,field=None):
     if len(same)>=2:out["01_kosu_sarti_uyumu"]=_rate_score(same)
 
     # 02 pist + mesafe
-    base=exact if len(exact)>=2 else near
-    if len(base)>=2:out["02_pist_mesafe"]=_rate_score(base)
+    base=exact if exact else near
+    if len(base)>=1:out["02_pist_mesafe"]=_rate_score(base)
 
     # 03 pist performansı
     if len(same_surf)>=2:out["03_pist_performansi"]=_rate_score(same_surf)
 
     # 04 gerçek derece
-    times=[_rt(r)/(_dist(r)/1000) for r in (exact if len(exact)>=2 else same_surf) if _rt(r) is not None and _dist(r) and _dist(r)>0]
+    distance_rows=exact if exact else near
+    times=[_rt(r)/(_dist(r)/1000) for r in distance_rows if _rt(r) is not None and _dist(r) and _dist(r)>0]
     if len(times)>=2:
         avg=_mean(times); best=min(times); worst=max(times); out["04_gercek_derece"]=max(0,min(1,1-(avg-best)/max(worst-best,0.001)))
 
