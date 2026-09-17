@@ -573,13 +573,18 @@ btn1, btn2, btn3, mode_col = st.columns([1.15, 1.15, 1.15, 0.65])
 with btn1:
     st.empty()
 with btn2:
-    st.button(
+    _real_clicked = st.button(
         "🔎 GERÇEK VERİ İLE ANALİZ ET",
         key="real_analysis_button_top",
         use_container_width=True,
-        on_click=_request_real_analysis,
         type="primary",
     )
+    # Callback yerine tıklama sonucunu doğrudan state'e yazıyoruz.
+    # Böylece Streamlit rerun sırasında gerçek analiz isteği kaybolmaz.
+    if _real_clicked:
+        st.session_state["analysis_mode"] = "Gerçek veri"
+        st.session_state["real_analysis_requested"] = True
+        st.session_state["real_analysis_done"] = False
 with btn3:
     st.button(
         "🧠 MANUEL ANALİZ",
@@ -1121,68 +1126,9 @@ def enrich_race_horses(
 
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
-
-        # Cache'e daha önce boş/eksik TJK cevabı girdiyse bunu kalıcı olarak
-        # 0 puana dönüştürme. Aynı at için bir kez canlı yeniden dene.
-        # Böylece geçici Worker/TJK gecikmesi BİZİM SKOR'u susturmaz.
-        has_earnings = False
-        if isinstance(data, dict):
-            if data.get("totalEarnings") not in (None, "", "-", 0, 0.0):
-                has_earnings = True
-            if data.get("yearEarnings") not in (None, "", "-", 0, 0.0):
-                has_earnings = True
-            e = data.get("earnings")
-            if isinstance(e, dict) and any(
-                e.get(k) not in (None, "", "-", 0, 0.0)
-                for k in ("total", "year", "totalEarnings", "yearEarnings", "kazanc", "Kazanç")
-            ):
-                has_earnings = True
-
-        if (not isinstance(history, list) or not history) or not has_earnings:
-            try:
-                fresh = get_horse_enrichment(str(at_id), name)
-                fresh_history = fresh.get("history", []) if isinstance(fresh, dict) else []
-                fresh_workouts = fresh.get("workouts", []) if isinstance(fresh, dict) else []
-                if isinstance(fresh_history, list) and fresh_history:
-                    history = fresh_history
-                if isinstance(fresh_workouts, list) and fresh_workouts:
-                    workouts = fresh_workouts
-                if isinstance(fresh, dict):
-                    # Fresh cevabı, özellikle resmi Kazanç alanlarını kaybetmeden
-                    # ana cevabın üzerine al.
-                    merged = dict(data) if isinstance(data, dict) else {}
-                    merged.update({k: v for k, v in fresh.items() if v not in (None, "", [])})
-                    data = merged
-            except Exception as exc:
-                if not isinstance(data, dict):
-                    data = {"ok": False}
-                data.setdefault("error", str(exc))
-
         item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
-        item["_history_count"] = len(item["_history"])
-        item["_workout_count"] = len(item["_workouts"])
-        item["_history_loaded"] = bool(item["_history"])
-
-        # TJK cevabı sıralamayı garanti etmeyebilir. Son 6 Y. ve Güncel Form
-        # her zaman en yeni 6 gerçek koşudan hesaplanmalıdır.
-        def _row_date_key(row):
-            if not isinstance(row, dict):
-                return date.min
-            value = row.get("date") or row.get("tarih") or ""
-            for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
-                try:
-                    return datetime.strptime(str(value)[:10], fmt).date()
-                except Exception:
-                    pass
-            return date.min
-
-        item["_history"] = sorted(
-            item["_history"],
-            key=_row_date_key,
-            reverse=True,
-        )
 
         if isinstance(data, dict):
             for key in (
@@ -3373,6 +3319,13 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
+        # Önceki başarısız/boş TJK cevabının 15 dakikalık Streamlit cache'inde
+        # kalmasını engelle. Gerçek veri analizi her tıklamada yeniden sorgulanır.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -3398,11 +3351,12 @@ else:
                 progress_callback=_real_progress,
             )
 
-            # 20 özellik ailesi tamamen kaldırıldı.
-            # BİZİM SKOR yalnızca sabit 5 bileşenle hesaplanır.
+            # Gerçek veri çekimi bittikten sonra aynı koşunun state'ini
+            # mutlaka güncelle. BİZİM SKOR bir sonraki satırda bu yeni veriyi kullanır.
             selected_race["horses"] = horses
             history_count = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
             workout_count = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
+            missing_atid = sum(1 for h in horses if isinstance(h, dict) and not h.get("_at_id"))
             st.session_state.real_analysis_done = True
             progress.progress(1.0, text=f"{len(horses)}/{len(horses)} at işlendi")
             real_status.update(
@@ -3410,6 +3364,8 @@ else:
                 state="complete",
                 expanded=False,
             )
+            if missing_atid:
+                st.warning(f"{missing_atid} atta TJK AtId bulunamadı; bu at için gerçek geçmiş sorgulanamaz.")
         except Exception as exc:
             real_status.update(
                 label="❌ Gerçek TJK veri analizi başarısız",
@@ -3417,13 +3373,22 @@ else:
                 expanded=True,
             )
             st.error(f"Gerçek veri analizi sırasında hata: {exc}")
+            # Eski/önbellekli skorun yeni analiz sonucu gibi görünmesini engelle.
+            horses = [dict(h) for h in horses]
         finally:
             st.session_state.real_analysis_requested = False
 
 
-    # BİZİM SKOR veri yok diye yarış listesini susturmaz.
-    # Her at hesaplanır; eksik bileşenler yalnızca 0 puan alır.
     ranking = calculate_bizim_ranking(horses, selected_race)
+
+    # Gerçek veri analizi sonrası motorun gerçekten yeni veriyi gördüğünü kontrol et.
+    if st.session_state.get("real_analysis_done"):
+        _hist_total = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
+        _work_total = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
+        if not ranking:
+            st.error("Gerçek veri geldi ancak BİZİM SKOR motoru sonuç üretmedi. Bu durum veri çekiminden değil, skor motoru girişinden kaynaklanıyor.")
+        elif _hist_total == 0:
+            st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
 
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
