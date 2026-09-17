@@ -573,13 +573,18 @@ btn1, btn2, btn3, mode_col = st.columns([1.15, 1.15, 1.15, 0.65])
 with btn1:
     st.empty()
 with btn2:
-    st.button(
+    _real_clicked = st.button(
         "🔎 GERÇEK VERİ İLE ANALİZ ET",
         key="real_analysis_button_top",
         use_container_width=True,
-        on_click=_request_real_analysis,
         type="primary",
     )
+    # Callback yerine tıklama sonucunu doğrudan state'e yazıyoruz.
+    # Böylece Streamlit rerun sırasında gerçek analiz isteği kaybolmaz.
+    if _real_clicked:
+        st.session_state["analysis_mode"] = "Gerçek veri"
+        st.session_state["real_analysis_requested"] = True
+        st.session_state["real_analysis_done"] = False
 with btn3:
     st.button(
         "🧠 MANUEL ANALİZ",
@@ -3314,6 +3319,13 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
+        # Önceki başarısız/boş TJK cevabının 15 dakikalık Streamlit cache'inde
+        # kalmasını engelle. Gerçek veri analizi her tıklamada yeniden sorgulanır.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -3339,11 +3351,12 @@ else:
                 progress_callback=_real_progress,
             )
 
-            # 20 özellik ailesi tamamen kaldırıldı.
-            # BİZİM SKOR yalnızca sabit 5 bileşenle hesaplanır.
+            # Gerçek veri çekimi bittikten sonra aynı koşunun state'ini
+            # mutlaka güncelle. BİZİM SKOR bir sonraki satırda bu yeni veriyi kullanır.
             selected_race["horses"] = horses
             history_count = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
             workout_count = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
+            missing_atid = sum(1 for h in horses if isinstance(h, dict) and not h.get("_at_id"))
             st.session_state.real_analysis_done = True
             progress.progress(1.0, text=f"{len(horses)}/{len(horses)} at işlendi")
             real_status.update(
@@ -3351,6 +3364,8 @@ else:
                 state="complete",
                 expanded=False,
             )
+            if missing_atid:
+                st.warning(f"{missing_atid} atta TJK AtId bulunamadı; bu at için gerçek geçmiş sorgulanamaz.")
         except Exception as exc:
             real_status.update(
                 label="❌ Gerçek TJK veri analizi başarısız",
@@ -3358,11 +3373,22 @@ else:
                 expanded=True,
             )
             st.error(f"Gerçek veri analizi sırasında hata: {exc}")
+            # Eski/önbellekli skorun yeni analiz sonucu gibi görünmesini engelle.
+            horses = [dict(h) for h in horses]
         finally:
             st.session_state.real_analysis_requested = False
 
 
     ranking = calculate_bizim_ranking(horses, selected_race)
+
+    # Gerçek veri analizi sonrası motorun gerçekten yeni veriyi gördüğünü kontrol et.
+    if st.session_state.get("real_analysis_done"):
+        _hist_total = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
+        _work_total = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
+        if not ranking:
+            st.error("Gerçek veri geldi ancak BİZİM SKOR motoru sonuç üretmedi. Bu durum veri çekiminden değil, skor motoru girişinden kaynaklanıyor.")
+        elif _hist_total == 0:
+            st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
 
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
