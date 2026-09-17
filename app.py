@@ -1121,9 +1121,68 @@ def enrich_race_horses(
 
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
+
+        # Cache'e daha önce boş/eksik TJK cevabı girdiyse bunu kalıcı olarak
+        # 0 puana dönüştürme. Aynı at için bir kez canlı yeniden dene.
+        # Böylece geçici Worker/TJK gecikmesi BİZİM SKOR'u susturmaz.
+        has_earnings = False
+        if isinstance(data, dict):
+            if data.get("totalEarnings") not in (None, "", "-", 0, 0.0):
+                has_earnings = True
+            if data.get("yearEarnings") not in (None, "", "-", 0, 0.0):
+                has_earnings = True
+            e = data.get("earnings")
+            if isinstance(e, dict) and any(
+                e.get(k) not in (None, "", "-", 0, 0.0)
+                for k in ("total", "year", "totalEarnings", "yearEarnings", "kazanc", "Kazanç")
+            ):
+                has_earnings = True
+
+        if (not isinstance(history, list) or not history) or not has_earnings:
+            try:
+                fresh = get_horse_enrichment(str(at_id), name)
+                fresh_history = fresh.get("history", []) if isinstance(fresh, dict) else []
+                fresh_workouts = fresh.get("workouts", []) if isinstance(fresh, dict) else []
+                if isinstance(fresh_history, list) and fresh_history:
+                    history = fresh_history
+                if isinstance(fresh_workouts, list) and fresh_workouts:
+                    workouts = fresh_workouts
+                if isinstance(fresh, dict):
+                    # Fresh cevabı, özellikle resmi Kazanç alanlarını kaybetmeden
+                    # ana cevabın üzerine al.
+                    merged = dict(data) if isinstance(data, dict) else {}
+                    merged.update({k: v for k, v in fresh.items() if v not in (None, "", [])})
+                    data = merged
+            except Exception as exc:
+                if not isinstance(data, dict):
+                    data = {"ok": False}
+                data.setdefault("error", str(exc))
+
         item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
+        item["_history_count"] = len(item["_history"])
+        item["_workout_count"] = len(item["_workouts"])
+        item["_history_loaded"] = bool(item["_history"])
+
+        # TJK cevabı sıralamayı garanti etmeyebilir. Son 6 Y. ve Güncel Form
+        # her zaman en yeni 6 gerçek koşudan hesaplanmalıdır.
+        def _row_date_key(row):
+            if not isinstance(row, dict):
+                return date.min
+            value = row.get("date") or row.get("tarih") or ""
+            for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+                try:
+                    return datetime.strptime(str(value)[:10], fmt).date()
+                except Exception:
+                    pass
+            return date.min
+
+        item["_history"] = sorted(
+            item["_history"],
+            key=_row_date_key,
+            reverse=True,
+        )
 
         if isinstance(data, dict):
             for key in (
@@ -3362,6 +3421,8 @@ else:
             st.session_state.real_analysis_requested = False
 
 
+    # BİZİM SKOR veri yok diye yarış listesini susturmaz.
+    # Her at hesaplanır; eksik bileşenler yalnızca 0 puan alır.
     ranking = calculate_bizim_ranking(horses, selected_race)
 
     # Analiz sonucu horse_index üzerinden eşlenir.
