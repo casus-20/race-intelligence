@@ -7,7 +7,7 @@ Bileşenler:
 - Güncel Form: 100
 - Start / Kulvar: 50
 
-Öğrenme ve AUC yoktur; disk arşivi veya ekran görüntüsü/snapshot mekanizması yoktur.
+Öğrenme, AUC, arşiv/snapshot ve minimum geçmiş yarış şartı yoktur.
 Atın yalnızca 1 geçmiş yarışı olsa bile mevcut verilerle skor hesaplanır.
 Eksik veri olan bileşen 0 puan alır; at analizden çıkarılmaz.
 """
