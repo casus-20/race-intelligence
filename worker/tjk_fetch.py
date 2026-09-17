@@ -876,18 +876,48 @@ class _TJKTableParser:
                         outer.rows.append(outer._row)
                     outer._row = None
 
-        P(convert_charrefs=True).feed(html_text)
+        # HTMLParser.feed() None döndürür; gerçek satırlar self.rows içindedir.
+        # Eski kod feed() dönüşünü rows olarak aldığı için rows=None oluyor ve
+        # doğrudan TJK fallback'i hiç parse edilemiyordu.
+        P(convert_charrefs=True).feed(html_text or "")
         return self.rows
 
 
 def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
-    """TJK AtKosuBilgileri sayfasını doğrudan okuyup ortak geçmiş şemasına çevirir."""
+    """TJK AtKosuBilgileri sayfasını doğrudan okuyup ortak geçmiş şemasına çevirir.
+
+    TJK'nin gerçek AtKosuBilgileri tablosu 2026 sürümünde tipik olarak şu sıradadır:
+    Tarih, Şehir, Msf, Pist, S, Derece, Sıklet, Takı, Jokey, St, Gny,
+    Grup, K. No-K. Adı, Kcins, Ant., Sahip, HP, Ikramiye, S20.
+
+    Buradaki kritik nokta: ``S`` bitiriş sırasıdır, ``St`` ise start/kulvardır.
+    Eski parser bu iki alanı karıştırıyor ve 16 kolonluk eski şemaya zorladığı
+    için geçmiş verisini BİZİM SKOR'a kullanılabilir biçimde aktaramıyordu.
+    """
     urls = [
         f"https://www.tjk.org/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId={at_id}",
         f"https://www.tjk.org/TR/map/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId={at_id}",
         f"https://www.tjk.org/TR/YarisSever/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId={at_id}",
     ]
     last_error = None
+
+    def norm_header(x: str) -> str:
+        x = _clean_value(x).lower()
+        x = (x.replace("ı", "i").replace("ş", "s").replace("ğ", "g")
+               .replace("ü", "u").replace("ö", "o").replace("ç", "c"))
+        x = re.sub(r"[^a-z0-9]+", "", x)
+        return x
+
+    header_alias = {
+        "tarih": "date", "sehir": "city", "msf": "distance", "mesafe": "distance",
+        "pist": "surface", "s": "place", "derece": "time", "siklet": "weight",
+        "taki": "equipment", "jokey": "jockey", "st": "post", "gny": "odds",
+        "grup": "group", "knokko": "raceName", "kno-kadi": "raceName",
+        "kno-kadi": "raceName", "kcins": "raceType", "ant": "trainer",
+        "ant": "trainer", "sahip": "owner", "hp": "hp", "ikramiye": "prize",
+        "s20": "l20",
+    }
+
     for url in urls:
         try:
             response = requests.get(
@@ -903,34 +933,58 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
             if response.status_code >= 400:
                 last_error = RuntimeError(f"TJK HTTP {response.status_code}")
                 continue
+
             parser = _TJKTableParser()
             rows = parser.feed(response.text or "")
             parsed: List[Dict[str, Any]] = []
-            for cells in rows:
-                texts = [c[0] for c in cells]
+            header_idx = None
+            header_map: Dict[int, str] = {}
+
+            # Önce gerçek başlık satırını bul.
+            for ri, cells in enumerate(rows):
+                texts = [_clean_value(c[0]) for c in cells]
+                norms = [norm_header(x) for x in texts]
+                if "tarih" in norms and ("derece" in norms or "pist" in norms) and ("ikramiye" in norms or "hp" in norms):
+                    header_idx = ri
+                    for ci, h in enumerate(norms):
+                        if h in header_alias:
+                            header_map[ci] = header_alias[h]
+                    break
+
+            for ri, cells in enumerate(rows):
+                if header_idx is not None and ri <= header_idx:
+                    continue
+                texts = [_clean_value(c[0]) for c in cells]
                 if len(texts) < 8:
                     continue
-                joined = " | ".join(texts).lower()
-                # Başlık satırını atla.
-                if "tarih" in joined and "derece" in joined and "pist" in joined:
+                first = str(texts[0] if texts else "")
+                if not re.search(r"\d{1,2}[./]\d{1,2}[./]20\d{2}", first):
                     continue
-                # TJK'nın AtKosuBilgileri tablosunda yaygın 16 kolon sırası:
-                # Tarih, Hipodrom, Mesafe, Pist, Start, Derece, Kilo, Jokey,
-                # Grup, Koşu, Koşu Türü, Antrenör, Sahip, RT, Kazanç, L20
-                if re.search(r"\d{1,2}[./]\d{1,2}[./]20\d{2}", texts[0] if texts else ""):
+
+                row: Dict[str, Any] = {}
+                if header_map:
+                    for ci, key in header_map.items():
+                        if ci < len(texts):
+                            row[key] = texts[ci]
+                else:
+                    # Fallback: güncel TJK tablosunun bilinen 19 kolon sırası.
                     cols = [
-                        "date","city","distance","surface","post","time","weight",
-                        "jockey","group","raceName","raceType","trainer","owner",
-                        "hp","prize","l20"
+                        "date", "city", "distance", "surface", "place", "time", "weight",
+                        "equipment", "jockey", "post", "odds", "group", "raceName", "raceType",
+                        "trainer", "owner", "hp", "prize", "l20",
                     ]
                     row = {cols[i]: texts[i] for i in range(min(len(cols), len(texts)))}
-                    # Bazı TJK varyantlarında Sıra ayrı kolondur; olası son sayı alanını
-                    # place olarak kullanma, çünkü yanlış kolon seçme riski vardır.
-                    parsed.append(row)
+
+                nr = _normalize_history_row(row)
+                if nr and nr.get("date"):
+                    parsed.append(nr)
+
             if parsed:
                 return parsed
+            last_error = RuntimeError("TJK geçmiş tablosu bulundu ancak yarış satırı ayrıştırılamadı")
         except Exception as exc:
             last_error = exc
+
     if last_error:
         raise last_error
     return []
@@ -967,6 +1021,23 @@ def get_horse_history(
             errors.append(f"{url}: history boş")
         except Exception as exc:
             errors.append(f"{url}: {exc}")
+
+    # Worker iki endpointte de geçmiş veremiyorsa doğrudan TJK AtKosuBilgileri
+    # sayfasını dene. Böylece Worker'ın boş/önbellekli cevabı gerçek geçmişi
+    # sıfırlayamaz.
+    try:
+        direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25))
+        if direct:
+            return {
+                "ok": True,
+                "history": direct,
+                "historyCount": len(direct),
+                "earnings": _earnings_from_history(direct),
+                "historySource": "TJK AtKosuBilgileri (direct fallback)",
+            }
+        errors.append("direct TJK: geçmiş boş")
+    except Exception as exc:
+        errors.append(f"direct TJK: {exc}")
 
     return {
         "ok": False,
