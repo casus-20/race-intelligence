@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tjk_fetch import get_program, get_horse_enrichment
 from bizim_skor_features import attach_feature_vectors
 from bizim_skor_model import calculate_bizim_ranking
+from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test, load_records, race_key
 
 
 # ============================================================
@@ -1094,48 +1095,55 @@ def enrich_race_horses(
     progress_callback=None,
 ) -> List[Dict[str, Any]]:
     """
-    Seçili koşudaki atların TJK geçmiş + galop verisini PARALEL çeker.
+    Seçili koşudaki atları TJK bülten sırasını BOZMADAN tek tek zenginleştirir.
 
-    Performans: 16 at için seri 1->2->3... yerine aynı anda 8 at işlenir.
-    Her atın geçmiş ve galop isteği zaten tjk_fetch içinde paraleldir.
-    Böylece ağ bekleme süresi yaklaşık 8 kata kadar azalabilir.
-    Sonuçlar yine TJK bülten sırasına göre döndürülür.
+    İstek sırası:
+        1 -> 2 -> 3 -> ... (bültendeki gerçek sıra)
+    Sonuç listesi de aynı sıradadır.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
     if not enriched:
         return []
 
+    results = []
     total = len(enriched)
-    # Worker/TJK tarafını aşırı yüklememek için kontrollü paralellik.
-    # 8 at x 2 endpoint = en fazla 16 eşzamanlı HTTP isteği.
-    max_workers = min(8, total)
 
-    def process_one(idx: int, source_item: Dict[str, Any]):
-        item = dict(source_item)
+    for idx, item in enumerate(enriched):
         at_id = (
-            item.get("atId") or item.get("at_id")
-            or item.get("horseId") or item.get("horse_id")
-            or item.get("horseKey") or item.get("horse_key")
-            or item.get("id") or item.get("Id") or ""
+            item.get("atId")
+            or item.get("at_id")
+            or item.get("horseId")
+            or item.get("horse_id")
+            or item.get("horseKey")
+            or item.get("horse_key")
+            or item.get("id")
+            or item.get("Id")
+            or ""
         )
         name = get_horse_name(item)
 
         data = load_horse_enrichment(
-            str(at_id), name,
-            str(target_date or ""), str(target_city or ""),
-            str(target_distance or ""), str(target_surface or ""),
+            str(at_id),
+            name,
+            str(target_date or ""),
+            str(target_city or ""),
+            str(target_distance or ""),
+            str(target_surface or ""),
             str(target_class or ""),
         )
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
+
         item["_at_id"] = str(at_id) if at_id else ""
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
 
+        # TJK resmi Kazanç değerleri Worker/TJK'dan geldiyse aynen sakla.
         if isinstance(data, dict):
             for key in (
-                "totalEarnings", "total_earnings", "lifetimeEarnings",
-                "lifetime_earnings", "careerEarnings", "career_earnings",
+                "totalEarnings", "total_earnings",
+                "lifetimeEarnings", "lifetime_earnings",
+                "careerEarnings", "career_earnings",
                 "totalKazanc", "toplamKazanc", "toplam_kazanc",
                 "kazanc", "Kazanç", "earnings", "earning",
             ):
@@ -1145,9 +1153,11 @@ def enrich_race_horses(
                     break
 
             for key in (
-                "yearEarnings", "year_earnings", "yearlyEarnings",
-                "yearly_earnings", "annualEarnings", "annual_earnings",
-                "yearKazanc", "year_kazanc", "buYilKazanc", "bu_yil_kazanc",
+                "yearEarnings", "year_earnings",
+                "yearlyEarnings", "yearly_earnings",
+                "annualEarnings", "annual_earnings",
+                "yearKazanc", "year_kazanc",
+                "buYilKazanc", "bu_yil_kazanc",
             ):
                 if data.get(key) not in (None, "", "-", 0, 0.0):
                     item["_tjk_year_earnings"] = data.get(key)
@@ -1156,8 +1166,14 @@ def enrich_race_horses(
 
             if data.get("earnings") and isinstance(data.get("earnings"), dict):
                 e = data["earnings"]
-                total_value = e.get("total") or e.get("totalEarnings") or e.get("kazanc") or e.get("Kazanç")
-                year_value = e.get("year") or e.get("yearEarnings") or e.get("yearly") or e.get("buYil")
+                total_value = (
+                    e.get("total") or e.get("totalEarnings") or
+                    e.get("kazanc") or e.get("Kazanç")
+                )
+                year_value = (
+                    e.get("year") or e.get("yearEarnings") or
+                    e.get("yearly") or e.get("buYil")
+                )
                 if total_value not in (None, "", "-", 0, 0.0):
                     item["_tjk_total_earnings"] = total_value
                     item["totalEarnings"] = total_value
@@ -1183,25 +1199,17 @@ def enrich_race_horses(
         for row in item["_history"]:
             if not isinstance(row, dict):
                 continue
-            if (row.get("date") or row.get("tarih")) and (row.get("time") or row.get("derece")):
+            has_date = row.get("date") or row.get("tarih")
+            has_time = row.get("time") or row.get("derece")
+            if has_date and has_time:
                 item["_last_race"] = row
                 break
 
-        return idx, item, name
+        results.append(item)
+        if progress_callback:
+            progress_callback(idx + 1, total, name)
 
-    results = [None] * total
-    completed = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_one, idx, item) for idx, item in enumerate(enriched)]
-        for future in as_completed(futures):
-            idx, item, name = future.result()
-            results[idx] = item
-            completed += 1
-            if progress_callback:
-                # Streamlit UI güncellemesi ana thread'de yapılır.
-                progress_callback(completed, total, name)
-
-    return [x for x in results if isinstance(x, dict)]
+    return results
 
 def _history_year(date_text: Any) -> int | None:
     m = re.search(r"(20\d{2})", str(date_text or ""))
@@ -1484,6 +1492,27 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                     pos = _position(container.get(key))
                     if pos is not None:
                         return f"({pos}.)"
+
+    # 3) Daha önce doğrulanmış yarış sonucu yerel arşivdeyse onu kullan.
+    try:
+        key = race_key(race, race.get("date") or race.get("tarih"), race.get("city") or "")
+        for record in reversed(load_records()):
+            if record.get("key") != key:
+                continue
+            for row in record.get("horses", []):
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    row_no = int(row.get("no"))
+                except Exception:
+                    continue
+                if row_no == int(no):
+                    pos = _position(row.get("finish"))
+                    if pos is not None:
+                        return f"({pos}.)"
+            break
+    except Exception:
+        pass
 
     # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
@@ -1810,8 +1839,8 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 # ============================================================
 # Sabit formül:
 #   Son 6 formu                 %30
-#   1700 m pist-mesafe          %30
-#   1700 m hız                  %15
+#   Hedef mesafe pist-performans %30
+#   Hedef mesafe hız            %15
 #   HP / kalite                 %15
 #   Kilo avantajı               %10
 #
@@ -1847,9 +1876,24 @@ def _rating_distance(row: Dict[str, Any]) -> float | None:
     ]))
 
 
-def _rating_is_target_1700(row: Dict[str, Any], target_surface: str = "") -> bool:
+def _rating_is_target_distance(
+    row: Dict[str, Any],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> bool:
+    """REYTİNG için seçili koşunun gerçek mesafesini ve pistini eşleştirir.
+
+    Sabit 1700 m KULLANILMAZ. target_distance, ekranda seçili olan
+    koşunun mesafesinden gelir. Geçmiş kaydın mesafesi bu değere
+    eşit değilse kayıt REYTİNG mesafe hesabına girmez.
+    """
     d = _rating_distance(row)
-    if d is None or abs(d - 1700.0) > 0.01:
+    if d is None or target_distance is None:
+        return False
+    try:
+        if abs(d - float(target_distance)) > 0.01:
+            return False
+    except Exception:
         return False
     if target_surface:
         return _rating_surface(
@@ -1894,15 +1938,21 @@ def _rating_last_six_form(horse: Dict[str, Any]) -> float:
     ))
 
 
-def _rating_1700_performance(horse: Dict[str, Any], target_surface: str = "") -> float:
-    """1700 m: %60 kazanma + %40 ilk dört oranı."""
+def _rating_distance_performance(
+    horse: Dict[str, Any],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> float:
+    """Seçili koşunun mesafesi: %60 kazanma + %40 ilk dört oranı."""
     history = horse.get("_history", [])
     if not isinstance(history, list):
         return 0.0
 
     matching = [
         row for row in history
-        if isinstance(row, dict) and _rating_is_target_1700(row, target_surface)
+        if isinstance(row, dict) and _rating_is_target_distance(
+            row, target_distance, target_surface
+        )
     ]
     if not matching:
         return 0.0
@@ -1964,29 +2014,42 @@ def _rating_time_seconds(value: Any) -> float | None:
     return None
 
 
-def _rating_1700_speed_raw(horse: Dict[str, Any], target_surface: str = "") -> float | None:
-    """1700 m gerçek geçmiş derecelerinden en yüksek m/s hızını üretir."""
+def _rating_distance_speed_raw(
+    horse: Dict[str, Any],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> float | None:
+    """Seçili mesafedeki gerçek geçmiş derecelerinden en yüksek m/s hızı üretir."""
     history = horse.get("_history", [])
     if not isinstance(history, list):
         return None
 
     speeds = []
     for row in history:
-        if not isinstance(row, dict) or not _rating_is_target_1700(row, target_surface):
+        if not isinstance(row, dict) or not _rating_is_target_distance(
+            row, target_distance, target_surface
+        ):
             continue
         sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
         if sec and sec > 0:
-            speeds.append(1700.0 / sec)
+            d = _rating_distance(row)
+            if d and d > 0:
+                speeds.append(d / sec)
     return max(speeds) if speeds else None
 
 
-def _rating_speed_score(horse: Dict[str, Any], horses: List[Dict[str, Any]], target_surface: str = "") -> float:
+def _rating_speed_score(
+    horse: Dict[str, Any],
+    horses: List[Dict[str, Any]],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> float:
     raws = [
-        _rating_1700_speed_raw(h, target_surface)
+        _rating_distance_speed_raw(h, target_distance, target_surface)
         for h in horses if isinstance(h, dict)
     ]
     raws = [x for x in raws if x is not None and x > 0]
-    own = _rating_1700_speed_raw(horse, target_surface)
+    own = _rating_distance_speed_raw(horse, target_distance, target_surface)
     if own is None or not raws:
         return 0.0
     return max(0.0, min(100.0, own / max(raws) * 100.0))
@@ -2016,12 +2079,13 @@ def _rating_weight_score(horse: Dict[str, Any]) -> float:
 def calculate_standard_rating(
     horse: Dict[str, Any],
     horses: List[Dict[str, Any]],
+    target_distance: float | None = None,
     target_surface: str = "",
 ) -> Dict[str, Any]:
-    """Sabit 100 puanlık REYTİNG ve tüm alt bileşenleri."""
+    """100 puanlık REYTİNG; mesafe her zaman seçili koşudan alınır."""
     form = _rating_last_six_form(horse)
-    perf = _rating_1700_performance(horse, target_surface)
-    speed = _rating_speed_score(horse, horses, target_surface)
+    perf = _rating_distance_performance(horse, target_distance, target_surface)
+    speed = _rating_speed_score(horse, horses, target_distance, target_surface)
     hp = _rating_hp_score(horse, horses)
     weight = _rating_weight_score(horse)
 
@@ -2036,8 +2100,8 @@ def calculate_standard_rating(
         "score": round(max(0.0, min(100.0, total)), 2),
         "components": {
             "Son 6 Form": round(form, 2),
-            "1700 Performans": round(perf, 2),
-            "1700 Hız": round(speed, 2),
+            "Hedef Mesafe Performans": round(perf, 2),
+            "Hedef Mesafe Hız": round(speed, 2),
             "HP / Kalite": round(hp, 2),
             "Kilo Avantajı": round(weight, 2),
         },
@@ -2552,15 +2616,13 @@ def calculate_sart_uyumu(
     }
 
 
-def calculate_guncel_sinif(horse: Dict[str, Any]) -> float:
-    """Atın TÜM gerçek TJK geçmiş yarışlarından güncel sınıf seviyesini hesaplar.
+def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
+    """Atın son gerçek TJK yarışlarından güncel sınıf seviyesini hesaplar.
 
     - Galop, AGF, jokey, bugünkü kilo ve bugünkü HP kullanılmaz.
     - Yalnızca atın gerçek geçmiş yarışlarındaki sınıf/koşu bilgisi kullanılır.
+    - En yeni yarış daha yüksek ağırlıklıdır.
     - Sınıf bilgisi olmayan kayıtlar puana dahil edilmez.
-    - TÜM geçmiş yarışlar kullanılır; son 5 yarışla sınırlandırılmaz.
-    - TJK geçmişi yeni -> eski sıralı kabul edilir ve yeni yarışlara daha yüksek
-      ağırlık verilir. Ağırlık tüm geçmişe uygulanır: 0.85 ** sıra.
     """
     history = horse.get("_history", [])
     if not isinstance(history, list):
@@ -2575,19 +2637,300 @@ def calculate_guncel_sinif(horse: Dict[str, Any]) -> float:
         if level is None:
             continue
         parsed.append((row, level))
+        if len(parsed) >= max_races:
+            break
 
     if not parsed:
         return 50.0
 
-    weighted_sum = 0.0
-    weight_sum = 0.0
-    for i, (_, level) in enumerate(parsed):
-        weight = 0.85 ** i
-        weighted_sum += level * weight
-        weight_sum += weight
-
-    weighted = weighted_sum / weight_sum
+    # TJK geçmişi yeni -> eski sıralı geliyor. Değilse tarih üzerinden sıralamayı
+    # zorlamıyoruz; Worker'ın verdiği gerçek sıra korunuyor.
+    weights = [1.00, 0.85, 0.70, 0.55, 0.40]
+    used = weights[:len(parsed)]
+    weighted = sum(level * w for (_, level), w in zip(parsed, used)) / sum(used)
     return round(max(0.0, min(100.0, weighted)), 1)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.title("🏇 Yarış Programı")
+
+# Gün değiştiğinde önceki Streamlit widget state'inin (örn. 12/09)
+# yeni günü (örn. 13/09) kilitlemesini engelle. Kullanıcı aynı gün
+# farklı bir tarih seçerse seçimi korunur; yalnızca takvim günü değiştiğinde
+# otomatik olarak bugüne geçilir.
+try:
+    from zoneinfo import ZoneInfo
+    _today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+except Exception:
+    _today = date.today()
+if st.session_state.get("_date_auto_sync_day") != _today:
+    st.session_state["selected_date_widget"] = _today
+    st.session_state["_date_auto_sync_day"] = _today
+
+selected_date = st.sidebar.date_input(
+    "Tarih",
+    key="selected_date_widget",
+)
+
+
+# ============================================================
+# HİPODROM
+# ============================================================
+
+with st.sidebar:
+    with st.spinner("TJK'daki aktif hipodromlar kontrol ediliyor..."):
+        active_cities = load_active_cities(selected_date)
+
+if not active_cities:
+    st.sidebar.warning(
+        f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
+    )
+    st.info(
+        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
+    )
+    st.stop()
+
+if st.session_state.loaded_city in active_cities:
+    default_city_index = active_cities.index(
+        st.session_state.loaded_city
+    )
+else:
+    default_city_index = 0
+
+selected_city = st.sidebar.selectbox(
+    "Hipodrom",
+    active_cities,
+    index=default_city_index,
+)
+
+# ============================================================
+# PROGRAMI GETİR
+# ============================================================
+
+get_program_clicked = st.sidebar.button(
+    "📥 PROGRAMI GETİR",
+    key="program_get_button",
+    use_container_width=True,
+)
+
+# Program özeti, program verisi alındıktan sonra sol panelde gösterilir.
+
+if get_program_clicked:
+
+    # Önce eski programı temizle
+    st.session_state.program_data = None
+
+    st.session_state.loaded_date = None
+    st.session_state.loaded_city = None
+
+    try:
+
+        result = fetch_program_with_status(
+            selected_date,
+            selected_city,
+            "PROGRAM GETİR",
+        )
+
+        st.session_state.program_data = result
+        st.session_state.loaded_date = selected_date
+        st.session_state.loaded_city = selected_city
+        st.session_state.selected_race = 1
+
+    except Exception as exc:
+
+        st.error(
+            "Program alınırken hata oluştu."
+        )
+
+        st.code(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        st.stop()
+
+
+# ============================================================
+# OTOMATİK PROGRAM YÜKLE
+# ============================================================
+
+program_data = st.session_state.program_data
+
+
+if program_data is None:
+
+    try:
+
+        program_data = fetch_program_with_status(
+            selected_date,
+            selected_city,
+            "PROGRAM HAZIRLANIYOR",
+        )
+
+        st.session_state.program_data = program_data
+        st.session_state.loaded_date = selected_date
+        st.session_state.loaded_city = selected_city
+        st.session_state.selected_race = 1
+
+    except Exception as exc:
+
+        st.error(
+            "Beklenmeyen hata oluştu."
+        )
+
+        st.code(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        st.stop()
+
+
+# ============================================================
+# PROGRAM GEÇERLİ Mİ?
+# ============================================================
+
+if not isinstance(
+    program_data,
+    dict,
+):
+
+    st.error(
+        "TJK'dan gelen program verisi geçersiz."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# TARİH / HİPODROM DEĞİŞİKLİĞİ KONTROLÜ
+# ============================================================
+
+loaded_date = st.session_state.loaded_date
+loaded_city = st.session_state.loaded_city
+
+
+if (
+    loaded_date != selected_date
+    or loaded_city != selected_city
+):
+
+    try:
+
+        program_data = fetch_program_with_status(
+            selected_date,
+            selected_city,
+            "PROGRAM YENİLENİYOR",
+        )
+
+        st.session_state.program_data = program_data
+        st.session_state.loaded_date = selected_date
+        st.session_state.loaded_city = selected_city
+        st.session_state.selected_race = 1
+
+    except Exception as exc:
+
+        st.error(
+            "Program yenilenirken hata oluştu."
+        )
+
+        st.code(
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        st.stop()
+
+
+# ============================================================
+# KOŞULAR
+# ============================================================
+
+races = program_data.get(
+    "races",
+    [],
+)
+
+
+if not isinstance(
+    races,
+    list,
+):
+
+    races = []
+
+# Program özeti races tanımlandıktan sonra gösterilir.
+st.sidebar.markdown(
+    f"<div class='sidebar-program-status'>"
+    f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
+    f"{len(races)} koşu bulundu.<br>"
+    f"<b>✓ {len(races)} koşu • "
+    f"{sum(len(r.get('horses', [])) for r in races if isinstance(r, dict))} at verisi alındı</b>"
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
+
+if not races:
+
+    st.warning(
+        f"{selected_city} — "
+        f"{selected_date.strftime('%d/%m/%Y')} "
+        "için koşu bulunamadı."
+    )
+
+    st.info(
+        "TJK'dan bu tarih ve hipodrom için "
+        "koşu verisi alınamadı."
+    )
+
+    # Debug göster
+    with st.expander(
+        "🔧 Teknik Debug"
+    ):
+
+        st.json(
+            program_data
+        )
+
+    st.stop()
+
+
+# ============================================================
+# PROGRAM BİLGİSİ
+# ============================================================
+
+# Üstteki yeşil program bilgi bandı bilinçli olarak kaldırıldı.
+# Program bilgisi yalnızca sol panelde, PROGRAMI GETİR butonunun altında gösterilir.
+
+
+# ============================================================
+# KOŞU SEÇİMİ
+# ============================================================
+
+st.subheader("Koşular")
+
+
+# Koşu butonları pist türüne göre V34 renk düzeninde boyanır.
+_race_css = ["<style>"]
+for _idx, _race in enumerate(races):
+    _surface = str(_race.get("surface") or (_race.get("meta") or {}).get("surface") or "").lower()
+    _is_dirt = "kum" in _surface
+    _bg = "#b77a2b" if _is_dirt else "#239447"
+    _race_css.append(
+        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button'
+        f'{{background:{_bg};border-color:{_bg};color:#fff;font-weight:800;}}'
+    )
+    _race_css.append(
+        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button:hover'
+        f'{{filter:brightness(1.08);color:#fff;}}'
+    )
+_race_css.append("</style>")
+st.markdown("\n".join(_race_css), unsafe_allow_html=True)
+
+race_columns = st.columns(
+    len(races)
+)
 
 
 def _select_race(race_number: int) -> None:
@@ -2977,8 +3320,11 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
-        # Cache temizlenmiyor: aynı gün/koşu verisi tekrar istenirse TJK
-        # bağlantısı yeniden kurulmaz. TTL 15 dakika ile sınırlıdır.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -3034,6 +3380,24 @@ else:
 
     ranking = calculate_bizim_ranking(horses, selected_race)
 
+    # Yarıştan ÖNCE oluşan gerçek özellik snapshot'ı otomatik eğitim arşivine alınır.
+    # Aynı yarış anahtarı varsa güncellenir; sonuç varsa ayrıca tamamlanır.
+    if any(isinstance(h, dict) and h.get("_feature_data_ready") for h in horses):
+        try:
+            _snapshot = snapshot_record(
+                selected_race,
+                horses,
+                selected_date=selected_date,
+                city=selected_city,
+            )
+            upsert_snapshot(_snapshot)
+            _result_map = extract_result_map(horses)
+            if _result_map:
+                add_result(_snapshot["key"], _result_map)
+        except Exception:
+            # Arşiv disk sorunu ana analiz ekranını bozmaz.
+            pass
+
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
@@ -3074,6 +3438,7 @@ else:
         rating_result = calculate_standard_rating(
             horse,
             horses,
+            target_distance=_number(distance),
             target_surface=surface,
         )
         rating_score = rating_result["score"]
@@ -3110,12 +3475,9 @@ else:
             "EİD": display_value(horse.get("bestTime")),
             "Gny": display_value(horse.get("odds")),
             "AGF": get_horse_agf(horse),
-            # BİZİM SKOR üretilememişse hücreyi gerçekten boş bırak.
-            # "—" gibi metinleri numeric sütuna koymak AG Grid'in
-            # "Invalid Number" göstermesine neden olabiliyor.
             "BİZİM SKOR": (
                 round(float(r["score"]), 2)
-                if r.get("score") is not None else None
+                if r.get("score") is not None else "—"
             ),
             "REYTİNG": rating_score,
             "GÜNCEL SINIF": current_class,
@@ -4273,7 +4635,7 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "REYTİNG formülü: Son 6 %30 + 1700 Performans %30 + 1700 Hız %15 + HP %15 + Kilo %10. "
+                "REYTİNG formülü: Son 6 %30 + Hedef Mesafe Performans %30 + Hedef Mesafe Hız %15 + HP %15 + Kilo %10. "
                 "Tüm atlara aynı formül uygulanır."
             )
 
@@ -4288,7 +4650,7 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Son 6 %30 • 1700 Performans %30 • 1700 Hız %15 • HP %15 • Kilo %10 • "
+    f"**REYTİNG MOTORU:** Son 6 %30 • Hedef Mesafe Performans %30 • Hedef Mesafe Hız %15 • HP %15 • Kilo %10 • "
     f"Seçili koşu: {race_number}. koşu",
 )
 st.caption(
