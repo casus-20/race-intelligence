@@ -1129,6 +1129,9 @@ def enrich_race_horses(
         item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
+        item["_enrichment_error"] = str(data.get("error") or "-") if isinstance(data, dict) else "-"
+        if isinstance(data, dict) and data.get("historySource"):
+            item["_history_source"] = data.get("historySource")
 
         if isinstance(data, dict):
             for key in (
@@ -3021,11 +3024,11 @@ _current_race_signature = (
 if st.session_state.get("_last_race_signature") != _current_race_signature:
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
-    # Yeni koşu seçildiğinde gerçek veri sorgusu OTOMATİK yapılmaz.
-    # Gerçek veri yalnızca kullanıcı "GERÇEK VERİ İLE ANALİZ ET" butonuna
-    # bastığında çekilir.
-    st.session_state.real_analysis_requested = False
-    st.session_state.real_analysis_done = False
+    # Kullanıcı aynı rerun içinde GERÇEK VERİ butonuna bastıysa isteği
+    # kesinlikle silme. Eski sürümde bu blok butondan sonra çalıştığı için
+    # ilk tıklamada real_analysis_requested tekrar False olabiliyordu.
+    if not st.session_state.get("real_analysis_requested", False):
+        st.session_state.real_analysis_done = False
     st.session_state["_last_race_signature"] = _current_race_signature
 
 # ============================================================
@@ -3390,6 +3393,23 @@ else:
             )
             if missing_atid:
                 st.warning(f"{missing_atid} atta TJK AtId bulunamadı; bu at için gerçek geçmiş sorgulanamaz.")
+
+            # Gerçek veri 0 geldiğinde nedenini kullanıcıya görünür yap.
+            if history_count == 0:
+                debug_rows = []
+                for _h in horses:
+                    if not isinstance(_h, dict):
+                        continue
+                    debug_rows.append({
+                        "At": get_horse_name(_h),
+                        "AtId": _h.get("_at_id") or _h.get("atId") or "-",
+                        "Geçmiş": len(_h.get("_history", []) or []),
+                        "Galop": len(_h.get("_workouts", []) or []),
+                        "Hata": str(_h.get("_enrichment_error") or "-")[:180],
+                    })
+                with st.expander("🔧 GERÇEK VERİ TEKNİK DURUMU", expanded=True):
+                    st.dataframe(debug_rows, use_container_width=True, hide_index=True)
+                    st.caption("Geçmiş 0 ise önce AtId, sonra Worker/TJK doğrudan bağlantısı ve ayrıştırma sonucu kontrol edilir.")
         except Exception as exc:
             real_status.update(
                 label="❌ Gerçek TJK veri analizi başarısız",
