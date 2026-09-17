@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tjk_fetch import get_program, get_horse_enrichment
 from bizim_skor_features import attach_feature_vectors
 from bizim_skor_model import calculate_bizim_ranking
-from bizim_skor_archive import snapshot_record, upsert_snapshot, extract_result_map, add_result, blind_test, load_records, race_key
+from bizim_skor_archive import blind_test, load_records, race_key
 
 
 # ============================================================
@@ -3380,23 +3380,8 @@ else:
 
     ranking = calculate_bizim_ranking(horses, selected_race)
 
-    # Yarıştan ÖNCE oluşan gerçek özellik snapshot'ı otomatik eğitim arşivine alınır.
-    # Aynı yarış anahtarı varsa güncellenir; sonuç varsa ayrıca tamamlanır.
-    if any(isinstance(h, dict) and h.get("_feature_data_ready") for h in horses):
-        try:
-            _snapshot = snapshot_record(
-                selected_race,
-                horses,
-                selected_date=selected_date,
-                city=selected_city,
-            )
-            upsert_snapshot(_snapshot)
-            _result_map = extract_result_map(horses)
-            if _result_map:
-                add_result(_snapshot["key"], _result_map)
-        except Exception:
-            # Arşiv disk sorunu ana analiz ekranını bozmaz.
-            pass
+    # BİLGİ: Yarış öncesi ekran/snapshot kaydı KAPALI.
+    # BİZİM SKOR hesaplaması TJK gerçek geçmiş verisi üzerinden doğrudan yapılır.
 
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
