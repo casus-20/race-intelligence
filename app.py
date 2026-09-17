@@ -8,9 +8,8 @@ from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tjk_fetch import get_program, get_horse_enrichment
-from bizim_skor_features import attach_feature_vectors
 from bizim_skor_model import calculate_bizim_ranking
-from bizim_skor_archive import blind_test, load_records, race_key
+from bizim_skor_archive import load_records, race_key
 
 
 # ============================================================
@@ -48,10 +47,11 @@ ALL_CITIES = [
 
 
 # ============================================================
-# BİZİM SKOR / YENİ MOTOR
+# BİZİM SKOR / SABİT 5 BİLEŞEN MOTORU
 # ============================================================
 # Eski manuel ağırlık sistemi tamamen kaldırıldı.
-# Yeni motor yalnızca gerçek TJK verisinden özellik çıkarır.
+# Motor yalnızca gerçek TJK geçmişini kullanarak sabit 5 bileşeni hesaplar.
+# Öğrenme / AUC / 20 aileli model yoktur.
 
 # ============================================================
 # SESSION STATE
@@ -3350,13 +3350,8 @@ else:
                 progress_callback=_real_progress,
             )
 
-            # Gerçek TJK koşu geçmişi + galoplar geldikten sonra 20 özellik
-            # ailesini oluştur. Bu aşamada BİZİM SKOR puanı üretilmez.
-            horses = attach_feature_vectors(
-                horses,
-                selected_race,
-                target_date=selected_date,
-            )
+            # 20 özellik ailesi tamamen kaldırıldı.
+            # BİZİM SKOR yalnızca sabit 5 bileşenle hesaplanır.
             selected_race["horses"] = horses
             history_count = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
             workout_count = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
@@ -3379,9 +3374,6 @@ else:
 
 
     ranking = calculate_bizim_ranking(horses, selected_race)
-
-    # BİLGİ: Yarış öncesi ekran/snapshot kaydı KAPALI.
-    # BİZİM SKOR hesaplaması TJK gerçek geçmiş verisi üzerinden doğrudan yapılır.
 
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
