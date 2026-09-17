@@ -1,10 +1,8 @@
-"""BİZİM SKOR — 20 gerçek veri ailesinden öğrenilen 0–1500 model.
+"""BİZİM SKOR — SABİT KURAL MOTORU
 
-- Yarıştan önce bilinebilen verilerle leakage-safe rolling örnekler üretir.
-- Her veri ailesinin 1–3 sonuçlarını ayırt etme gücünü AUC ile öğrenir.
-- Ağırlıkları otomatik olarak 1500 puana dağıtır.
-- Eksik aileye nötr puan vermez; mevcut ağırlıklar yeniden ölçeklenir.
-- Görünen bileşenlerin toplamı her at için tam olarak BİZİM SKOR'a eşittir.
+Öğrenme, AUC, adaptif ağırlık ve 1500 puan normalizasyonu kullanılmaz.
+Toplam = Koşu Şartı Uyumu + Pist/Mesafe 100 + Pist Performansı 100
+         + Güncel Form 100 + Start/Kulvar 50.
 """
 from __future__ import annotations
 from datetime import date, datetime
@@ -318,8 +316,11 @@ def _current_values(horse,race):
 
 
 def calculate_bizim_ranking(horses,race):
+    # BİZİM SKOR yalnızca gerçek TJK geçmiş koşu verisini kullanır.
+    # Feature-vector hazır bayrağı bu sabit motor için ön koşul değildir;
+    # aksi halde veri var olduğu halde skorlar boş/— kalabilir.
     if not isinstance(horses,list) or not horses: return []
-    if not any(isinstance(h,dict) and h.get("_feature_data_ready") for h in horses): return []
+    if not isinstance(race,dict): race = {}
     results=[]
     for idx,h in enumerate(horses):
         if not isinstance(h,dict): continue
