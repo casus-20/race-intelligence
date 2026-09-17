@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tjk_fetch import get_program, get_horse_enrichment
 from bizim_skor_model import calculate_bizim_ranking
-from bizim_skor_archive import load_records, race_key
 
 
 # ============================================================
@@ -1470,27 +1469,6 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                     pos = _position(container.get(key))
                     if pos is not None:
                         return f"({pos}.)"
-
-    # 3) Daha önce doğrulanmış yarış sonucu yerel arşivdeyse onu kullan.
-    try:
-        key = race_key(race, race.get("date") or race.get("tarih"), race.get("city") or "")
-        for record in reversed(load_records()):
-            if record.get("key") != key:
-                continue
-            for row in record.get("horses", []):
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    row_no = int(row.get("no"))
-                except Exception:
-                    continue
-                if row_no == int(no):
-                    pos = _position(row.get("finish"))
-                    if pos is not None:
-                        return f"({pos}.)"
-            break
-    except Exception:
-        pass
 
     # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
