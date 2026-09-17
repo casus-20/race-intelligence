@@ -1,411 +1,354 @@
-"""BİZİM SKOR — kullanıcının sabit kuralları.
+"""BİZİM SKOR — 20 gerçek veri ailesinden öğrenilen 0–1500 model.
 
-ÖNEMLİ: Bu dosyada öğrenme/adaptif ağırlık/ML/AUC yoktur.
-Bütün katsayılar sabittir ve yalnızca kullanıcı tarafından tanımlanan
-kurallar uygulanır.
-
-Ana kategoriler:
-01 Koşu Şartı Uyumu       max 100
-02 Pist + Mesafe          max 100
-03 Pist Performansı       max 100
-04 Güncel Form             max 100
-05 Start / Kulvar          max 60
-Toplam ham skor            max 460
+- Yarıştan önce bilinebilen verilerle leakage-safe rolling örnekler üretir.
+- Her veri ailesinin 1–3 sonuçlarını ayırt etme gücünü AUC ile öğrenir.
+- Ağırlıkları otomatik olarak 1500 puana dağıtır.
+- Eksik aileye nötr puan vermez; mevcut ağırlıklar yeniden ölçeklenir.
+- Görünen bileşenlerin toplamı her at için tam olarak BİZİM SKOR'a eşittir.
 """
 from __future__ import annotations
 from datetime import date, datetime
-import math, re
+import hashlib, math, re
 from typing import Any, Dict, List
 
-# Kullanıcının verdiği sınıf baz puanları.
-CLASS_POINTS = {
-    "G1": 100, "A1": 95, "G2": 90, "A2": 90, "H24": 90,
-    "A3": 80, "G3": 80, "H23": 85, "KV-24": 90, "KV-18": 80,
-    "KV-8": 70, "KV-9": 70, "H22": 80, "H21": 70, "H20": 75,
-    "H19": 70, "H18": 65, "H17": 60, "KV-6": 60, "KV-7": 60,
-    "H16": 50, "Şartlı 5": 50, "H15": 40, "Şartlı 4": 40,
-    "H14": 30, "Şartlı 3": 30, "H13": 20, "Şartlı 19": 25,
-    "Şartlı 2": 20, "Şartlı 27": 15, "Maiden": 10,
-}
-RESULT_COEFF = {1: 1.00, 2: 0.80, 3: 0.65, 4: 0.50, 5: 0.35}
-DEFAULT_RESULT_COEFF = 0.15
+FAMILIES = [
+    "01_kosu_sarti_uyumu", "02_pist_mesafe", "03_pist_performansi",
+    "04_gercek_derece", "05_gercek_hiz", "06_guncel_form",
+    "07_ortak_rakip", "08_kilo_performansi", "09_hp_kalite",
+    "10_galop_performansi", "11_galop_trend", "12_dinlenme_kgs",
+    "13_yaris_yogunlugu", "14_start_kulvar", "15_tempo_yaris_senaryosu",
+    "16_jokey_etkisi", "17_antrenor_etkisi", "18_orijin_pedigri",
+    "19_kazanc_kariyer", "20_piyasa_sinyali",
+]
 
-# 02 Pist + Mesafe
-DISTANCE_COEFF = {0: 1.00, 100: 0.85, 200: 0.70, 300: 0.55, 400: 0.40}
+MIN_FAMILY_SAMPLES = 4
+MIN_TOTAL_SAMPLES = 12
+MIN_LEARNED_FAMILIES = 2
+MIN_PRIOR_RACES = 2
+_MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
+_MODEL_CACHE_MAX = 6
 
 
 def _first(d, keys, default=None):
     if not isinstance(d, dict): return default
     for k in keys:
-        v = d.get(k)
-        if v not in (None, "", "-"):
-            return v
+        v=d.get(k)
+        if v not in (None, "", "-"): return v
     return default
 
 
-def _norm(v):
-    return (str(v or "").strip().lower()
-            .replace("ı", "i").replace("ş", "s").replace("ğ", "g")
-            .replace("ü", "u").replace("ö", "o").replace("ç", "c"))
-
-
 def _num(v):
-    if v is None or isinstance(v, bool): return None
+    """TJK sayısal alanlarını güvenli biçimde float'a çevirir.
+
+    Özellikle 1.24.77 gibi derece değerlerini yanlışlıkla 1.24
+    olarak okumaz; virgüllü ondalıkları ve binlik ayraçlarını destekler.
+    """
+    if v is None or isinstance(v, bool):
+        return None
     if isinstance(v, (int, float)):
-        try: return float(v) if math.isfinite(float(v)) else None
-        except Exception: return None
+        try:
+            x = float(v)
+            return x if math.isfinite(x) else None
+        except Exception:
+            return None
     s = str(v).strip()
-    if not s or s in {"-", "—", "–", "None", "nan"}: return None
-    if re.fullmatch(r"\d{1,2}\.\d{2}\.\d{2}", s): return None
+    if not s or s in {"-", "—", "–", "None", "nan", "NaN"}:
+        return None
+    # TJK derece biçimi: 1.24.77 / 0.59.43. Bu alan _time tarafından okunmalı.
+    if re.fullmatch(r"\d{1,2}\.\d{2}\.\d{2}", s):
+        return None
+    # Ondalık virgül ve binlik nokta: 1.234,56 -> 1234.56
     if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+,\d+", s):
         s = s.replace(".", "").replace(",", ".")
-    else: s = s.replace(",", ".")
+    else:
+        s = s.replace(",", ".")
     m = re.search(r"-?\d+(?:\.\d+)?", s)
-    try: return float(m.group(0)) if m else None
-    except Exception: return None
+    if not m:
+        return None
+    try:
+        x = float(m.group(0))
+        return x if math.isfinite(x) else None
+    except Exception:
+        return None
 
 
-def _dt(v):
-    if isinstance(v, datetime): return v.date()
-    if isinstance(v, date): return v
-    s = str(v or "").strip()
-    for f in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
-        try: return datetime.strptime(s[:10], f).date()
-        except Exception: pass
-    return None
+def _time(v):
+    """TJK derece değerini saniyeye çevirir."""
+    if v is None:
+        return None
+    s = str(v).strip().replace(",", ".")
+    # 1.24.77 = 84.77 sn
+    m = re.fullmatch(r"(\d{1,2})\.(\d{2})\.(\d{2})", s)
+    if m:
+        return float(m.group(1))*60 + float(m.group(2)) + float(m.group(3))/100
+    # 1:24.77 = 84.77 sn
+    m = re.fullmatch(r"(\d{1,2}):([0-9]+(?:\.[0-9]+)?)", s)
+    if m:
+        return float(m.group(1))*60 + float(m.group(2))
+    # Zaten saniye olan 84.77 gibi değerler
+    return _num(s)
+
+
+def _norm(v):
+    return (str(v or "").strip().lower().replace("ı","i").replace("ş","s").replace("ğ","g").replace("ü","u").replace("ö","o").replace("ç","c"))
 
 
 def _surface(r):
-    s = _norm(_first(r, ["surface","pist","Pist","Surface","trackSurface",
-                         "surfaceType","surface_type","track","zemin","pistTuru"], ""))
-    if s.startswith(("k:","k-")) or s == "k" or any(x in s for x in ("kum","dirt","sand")): return "kum"
-    if s.startswith(("c:","c-","cim:")) or s in ("c","cim") or any(x in s for x in ("cim","grass","turf")): return "cim"
-    if s.startswith(("s:","s-")) or s == "s" or any(x in s for x in ("sentetik","synthetic","polytrack","fiber")): return "sentetik"
+    s=_norm(_first(r,["surface","pist","Pist","Surface","trackSurface","surfaceType","track","zemin"],""))
+    if s.startswith(("k:","k-")) or s=="k" or any(x in s for x in ("kum","dirt","sand")):return "kum"
+    if s.startswith(("c:","c-","cim:")) or s in ("c","cim") or any(x in s for x in ("cim","grass","turf")):return "cim"
+    if s.startswith(("s:","s-")) or s=="s" or any(x in s for x in ("sentetik","synthetic","polytrack","fiber")):return "sentetik"
     return s
 
 
-def _city(r): return _norm(_first(r, ["city","şehir","sehir","hipodrom"], ""))
-def _dist(r): return _num(_first(r, ["distance","msf","mesafe"], None))
-def _place(r):
-    x = _num(_first(r, ["place","sira","S","finish","position"], None))
-    return int(x) if x is not None and x > 0 else None
-
-def _weight(r): return _num(_first(r, ["weight","kilo","siklet","Sıklet"], None))
-def _post(r): return _num(_first(r, ["post","start","kulvar","st","draw"], None))
-def _name(r): return _norm(_first(r, ["name","horse","horseName","at","At İsmi"], ""))
-
-def _history(h):
-    rows = h.get("_history", []) if isinstance(h, dict) else []
-    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
-
-
-def _class_key(value):
-    """TJK sınıf metnini kullanıcının sabit sınıf tablosundaki anahtara çevirir."""
-    s = _norm(value).replace("–", "-").replace("—", "-")
-    if not s: return None
-    # Önce özel / daha uzun ifadeler.
-    patterns = [
-        (r"\bg\s*1\b", "G1"), (r"\ba\s*1\b", "A1"),
-        (r"\bg\s*2\b", "G2"), (r"\ba\s*2\b", "A2"),
-        (r"\bg\s*3\b", "G3"), (r"\ba\s*3\b", "A3"),
-        (r"\bkv\s*[- ]?24\b", "KV-24"), (r"\bkv\s*[- ]?18\b", "KV-18"),
-        (r"\bkv\s*[- ]?9\b", "KV-9"), (r"\bkv\s*[- ]?8\b", "KV-8"),
-        (r"\bkv\s*[- ]?7\b", "KV-7"), (r"\bkv\s*[- ]?6\b", "KV-6"),
-        (r"\bh\s*24\b", "H24"), (r"\bh\s*23\b", "H23"),
-        (r"\bh\s*22\b", "H22"), (r"\bh\s*21\b", "H21"),
-        (r"\bh\s*20\b", "H20"), (r"\bh\s*19\b", "H19"),
-        (r"\bh\s*18\b", "H18"), (r"\bh\s*17\b", "H17"),
-        (r"\bh\s*16\b", "H16"), (r"\bh\s*15\b", "H15"),
-        (r"\bh\s*14\b", "H14"), (r"\bh\s*13\b", "H13"),
-        (r"\bsartli\s*5\b|\bsart\s*5\b", "Şartlı 5"),
-        (r"\bsartli\s*4\b|\bsart\s*4\b", "Şartlı 4"),
-        (r"\bsartli\s*3\b|\bsart\s*3\b", "Şartlı 3"),
-        (r"\bsartli\s*2\b|\bsart\s*2\b", "Şartlı 2"),
-        (r"\bsartli\s*19\b|\bsart\s*19\b", "Şartlı 19"),
-        (r"\bsartli\s*27\b|\bsart\s*27\b", "Şartlı 27"),
-        (r"\bmaiden\b", "Maiden"),
-    ]
-    for pat, key in patterns:
-        if re.search(pat, s): return key
+def _dt(v):
+    if isinstance(v,datetime):return v.date()
+    if isinstance(v,date):return v
+    s=str(v or "").strip()
+    for f in ("%d.%m.%Y","%d/%m/%Y","%Y-%m-%d","%Y/%m/%d"):
+        try:return datetime.strptime(s[:10],f).date()
+        except:pass
     return None
 
 
-def _base_class(r):
-    return CLASS_POINTS.get(_class_key(_first(r, ["className","class","sinif","Sınıf","raceName","race_name","kosu","Koşu","condition"], "")), None)
+def _place(r):
+    x=_num(_first(r,["place","sira","S","finish"],None)); return x if x is not None and x>0 else None
 
-
-def _result_coeff(place):
-    if place is None: return None
-    return RESULT_COEFF.get(place, DEFAULT_RESULT_COEFF)
-
-
-def _net_class(r):
-    base = _base_class(r); rc = _result_coeff(_place(r))
-    return base * rc if base is not None and rc is not None else None
+def _dist(r):return _num(_first(r,["distance","msf","mesafe"],None))
+def _wt(r):return _num(_first(r,["weight","kilo","siklet","Sıklet"],None))
+def _hp(r):return _num(_first(r,["hp","HP","handicap","handikap","rating","RT"],None))
+def _rt(r):return _time(_first(r,["time","derece","Derece"],None))
+def _class(r):return _norm(_first(r,["className","class","sinif","Sınıf","raceName","race_name","kosu","Koşu","condition"],""))
+def _city(r):return _norm(_first(r,["city","şehir","sehir","hipodrom"],""))
+def _name(r,keys):return _norm(_first(r,keys,""))
+def _history(h):return [r for r in h.get("_history",[]) if isinstance(r,dict)] if isinstance(h.get("_history",[]),list) else []
+def _workouts(h):return [r for r in h.get("_workouts",[]) if isinstance(r,dict)] if isinstance(h.get("_workouts",[]),list) else []
 
 
 def _mean(xs):
-    xs = [float(x) for x in xs if x is not None]
-    return sum(xs)/len(xs) if xs else None
+    clean=[]
+    for x in xs:
+        try:
+            y=float(x)
+            if math.isfinite(y): clean.append(y)
+        except Exception:
+            continue
+    return sum(clean)/len(clean) if clean else None
 
 
-def _win_rate(rows):
-    places = [_place(r) for r in rows]; places = [p for p in places if p is not None]
-    return sum(p == 1 for p in places)/len(places) if places else None
+def _stats(rows):
+    p=[_place(r) for r in rows];p=[x for x in p if x is not None]
+    if not p:return None
+    return {"sample":len(p),"wins":sum(x==1 for x in p),"top3":sum(x<=3 for x in p),"top5":sum(x<=5 for x in p),"avg":_mean(p)}
 
 
-def _result_score(place):
-    c = _result_coeff(place)
-    return c if c is not None else None
+def _rate_score(rows):
+    st=_stats(rows)
+    if not st:return None
+    avg_score=max(0.0,min(1.0,1-(st["avg"]-1)/max(8.0,st["sample"]**0.15*8)))
+    return max(0.0,min(1.0,0.65*(st["top3"]/st["sample"])+0.35*avg_score))
 
 
-def _recent_rows(h, n=None):
-    rows = _history(h)
-    dated = [(r, _dt(_first(r,["date","tarih"],None))) for r in rows]
-    dated.sort(key=lambda x: x[1] or date.min, reverse=True)
-    out = [r for r,_ in dated]
-    return out[:n] if n else out
+def _percentile_better(value, values, lower=False):
+    vals=[x for x in values if x is not None and math.isfinite(float(x))]
+    if value is None or not vals:return None
+    if len(set(vals))==1:return 1.0
+    if lower:return sum(x>=value for x in vals)/len(vals)
+    return sum(x<=value for x in vals)/len(vals)
 
 
-def _distance_coeff(diff):
-    d = abs(float(diff))
-    if d > 400: return 0.0
-    if d <= 0: return 1.00
-    if d <= 100: return 0.85
-    if d <= 200: return 0.70
-    if d <= 300: return 0.55
-    return 0.40
+
+# ============================================================
+# SABİT BİZİM SKOR MOTORU — ÖĞRENME / AUC / ARŞİV YOK
+# ============================================================
+# Koşu Şartı Uyumu: sınırsız toplam
+# Pist/Mesafe: 100
+# Pist Performansı: 100
+# Güncel Form: 100
+# Start/Kulvar: 50
+# TOPLAM = Şart Uyumu + 100 + 100 + 100 + 50
+
+CLASS_BASE = {
+    # Grup / Açık
+    "G1": 100, "A1": 95, "G2": 90, "A2": 90, "G3": 80, "A3": 80,
+    # Handikap
+    "H24": 90, "H23": 85, "H22": 80, "H21": 70, "H20": 75,
+    "H19": 70, "H18": 65, "H17": 60, "H16": 50, "H15": 40,
+    "H14": 30, "H13": 20,
+    # KV
+    "KV24": 90, "KV18": 80, "KV9": 70, "KV8": 70, "KV7": 60, "KV6": 60,
+    # Şartlı
+    "S27": 15, "S19": 25, "S5": 50, "S4": 40, "S3": 30, "S2": 20, "S1": 10,
+    # Maiden
+    "MAIDEN": 10,
+}
+
+FINISH_FACTOR = {1: 1.00, 2: .80, 3: .65, 4: .50, 5: .35}
 
 
-def _same_track(rows, target):
-    ts, tc = _surface(target), _city(target)
-    return [r for r in rows if ts and _surface(r) == ts and tc and _city(r) == tc]
+def normalize_race_group(value):
+    s = _norm(value)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    # Önce daha spesifik numaralı sınıflar.
+    m = re.search(r"\b(?:g|grup|group)\s*[- ]?([123])\b", s)
+    if m: return f"G{m.group(1)}"
+    m = re.search(r"\b(?:açik|acik|açık|a)\s*[- ]?([123])\b", s)
+    if m: return f"A{m.group(1)}"
+    m = re.search(r"\bkv\s*[- ]?(\d+)\b", s)
+    if m: return f"KV{m.group(1)}"
+    m = re.search(r"\b(?:h|handikap)\s*[- ]?(\d+)\b", s)
+    if m: return f"H{m.group(1)}"
+    m = re.search(r"\b(?:s|şartli|sartli|şartlı|sartlı)\s*[- ]?(\d+)\b", s)
+    if m: return f"S{m.group(1)}"
+    if "maiden" in s:
+        return "MAIDEN"
+    # Tek başına AÇIK ifadesi ayrı bir yarış grubu olarak tutulur.
+    if re.search(r"\baçik\b|\bacik\b", s):
+        return "AÇIK"
+    return ""
 
 
-def _race_signature(r):
-    return (str(_first(r,["date","tarih"],""))[:10], _city(r), _dist(r), _surface(r))
+def class_base_points(value):
+    g = normalize_race_group(value)
+    return float(CLASS_BASE.get(g, 0))
 
 
-def _opponent_name(r):
-    return _norm(_first(r,["horseName","horse","name","atName","at","rakip"],""))
+def finish_factor(place):
+    p = _place({"place": place})
+    if p is None: return None
+    p = int(p)
+    if p in FINISH_FACTOR: return FINISH_FACTOR[p]
+    if p >= 6: return .20
+    return None
 
 
-def _opponents_from_history(r):
-    """Geçmiş kayıtta rakip listesi varsa onu döndürür."""
-    vals = []
-    for k in ("opponents","rakipler","horses","rivals","raceHorses","field"):
-        x = r.get(k) if isinstance(r,dict) else None
-        if isinstance(x,list):
-            for item in x:
-                if isinstance(item,dict):
-                    nm = _opponent_name(item)
-                else: nm = _norm(item)
-                if nm: vals.append(nm)
-    return list(dict.fromkeys(vals))
+def _condition_group_scores(prior):
+    """Her yarış grubundaki tüm geçmiş yarışları puanlar.
 
-
-def _field_index(horses):
-    """Bugünkü 10 atın her birinin geçmişteki ortak rakiplerini bağlamak için isim indeksi."""
-    idx = {}
-    for h in horses:
-        if not isinstance(h,dict): continue
-        nm = _name(h)
-        if nm: idx[nm] = h
-    return idx
-
-
-def _common_opponent_score(horse, horses):
-    """Rakip kalitesi ağı.
-
-    Bugünkü koşudaki tüm atların tüm geçmiş koşuları taranır. Aynı rakiple
-    karşılaşmalar bulunabildiğinde, rakibin o geçmiş yarıştaki sınıf puanı
-    ve sonucu üzerinden rakip gücü hesaplanır. Kendi atının rakibe karşı
-    sonucu ayrıca ağırlanır. Veri yoksa HP'ye geri dönülmez.
+    Aynı grupta birden fazla yarış varsa mesafe/pist ayrımı yapılmadan
+    o grubun yarış puanları ortalanır. Sonra bütün grup ortalamaları toplanır.
     """
-    field_names = {_name(h) for h in horses if isinstance(h,dict) and _name(h)}
-    if not field_names: return None
-    # Bugünkü rakiplerin geçmişteki isimleri ve her rakibin net sınıf performansı.
-    opponent_strength = {}
-    for h in horses:
-        if not isinstance(h,dict): continue
-        for r in _history(h):
-            for nm in _opponents_from_history(r):
-                if nm in field_names: continue
-                net = _net_class(r)
-                if net is not None:
-                    opponent_strength.setdefault(nm, []).append(net)
-    if not opponent_strength: return None
-    # Atın doğrudan karşılaştığı güçlü rakipleri bul.
-    own = _history(horse)
-    strengths=[]; outcomes=[]
-    for r in own:
-        for nm in _opponents_from_history(r):
-            vals = opponent_strength.get(nm)
-            if vals:
-                strengths.append(_mean(vals))
-                p=_place(r)
-                if p is not None: outcomes.append(_result_coeff(p))
-    if not strengths: return None
-    # 0..1: rakip gücü, sabit 100 baz puan üzerinden normalize edilir.
-    strength_norm = max(0.0,min(1.0,_mean(strengths)/100.0))
-    outcome_norm = _mean(outcomes) if outcomes else 0.5
-    # Güçlü rakip + iyi sonuç kombinasyonu.
-    return max(0.0,min(1.0,0.70*strength_norm + 0.30*outcome_norm))
+    groups = {}
+    for r in prior:
+        group = normalize_race_group(_class(r))
+        base = class_base_points(group)
+        pos = _place(r)
+        ff = finish_factor(pos)
+        if not group or base <= 0 or ff is None:
+            continue
+        groups.setdefault(group, []).append(base * ff)
+    averages = {g: sum(v)/len(v) for g, v in groups.items() if v}
+    return averages
 
 
-def _condition_score(horse, race, horses):
-    """01 — Koşu şartı uyumu: sınıf geçmişi + rakip kalitesi ağı."""
-    hist = _history(horse)
-    if not hist: return None
-    target_class = _class_key(_first(race,["className","class","sinif","raceName","race_name","condition"],""))
-    target_base = CLASS_POINTS.get(target_class)
-    if target_base is None:
-        # Hedef sınıf okunamıyorsa sınıf puanı üretme; veri uydurma.
-        class_part = None
-    else:
-        nets = [_net_class(r) for r in hist]
-        nets = [x for x in nets if x is not None]
-        # Hedef sınıfa eşit/üst sınıf geçmişi daha doğrudan uyum verisi.
-        if nets:
-            class_part = max(0.0,min(1.0,_mean([min(1.0,x/max(target_base,1)) for x in nets])))
-        else: class_part=None
-    rival = _common_opponent_score(horse, horses)
-    if class_part is None and rival is None: return None
-    if class_part is None: return 100*rival
-    if rival is None: return 100*class_part
-    # Sabit: sınıf uyumu %60, ortak rakip ağı %40. Öğrenme yok.
-    return 100*(0.60*class_part + 0.40*rival)
+def calculate_condition_score(prior):
+    avgs = _condition_group_scores(prior)
+    return sum(avgs.values()), avgs
 
 
-def _pist_distance_score(horse, race):
-    """02 — Her geçmiş yarış için sonuç katsayısı × mesafe katsayısı.
-    Aynı pist + aynı mesafe en değerli veridir. Sonuç 0..100'e çevrilir.
-    """
-    hist = _history(horse)
-    ts, td = _surface(race), _dist(race)
-    if not ts or td is None: return None
-    vals=[]; weights=[]
-    for r in hist:
-        if _surface(r) != ts or _dist(r) is None: continue
-        dc = _distance_coeff(_dist(r)-td)
-        if dc <= 0: continue
-        rc = _result_coeff(_place(r))
-        if rc is None: continue
-        vals.append(rc*dc); weights.append(dc)
-    if not vals: return None
-    # Mesafe yakınlığı zaten ağırlık; tekrar aynı veriyi iki kez cezalandırmıyoruz.
-    return 100*sum(vals)/sum(weights)
+def score_pist_mesafe(prior, target):
+    surf = _surface(target); td = _dist(target)
+    if not surf or td is None: return 0.0
+    vals=[]
+    for r in prior:
+        if _surface(r) != surf: continue
+        d=_dist(r); p=_place(r)
+        if d is None or p is None: continue
+        diff=abs(d-td)
+        coeff = {0:1.00,100:.85,200:.70,300:.55,400:.40}.get(diff)
+        if coeff is None: continue
+        ff=finish_factor(p)
+        if ff is not None: vals.append(coeff*ff)
+    if not vals: return 0.0
+    return max(0.0,min(100.0,100.0*sum(vals)/len(vals)))
 
 
-def _pist_performance_score(horse, race):
-    """03 — 50 + 25 + 25."""
-    hist=_history(horse); ts=_surface(race); td=_dist(race); tc=_city(race)
-    if not hist or not ts: return None
-    same_pist=[r for r in hist if _surface(r)==ts]
-    same_city_pist=[r for r in same_pist if tc and _city(r)==tc]
-    same_dist=[r for r in same_pist if td is not None and _dist(r) is not None and abs(_dist(r)-td)<=200]
-    win1=_win_rate(same_pist)
-    win2=_win_rate(same_dist)
-    win3=_win_rate(same_city_pist)
-    parts=[]
-    if win1 is not None: parts.append(50*win1)
-    if win2 is not None: parts.append(25*win2)
-    if win3 is not None: parts.append(25*win3)
-    if not parts: return None
-    # Eksik veri nötr puan değildir; mevcut alt kategorilerin maksimumu yeniden ölçeklenir.
-    max_available=sum([50 if win1 is not None else 0,25 if win2 is not None else 0,25 if win3 is not None else 0])
-    return 100*sum(parts)/max_available if max_available else None
+def score_pist_performansi(prior, target):
+    surf=_surface(target); td=_dist(target)
+    if not surf: return 0.0
+    same=[r for r in prior if _surface(r)==surf and _place(r) is not None]
+    near=[r for r in same if td is not None and _dist(r) is not None and abs(_dist(r)-td)<=200]
+    rows=near if len(near)>=2 else same
+    if not rows: return 0.0
+    return max(0.0,min(100.0,100.0*(_rate_score(rows) or 0.0)))
 
 
-def _form_component(rows):
-    places=[_place(r) for r in rows]; places=[p for p in places if p is not None]
-    if not places:return None
-    return _mean([_result_score(p) for p in places])
+def score_guncel_form(prior):
+    rows=sorted(prior,key=lambda r:(_dt(_first(r,["date","tarih"],None)) or date.min),reverse=True)
+    rows=rows[:6]
+    weights=[1.00,.90,.80,.70,.60,.50]
+    vals=[]; used_weights=[]
+    # Eksik dereceler sonraki yarışın ağırlığını kaydırmaz.
+    for w,r in zip(weights,rows):
+        ff=finish_factor(_place(r))
+        if ff is not None:
+            vals.append(w*ff); used_weights.append(w)
+    if not vals: return 0.0
+    denom=sum(used_weights)
+    return max(0.0,min(100.0,100.0*sum(vals)/denom))
 
 
-def _trend_score(horse):
-    rows=_recent_rows(horse,6)
-    if len(rows)<4:return None
-    # Son 3 ile önceki 3'ün sonuç katsayısı farkı; daha iyi sonuç = daha yüksek.
-    a=_form_component(rows[:3]); b=_form_component(rows[3:6])
-    if a is None or b is None:return None
-    return max(0.0,min(100.0,50.0+(a-b)*100.0))
+def score_start_kulvar(prior,target):
+    post=_num(_first(target,["post","st","start","kulvar"],None))
+    if post is None: return 0.0
+    rows=[r for r in prior if _num(_first(r,["post","st","start","kulvar"],None))==post and _place(r) is not None]
+    if not rows: return 0.0
+    return max(0.0,min(50.0,50.0*(_rate_score(rows) or 0.0)))
 
 
-def _guncel_form_score(horse):
-    rows=_recent_rows(horse,6)
-    if not rows:return None
-    comps=[]; maxp=0
-    # Son yarış 25, son 3 25, son 6 25, trend 25.
-    one=_form_component(rows[:1]); three=_form_component(rows[:3]); six=_form_component(rows[:6]); trend=_trend_score(horse)
-    if one is not None: comps.append((25,one)); maxp+=25
-    if three is not None: comps.append((25,three)); maxp+=25
-    if six is not None: comps.append((25,six)); maxp+=25
-    if trend is not None: comps.append((25,trend)); maxp+=25
-    if not comps:return None
-    return sum(w*(v/100.0) for w,v in comps)/maxp*100 if maxp else None
-
-
-def _kulvar_score(horse,race):
-    """05 — bugünkü kulvar + aynı mesafe kulvarı + aynı şehir/pist kulvarı."""
-    hist=_history(horse); post=_post(race); td=_dist(race); ts=_surface(race); tc=_city(race)
-    if post is None:return None
-    same_post=[r for r in hist if _post(r)==post]
-    same_dist_post=[r for r in hist if _post(r)==post and td is not None and _dist(r) is not None and abs(_dist(r)-td)<=100]
-    same_track_post=[r for r in hist if _post(r)==post and ts and _surface(r)==ts and tc and _city(r)==tc]
-    vals=[]; maxp=0
-    for rows,w in ((same_post,20),(same_dist_post,20),(same_track_post,20)):
-        sc=_form_component(rows)
-        if sc is not None:
-            vals.append(w*sc/100.0); maxp+=w
-    if not vals:return None
-    return sum(vals)/maxp*60 if maxp else None
-
-
-def _details(horse,race,horses):
-    c1=_condition_score(horse,race,horses)
-    c2=_pist_distance_score(horse,race)
-    c3=_pist_performance_score(horse,race)
-    c4=_guncel_form_score(horse)
-    c5=_kulvar_score(horse,race)
-    comps={
-        "01_kosu_sarti_uyumu": c1,
-        "02_pist_mesafe": c2,
-        "03_pist_performansi": c3,
-        "04_guncel_form": c4,
-        "05_start_kulvar": c5,
+def _current_values(horse,race):
+    target={
+        "surface":race.get("surface") or (race.get("meta") or {}).get("surface",""),
+        "distance":race.get("distance") or (race.get("meta") or {}).get("distance"),
+        "condition":race.get("condition") or race.get("raceName") or (race.get("meta") or {}).get("detail",""),
+        "date":race.get("date") or race.get("tarih"),
     }
-    score=sum(v for v in comps.values() if v is not None)
-    return comps, round(score,2)
+    prior=_history(horse)
+    condition_total, groups=calculate_condition_score(prior)
+    return {
+        "kosu_sarti_uyumu": condition_total,
+        "kosu_sarti_gruplari": groups,
+        "pist_mesafe": score_pist_mesafe(prior,target),
+        "pist_performansi": score_pist_performansi(prior,target),
+        "guncel_form": score_guncel_form(prior),
+        "start_kulvar": score_start_kulvar(prior,target),
+    }
 
 
-def calculate_bizim_ranking(horses, race):
-    if not isinstance(horses,list) or not horses:return []
+def calculate_bizim_ranking(horses,race):
+    if not isinstance(horses,list) or not horses: return []
+    if not any(isinstance(h,dict) and h.get("_feature_data_ready") for h in horses): return []
     results=[]
     for idx,h in enumerate(horses):
-        if not isinstance(h,dict):continue
-        comps,score=_details(h,race,horses)
+        if not isinstance(h,dict): continue
+        vals=_current_values(h,race)
+        components={
+            "01_kosu_sarti_uyumu":round(vals["kosu_sarti_uyumu"],2),
+            "02_pist_mesafe":round(vals["pist_mesafe"],2),
+            "03_pist_performansi":round(vals["pist_performansi"],2),
+            "06_guncel_form":round(vals["guncel_form"],2),
+            "14_start_kulvar":round(vals["start_kulvar"],2),
+        }
+        score=round(sum(components.values()),2)
         h["_bizim_skor"]=score
-        h["_bizim_family_values"]={k:round(v,2) for k,v in comps.items() if v is not None}
+        h["_bizim_family_values"]=components
+        h["_bizim_sart_gruplari"]={k:round(v,2) for k,v in vals["kosu_sarti_gruplari"].items()}
         results.append({
-            "horse_index":idx,
-            "score":score,
-            "bizim_skor":score,
-            "label":"BİZİM SKOR",
-            "components":h["_bizim_family_values"],
+            "horse_index":idx,"score":score,"bizim_skor":score,
+            "label":"BİZİM SKOR","components":components,
+            "condition_groups":h["_bizim_sart_gruplari"],
             "model":{
-                "method":"kullanici_sabit_yontemi",
+                "method":"fixed_rule_no_learning",
                 "learning":False,
-                "max_score":460,
-                "weights":{"01_kosu_sarti_uyumu":100,"02_pist_mesafe":100,"03_pist_performansi":100,"04_guncel_form":100,"05_start_kulvar":60},
-            },
+                "condition_total_unbounded":True,
+                "fixed_components":{
+                    "pist_mesafe":100,"pist_performansi":100,
+                    "guncel_form":100,"start_kulvar":50,
+                },
+            }
         })
-    results.sort(key=lambda x:x["score"], reverse=True)
-    for rank,item in enumerate(results,1):item["rank"]=rank
+    results.sort(key=lambda x:x["score"],reverse=True)
+    for rank,item in enumerate(results,1): item["rank"]=rank
     return results
-
-
-# Eski kodun olası yardımcı çağrılarını kırmamak için.
-def _current_values(horse,race,horses):
-    comps,_=_details(horse,race,horses)
-    return comps
