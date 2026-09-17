@@ -1,14 +1,15 @@
-"""BİZİM SKOR — sabit kural tabanlı model.
+"""BİZİM SKOR — sabit 5 bileşenli kural motoru.
 
-Yalnızca şu 5 bileşen kullanılır:
-- Koşu Şartı Uyumu: sınırsız toplam
-- Pist/Mesafe: 100
+Bileşenler:
+- Koşu Şartı Uyumu: geçmişteki tüm tanınan yarış gruplarının grup ortalamaları toplamı
+- Pist / Mesafe: 100
 - Pist Performansı: 100
 - Güncel Form: 100
-- Start/Kulvar: 50
+- Start / Kulvar: 50
 
-Öğrenme, AUC, ağırlık optimizasyonu, arşiv ve görüntü/snapshot yoktur.
-Geçmiş koşusu olmayan at bile listede kalır ve mevcut verisi kadar puan alır.
+Öğrenme ve AUC yoktur; disk arşivi veya ekran görüntüsü/snapshot mekanizması yoktur.
+Atın yalnızca 1 geçmiş yarışı olsa bile mevcut verilerle skor hesaplanır.
+Eksik veri olan bileşen 0 puan alır; at analizden çıkarılmaz.
 """
 from __future__ import annotations
 from datetime import date, datetime
@@ -304,6 +305,11 @@ def _current_values(horse,race):
 
 
 def calculate_bizim_ranking(horses,race):
+    """Her atı, geçmiş yarış sayısından bağımsız olarak puanlar.
+
+    1 geçmiş yarış bile yeterlidir. Bileşenlerden biri için veri yoksa o
+    bileşen 0 olur; atın tamamı analiz dışı bırakılmaz.
+    """
     if not isinstance(horses,list) or not horses: return []
     results=[]
     for idx,h in enumerate(horses):
@@ -329,6 +335,7 @@ def calculate_bizim_ranking(horses,race):
                 "learning":False,
                 "condition_total_unbounded":True,
                 "fixed_components":{
+                    "kosu_sarti_uyumu":"unbounded",
                     "pist_mesafe":100,"pist_performansi":100,
                     "guncel_form":100,"start_kulvar":50,
                 },
