@@ -1060,11 +1060,6 @@ def get_horse_form(
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
-    target_date: str = "",
-    target_city: str = "",
-    target_distance: str = "",
-    target_surface: str = "",
-    target_class: str = "",
 ) -> Dict[str, Any]:
     try:
         return get_horse_enrichment(
@@ -1094,95 +1089,76 @@ def enrich_race_horses(
     target_class: str = "",
     progress_callback=None,
 ) -> List[Dict[str, Any]]:
-    """
-    Seçili koşudaki atları TJK bülten sırasını BOZMADAN tek tek zenginleştirir.
+    """Seçili koşudaki atları paralel zenginleştirir; TJK sırası korunur.
 
-    İstek sırası:
-        1 -> 2 -> 3 -> ... (bültendeki gerçek sıra)
-    Sonuç listesi de aynı sıradadır.
+    Hız optimizasyonu:
+    - Atlar tek tek beklenmez; en fazla 4 at aynı anda sorgulanır.
+    - Her atın geçmiş + galop sorgusu tjk_fetch içinde zaten paraleldir.
+    - Cache anahtarı yalnızca at kimliğidir; yarış parametreleri cache'i parçalamaz.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
     if not enriched:
         return []
 
-    results = []
     total = len(enriched)
 
-    for idx, item in enumerate(enriched):
+    def one(idx_item):
+        idx, item = idx_item
         at_id = (
-            item.get("atId")
-            or item.get("at_id")
-            or item.get("horseId")
-            or item.get("horse_id")
-            or item.get("horseKey")
-            or item.get("horse_key")
-            or item.get("id")
-            or item.get("Id")
-            or ""
+            item.get("atId") or item.get("at_id") or
+            item.get("horseId") or item.get("horse_id") or
+            item.get("horseKey") or item.get("horse_key") or
+            item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
+        if not at_id:
+            item["_history"] = []
+            item["_workouts"] = []
+            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
+            return idx, item, name
 
-        data = load_horse_enrichment(
-            str(at_id),
-            name,
-            str(target_date or ""),
-            str(target_city or ""),
-            str(target_distance or ""),
-            str(target_surface or ""),
-            str(target_class or ""),
-        )
+        try:
+            data = load_horse_enrichment(str(at_id), name)
+        except Exception as exc:
+            data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
+
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
-
-        item["_at_id"] = str(at_id) if at_id else ""
+        item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
 
-        # TJK resmi Kazanç değerleri Worker/TJK'dan geldiyse aynen sakla.
         if isinstance(data, dict):
             for key in (
-                "totalEarnings", "total_earnings",
-                "lifetimeEarnings", "lifetime_earnings",
-                "careerEarnings", "career_earnings",
-                "totalKazanc", "toplamKazanc", "toplam_kazanc",
-                "kazanc", "Kazanç", "earnings", "earning",
+                "totalEarnings", "total_earnings", "lifetimeEarnings", "lifetime_earnings",
+                "careerEarnings", "career_earnings", "totalKazanc", "toplamKazanc",
+                "toplam_kazanc", "kazanc", "Kazanç", "earnings", "earning",
             ):
                 if data.get(key) not in (None, "", "-", 0, 0.0):
                     item["_tjk_total_earnings"] = data.get(key)
                     item["totalEarnings"] = data.get(key)
                     break
-
             for key in (
-                "yearEarnings", "year_earnings",
-                "yearlyEarnings", "yearly_earnings",
-                "annualEarnings", "annual_earnings",
-                "yearKazanc", "year_kazanc",
+                "yearEarnings", "year_earnings", "yearlyEarnings", "yearly_earnings",
+                "annualEarnings", "annual_earnings", "yearKazanc", "year_kazanc",
                 "buYilKazanc", "bu_yil_kazanc",
             ):
                 if data.get(key) not in (None, "", "-", 0, 0.0):
                     item["_tjk_year_earnings"] = data.get(key)
                     item["yearEarnings"] = data.get(key)
                     break
-
             if data.get("earnings") and isinstance(data.get("earnings"), dict):
                 e = data["earnings"]
-                total_value = (
-                    e.get("total") or e.get("totalEarnings") or
-                    e.get("kazanc") or e.get("Kazanç")
-                )
-                year_value = (
-                    e.get("year") or e.get("yearEarnings") or
-                    e.get("yearly") or e.get("buYil")
-                )
+                total_value = e.get("total") or e.get("totalEarnings") or e.get("kazanc") or e.get("Kazanç")
+                year_value = e.get("year") or e.get("yearEarnings") or e.get("yearly") or e.get("buYil")
                 if total_value not in (None, "", "-", 0, 0.0):
                     item["_tjk_total_earnings"] = total_value
                     item["totalEarnings"] = total_value
                 if year_value not in (None, "", "-", 0, 0.0):
                     item["_tjk_year_earnings"] = year_value
                     item["yearEarnings"] = year_value
-
-        if isinstance(data, dict) and data.get("error"):
-            item["_enrichment_error"] = str(data.get("error"))
+            if data.get("error"):
+                item["_enrichment_error"] = str(data.get("error"))
 
         if item.get("owner") in (None, "") or item.get("trainer") in (None, ""):
             for row in item["_history"]:
@@ -1199,17 +1175,24 @@ def enrich_race_horses(
         for row in item["_history"]:
             if not isinstance(row, dict):
                 continue
-            has_date = row.get("date") or row.get("tarih")
-            has_time = row.get("time") or row.get("derece")
-            if has_date and has_time:
+            if (row.get("date") or row.get("tarih")) and (row.get("time") or row.get("derece")):
                 item["_last_race"] = row
                 break
+        return idx, item, name
 
-        results.append(item)
-        if progress_callback:
-            progress_callback(idx + 1, total, name)
+    ordered = [None] * total
+    done = 0
+    # 4 worker x (history + workouts) = at most ~8 upstream requests.
+    with ThreadPoolExecutor(max_workers=min(4, total)) as executor:
+        futures = [executor.submit(one, pair) for pair in enumerate(enriched)]
+        for future in as_completed(futures):
+            idx, item, name = future.result()
+            ordered[idx] = item
+            done += 1
+            if progress_callback:
+                progress_callback(done, total, name)
 
-    return results
+    return ordered
 
 def _history_year(date_text: Any) -> int | None:
     m = re.search(r"(20\d{2})", str(date_text or ""))
@@ -3320,11 +3303,6 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
-        try:
-            load_horse_enrichment.clear()
-        except Exception:
-            pass
-
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -4427,11 +4405,6 @@ else:
             if horse_name_clicked and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
-                try:
-                    load_horse_enrichment.clear()
-                except Exception:
-                    pass
-
                 horse_status = st.status(
                     f"🔄 {get_horse_name(selected_horse)} için TJK gerçek koşu ve galop verileri çekiliyor...",
                     expanded=True,
