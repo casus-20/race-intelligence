@@ -1094,55 +1094,48 @@ def enrich_race_horses(
     progress_callback=None,
 ) -> List[Dict[str, Any]]:
     """
-    Seçili koşudaki atları TJK bülten sırasını BOZMADAN tek tek zenginleştirir.
+    Seçili koşudaki atların TJK geçmiş + galop verisini PARALEL çeker.
 
-    İstek sırası:
-        1 -> 2 -> 3 -> ... (bültendeki gerçek sıra)
-    Sonuç listesi de aynı sıradadır.
+    Performans: 16 at için seri 1->2->3... yerine aynı anda 8 at işlenir.
+    Her atın geçmiş ve galop isteği zaten tjk_fetch içinde paraleldir.
+    Böylece ağ bekleme süresi yaklaşık 8 kata kadar azalabilir.
+    Sonuçlar yine TJK bülten sırasına göre döndürülür.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
     if not enriched:
         return []
 
-    results = []
     total = len(enriched)
+    # Worker/TJK tarafını aşırı yüklememek için kontrollü paralellik.
+    # 8 at x 2 endpoint = en fazla 16 eşzamanlı HTTP isteği.
+    max_workers = min(8, total)
 
-    for idx, item in enumerate(enriched):
+    def process_one(idx: int, source_item: Dict[str, Any]):
+        item = dict(source_item)
         at_id = (
-            item.get("atId")
-            or item.get("at_id")
-            or item.get("horseId")
-            or item.get("horse_id")
-            or item.get("horseKey")
-            or item.get("horse_key")
-            or item.get("id")
-            or item.get("Id")
-            or ""
+            item.get("atId") or item.get("at_id")
+            or item.get("horseId") or item.get("horse_id")
+            or item.get("horseKey") or item.get("horse_key")
+            or item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
 
         data = load_horse_enrichment(
-            str(at_id),
-            name,
-            str(target_date or ""),
-            str(target_city or ""),
-            str(target_distance or ""),
-            str(target_surface or ""),
+            str(at_id), name,
+            str(target_date or ""), str(target_city or ""),
+            str(target_distance or ""), str(target_surface or ""),
             str(target_class or ""),
         )
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
-
         item["_at_id"] = str(at_id) if at_id else ""
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
 
-        # TJK resmi Kazanç değerleri Worker/TJK'dan geldiyse aynen sakla.
         if isinstance(data, dict):
             for key in (
-                "totalEarnings", "total_earnings",
-                "lifetimeEarnings", "lifetime_earnings",
-                "careerEarnings", "career_earnings",
+                "totalEarnings", "total_earnings", "lifetimeEarnings",
+                "lifetime_earnings", "careerEarnings", "career_earnings",
                 "totalKazanc", "toplamKazanc", "toplam_kazanc",
                 "kazanc", "Kazanç", "earnings", "earning",
             ):
@@ -1152,11 +1145,9 @@ def enrich_race_horses(
                     break
 
             for key in (
-                "yearEarnings", "year_earnings",
-                "yearlyEarnings", "yearly_earnings",
-                "annualEarnings", "annual_earnings",
-                "yearKazanc", "year_kazanc",
-                "buYilKazanc", "bu_yil_kazanc",
+                "yearEarnings", "year_earnings", "yearlyEarnings",
+                "yearly_earnings", "annualEarnings", "annual_earnings",
+                "yearKazanc", "year_kazanc", "buYilKazanc", "bu_yil_kazanc",
             ):
                 if data.get(key) not in (None, "", "-", 0, 0.0):
                     item["_tjk_year_earnings"] = data.get(key)
@@ -1165,14 +1156,8 @@ def enrich_race_horses(
 
             if data.get("earnings") and isinstance(data.get("earnings"), dict):
                 e = data["earnings"]
-                total_value = (
-                    e.get("total") or e.get("totalEarnings") or
-                    e.get("kazanc") or e.get("Kazanç")
-                )
-                year_value = (
-                    e.get("year") or e.get("yearEarnings") or
-                    e.get("yearly") or e.get("buYil")
-                )
+                total_value = e.get("total") or e.get("totalEarnings") or e.get("kazanc") or e.get("Kazanç")
+                year_value = e.get("year") or e.get("yearEarnings") or e.get("yearly") or e.get("buYil")
                 if total_value not in (None, "", "-", 0, 0.0):
                     item["_tjk_total_earnings"] = total_value
                     item["totalEarnings"] = total_value
@@ -1198,17 +1183,25 @@ def enrich_race_horses(
         for row in item["_history"]:
             if not isinstance(row, dict):
                 continue
-            has_date = row.get("date") or row.get("tarih")
-            has_time = row.get("time") or row.get("derece")
-            if has_date and has_time:
+            if (row.get("date") or row.get("tarih")) and (row.get("time") or row.get("derece")):
                 item["_last_race"] = row
                 break
 
-        results.append(item)
-        if progress_callback:
-            progress_callback(idx + 1, total, name)
+        return idx, item, name
 
-    return results
+    results = [None] * total
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_one, idx, item) for idx, item in enumerate(enriched)]
+        for future in as_completed(futures):
+            idx, item, name = future.result()
+            results[idx] = item
+            completed += 1
+            if progress_callback:
+                # Streamlit UI güncellemesi ana thread'de yapılır.
+                progress_callback(completed, total, name)
+
+    return [x for x in results if isinstance(x, dict)]
 
 def _history_year(date_text: Any) -> int | None:
     m = re.search(r"(20\d{2})", str(date_text or ""))
@@ -2984,11 +2977,8 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
-        try:
-            load_horse_enrichment.clear()
-        except Exception:
-            pass
-
+        # Cache temizlenmiyor: aynı gün/koşu verisi tekrar istenirse TJK
+        # bağlantısı yeniden kurulmaz. TTL 15 dakika ile sınırlıdır.
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
