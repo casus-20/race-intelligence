@@ -1062,15 +1062,10 @@ def load_horse_enrichment(
     horse_name: str,
 ) -> Dict[str, Any]:
     try:
-        return get_horse_enrichment(
-            at_id,
-            horse_name,
-            target_date=target_date,
-            target_city=target_city,
-            target_distance=target_distance,
-            target_surface=target_surface,
-            target_class=target_class,
-        )
+        # Cache anahtarı yalnızca at kimliği + isimdir.
+        # Hız sürümünde gerçek TJK geçmişi doğrudan alınır;
+        # yarış parametreleri burada kullanılmaz.
+        return get_horse_enrichment(at_id, horse_name)
     except Exception as exc:
         return {
             "ok": False,
