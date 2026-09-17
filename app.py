@@ -1119,38 +1119,11 @@ def enrich_race_horses(
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
-        # KRİTİK: Daha önce boş/503 dönen bir at sonucu cache'e girmiş olabilir.
-        # Boş geçmiş kesinlikle cache'ten kabul edilmez; aynı at için taze Worker
-        # sorgusu yapılır. Böylece tek bir başarısız istek atı 15 dakika boyunca
-        # BİZİM SKOR=0 durumunda kilitlemez.
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
-        if not isinstance(history, list):
-            history = []
-        if not isinstance(workouts, list):
-            workouts = []
-        if not history:
-            try:
-                fresh = get_horse_enrichment(str(at_id), name)
-                if isinstance(fresh, dict):
-                    fresh_history = fresh.get("history", [])
-                    fresh_workouts = fresh.get("workouts", [])
-                    if isinstance(fresh_history, list) and fresh_history:
-                        data = fresh
-                        history = fresh_history
-                    if isinstance(fresh_workouts, list) and fresh_workouts:
-                        workouts = fresh_workouts
-                    if not history and fresh.get("error"):
-                        data = fresh
-            except Exception as exc:
-                if isinstance(data, dict):
-                    data["error"] = str(data.get("error") or exc)
         item["_at_id"] = str(at_id)
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
-        item["_history_count"] = len(item["_history"])
-        item["_workout_count"] = len(item["_workouts"])
-        item["_history_loaded"] = bool(item["_history"])
 
         if isinstance(data, dict):
             for key in (
@@ -3341,6 +3314,13 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
+        # Önceki başarısız/boş TJK cevabının 15 dakikalık Streamlit cache'inde
+        # kalmasını engelle. Gerçek veri analizi her tıklamada yeniden sorgulanır.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
