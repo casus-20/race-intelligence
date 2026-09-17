@@ -1159,6 +1159,30 @@ def enrich_race_horses(
                 if year_value not in (None, "", "-", 0, 0.0):
                     item["_tjk_year_earnings"] = year_value
                     item["yearEarnings"] = year_value
+            # Resmi toplam/yıllık kazanç Worker'da ayrı alan olarak yoksa
+            # gerçek geçmiş satırlarındaki İkramiye/Kazanç alanlarından hesapla.
+            if not item.get("_tjk_total_earnings") and item.get("_history"):
+                total = 0.0
+                year_total = 0.0
+                current_year = date.today().year
+                for _hr in item.get("_history", []):
+                    if not isinstance(_hr, dict):
+                        continue
+                    _pv = _money_number(_first_value(_hr, [
+                        "prize", "ikramiye", "Ikramiye", "İkramiye",
+                        "Kazanç", "kazanc", "earnings", "earning",
+                        "prizeAmount", "prize_amount",
+                    ]))
+                    total += _pv
+                    if str(current_year) in str(_first_value(_hr, ["date", "tarih", "Tarih"], "")):
+                        year_total += _pv
+                if total > 0:
+                    item["_tjk_total_earnings"] = total
+                    item["totalEarnings"] = total
+                if year_total > 0:
+                    item["_tjk_year_earnings"] = year_total
+                    item["yearEarnings"] = year_total
+
             if data.get("error"):
                 item["_enrichment_error"] = str(data.get("error"))
 
