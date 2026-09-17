@@ -1,228 +1,830 @@
-"""BİZİM SKOR gerçek TJK özellik çıkarma katmanı.
-
-Bu dosya skor ağırlığı vermez ve skor hesaplamaz. TJK'dan indirilen gerçek
-koşu geçmişi/galop verisini 20 özellik ailesine ayırır. 1500 puanlık model
-ampirik eğitimden sonra ayrıca bağlanacaktır.
-"""
-from __future__ import annotations
-import re
+import requests
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
-
-try:
-    from race_condition_engine import parse_race_condition, race_condition_signature, evaluate_eligibility
-except Exception:
-    parse_race_condition = race_condition_signature = evaluate_eligibility = None
+from typing import Any, Dict, List
 
 
-def _first(d: Dict[str, Any], keys, default=None):
-    for k in keys:
-        v = d.get(k)
-        if v not in (None, "", "-"):
-            return v
-    return default
+# =========================================================
+# RACE INTELLIGENCE
+# TJK VERİ KAYNAĞI
+# =========================================================
+
+WORKER_URL = "https://fragrant-hat-ae48.raceanaliz.workers.dev"
+
+API_DATA = f"{WORKER_URL}/api/tjk/data"
+API_HEALTH = f"{WORKER_URL}/api/health"
+API_HORSE = f"{WORKER_URL}/api/tjk/horse"
+API_WORKOUTS = f"{WORKER_URL}/api/tjk/workouts"
+API_HORSEDATA = f"{WORKER_URL}/api/tjk/horsedata"
 
 
-def _num(v):
-    if v is None or isinstance(v, bool): return None
-    m = re.search(r"-?\d+(?:[.,]\d+)?", str(v).strip())
-    if not m: return None
-    try: return float(m.group(0).replace(",", "."))
-    except Exception: return None
+# =========================================================
+# ŞEHİR LİSTESİ
+# =========================================================
+
+CITY_IDS = {
+    "Ankara": 5,
+    "Kocaeli": 9,
+    "İstanbul": 3,
+    "Bursa": 4,
+    "İzmir": 2,
+    "Adana": 1,
+    "Elazığ": 6,
+    "Diyarbakır": 8,
+    "Şanlıurfa": 7,
+    "Antalya": 10,
+}
 
 
-def _time(v):
-    if v is None: return None
-    s = str(v).strip().replace(",", ".")
-    m = re.search(r"(\d+):(\d+(?:\.\d+)?)", s)
-    if m: return float(m.group(1))*60 + float(m.group(2))
-    return _num(s)
+# =========================================================
+# YARDIMCI FONKSİYONLAR
+# =========================================================
+
+def normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+
+    return " ".join(str(value).replace("\xa0", " ").split()).strip()
 
 
-def _norm(v):
-    return (str(v or "").strip().lower().replace("ı","i").replace("ş","s")
-            .replace("ğ","g").replace("ü","u").replace("ö","o").replace("ç","c"))
+def normalize_date(value: Any) -> str:
+    """
+    Streamlit date_input:
+        datetime.date
+        veya YYYY-MM-DD
+
+    Worker API:
+        YYYY-MM-DD
+    """
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    text = normalize_text(value)
+
+    if not text:
+        return date.today().isoformat()
+
+    # YYYY-MM-DD
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        return text
+
+    # DD/MM/YYYY
+    if len(text) == 10 and text[2] == "/" and text[5] == "/":
+        dd = text[0:2]
+        mm = text[3:5]
+        yyyy = text[6:10]
+        return f"{yyyy}-{mm}-{dd}"
+
+    # DD.MM.YYYY
+    if len(text) == 10 and text[2] == "." and text[5] == ".":
+        dd = text[0:2]
+        mm = text[3:5]
+        yyyy = text[6:10]
+        return f"{yyyy}-{mm}-{dd}"
+
+    return text
 
 
-def _surface(row):
-    s = _norm(_first(row,["surface","pist","Pist","Surface","trackSurface","track_surface",
-                           "surfaceType","surface_type","track","trackType","track_type",
-                           "zemin","Zemin","pistTuru","pist_turu","PistTuru","surfaceName",
-                           "surface_name","pistAdi","pist_adi","zeminTuru","zemin_turu"],""))
-    if s.startswith(("k:","k-")) or s == "k": return "kum"
-    if s.startswith(("c:","c-","cim:")) or s in ("c","cim"): return "cim"
-    if s.startswith(("s:","s-")) or s == "s": return "sentetik"
-    if any(x in s for x in ("cim","grass","turf")): return "cim"
-    if any(x in s for x in ("sentetik","synthetic","polytrack","fiber")): return "sentetik"
-    if any(x in s for x in ("kum","dirt","sand")): return "kum"
-    return s
+def format_date_tr(value: Any) -> str:
+    iso = normalize_date(value)
+
+    try:
+        y, m, d = iso.split("-")
+        return f"{d}/{m}/{y}"
+    except Exception:
+        return iso
 
 
-def _dt(v):
-    if isinstance(v, datetime): return v.date()
-    if isinstance(v, date): return v
-    s = str(v or "").strip()
-    for f in ("%d.%m.%Y","%d/%m/%Y","%Y-%m-%d","%Y/%m/%d"):
-        try: return datetime.strptime(s[:10], f).date()
-        except Exception: pass
-    m = re.search(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})", s)
-    if m:
-        try: return date(int(m.group(1)),int(m.group(2)),int(m.group(3)))
-        except Exception: pass
-    return None
+# =========================================================
+# WORKER BAĞLANTISI
+# =========================================================
 
+def fetch_worker(
+    date_value: Any,
+    city: str,
+    timeout: int = 45,
+) -> Dict[str, Any]:
 
-def _history(h):
-    x=h.get("_history",[])
-    return [r for r in x if isinstance(r,dict)] if isinstance(x,list) else []
+    iso_date = normalize_date(date_value)
+    city = normalize_text(city)
 
+    if not city:
+        raise ValueError("Hipodrom belirtilmedi.")
 
-def _workouts(h):
-    x=h.get("_workouts",[])
-    return [r for r in x if isinstance(r,dict)] if isinstance(x,list) else []
+    if city not in CITY_IDS:
+        raise ValueError(
+            f"Bilinmeyen hipodrom: {city}. "
+            f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
+        )
 
-
-def _place(r):
-    x=_num(_first(r,["place","sira","S","finish"],None))
-    return x if x is not None and x>0 else None
-
-
-def _dist(r): return _num(_first(r,["distance","msf","mesafe"],None))
-def _wt(r): return _num(_first(r,["weight","kilo","siklet","Sıklet"],None))
-def _hp(r): return _num(_first(r,["hp","HP","handicap","handikap"],None))
-def _rt(r): return _time(_first(r,["time","derece","Derece"],None))
-def _class(r): return str(_first(r,["className","class","sinif","Sınıf","raceName","race_name","kosu","Koşu","condition"],"") or "")
-
-
-def _stats(rows):
-    p=[x for x in (_place(r) for r in rows) if x is not None]
-    if not p: return {"sample":0}
-    return {"sample":len(p),"wins":sum(x==1 for x in p),"top3":sum(x<=3 for x in p),
-            "top5":sum(x<=5 for x in p),"avg_place":round(sum(p)/len(p),4),"best_place":min(p)}
-
-
-def _time_stats(rows):
-    vals=[]
-    for r in rows:
-        t,d=_rt(r),_dist(r)
-        if t is not None and d and d>0: vals.append((t,t/(d/1000)))
-    if not vals:return {"sample":0}
-    raw=[x[0] for x in vals]; n=[x[1] for x in vals]
-    return {"sample":len(vals),"best_time_sec":min(raw),"avg_time_sec":round(sum(raw)/len(raw),4),
-            "best_sec_per_km":min(n),"avg_sec_per_km":round(sum(n)/len(n),4),"latest_sec_per_km":n[0]}
-
-
-def _today(race):
-    meta=race.get("meta") if isinstance(race.get("meta"),dict) else {}
-    return {"distance":_num(_first(race,["distance"],_first(meta,["distance"],None))),
-            "surface":_surface({"surface":_first(race,["surface"],_first(meta,["surface"],""))}),
-            "class":str(_first(race,["condition","race_type","raceName"],_first(meta,["detail","raceName","condition"],"")) or "")}
-
-
-def _common(horse, horses):
-    own={}
-    for r in _history(horse):
-        key=(str(_first(r,["date","tarih"],"")),_norm(_first(r,["city","hipodrom","sehir"],"")),_dist(r))
-        p=_place(r)
-        if key[0] and key[2] is not None and p is not None: own[key]=p
-    c=[]
-    for other in horses:
-        if other is horse: continue
-        for r in _history(other):
-            key=(str(_first(r,["date","tarih"],"")),_norm(_first(r,["city","hipodrom","sehir"],"")),_dist(r))
-            if key in own:
-                p=_place(r)
-                if p is not None:c.append(p-own[key])
-    return {"shared_races":len(c),"better_than_rival":sum(x>0 for x in c),"same":sum(x==0 for x in c),
-            "worse_than_rival":sum(x<0 for x in c),"avg_place_diff":round(sum(c)/len(c),4) if c else None}
-
-
-def _workout(h):
-    ws=_workouts(h)[:5]
-    out={"sample":len(ws)}
-    if not ws:return out
-    for k in ("m1200","m1000","m800","m600","m400","m200"):
-        vals=[_time(_first(w,[k,k.replace("m",""),k+"m"],None)) for w in ws]
-        vals=[x for x in vals if x is not None]
-        if vals:
-            out[f"latest_{k}"]=vals[0];out[f"avg_{k}_last5"]=round(sum(vals)/len(vals),4);out[f"best_{k}_last5"]=min(vals)
-    d=_dt(_first(ws[0],["date","tarih"],None))
-    if d:out["latest_date"]=d.isoformat()
-    return out
-
-
-def _rest(history,target):
-    ds=[_dt(_first(r,["date","tarih"],None)) for r in history]
-    ds=[d for d in ds if d]
-    if not ds or not target:return {"sample":0}
-    return {"sample":len(ds),"days_since_last_race":(target-ds[0]).days,
-            "races_last30":sum(0<=(target-d).days<=30 for d in ds),
-            "races_last60":sum(0<=(target-d).days<=60 for d in ds),
-            "races_last90":sum(0<=(target-d).days<=90 for d in ds)}
-
-
-def _identity(h, names):
-    cur=str(_first(h,names,"") or ""); n=_norm(cur); vals=[_norm(_first(r,names,"")) for r in _history(h)]
-    vals=[x for x in vals if x]
-    return {"current":cur,"history_sample":len(vals),"same_identity_count":sum(x==n for x in vals) if n else 0}
-
-
-def build_feature_vector(horse, race, all_horses=None, target_date=None):
-    hs=_history(horse); ws=_workouts(horse); horses=all_horses or [horse]; t=_today(race)
-    td=_dt(target_date) or _dt(_first(race,["date","tarih"],None))
-    exact=[r for r in hs if t["surface"] and _surface(r)==t["surface"] and t["distance"] is not None and _dist(r)==t["distance"]]
-    near=[r for r in hs if t["surface"] and _surface(r)==t["surface"] and t["distance"] is not None and _dist(r) is not None and abs(_dist(r)-t["distance"])<=100]
-    surf=[r for r in hs if t["surface"] and _surface(r)==t["surface"]]
-    recent=hs[:6]
-    hp=[_hp(r) for r in hs if _hp(r) is not None]; weights=[_wt(r) for r in hs if _wt(r) is not None]
-    classes=[_class(r) for r in recent if _class(r)]
-    condition=None; elig=None
-    if parse_race_condition:
-        try:
-            rc=parse_race_condition(race); condition=rc.to_dict() if hasattr(rc,"to_dict") else None
-            if evaluate_eligibility: elig=evaluate_eligibility(horse,race)
-        except Exception: pass
-    sig=None
-    if parse_race_condition and race_condition_signature:
-        try:sig=race_condition_signature(parse_race_condition(race))
-        except Exception:pass
-    rest=_rest(hs,td)
-    return {
-      "data_version":1,"data_ready":bool(hs or ws),"history_count":len(hs),"workout_count":len(ws),
-      "01_kosu_sarti_uyumu":{"today_class":t["class"],"history_class_sample":len(classes),"condition":condition,"condition_signature":sig,"eligibility":elig},
-      "02_pist_mesafe":{"target_surface":t["surface"],"target_distance":t["distance"],"exact_sample":len(exact),"exact_wins":_stats(exact).get("wins",0),"exact_top3":_stats(exact).get("top3",0),"exact_top5":_stats(exact).get("top5",0),"exact_avg_place":_stats(exact).get("avg_place"),"near_sample":len(near),"near_avg_place":_stats(near).get("avg_place")},
-      "03_pist_performansi":_stats(surf),
-      "04_gercek_derece":{"exact":_time_stats(exact),"same_surface":_time_stats(surf),"recent":_time_stats(recent)},
-      "05_gercek_hiz":{"exact_best_sec_per_km":_time_stats(exact).get("best_sec_per_km"),"exact_avg_sec_per_km":_time_stats(exact).get("avg_sec_per_km"),"surface_best_sec_per_km":_time_stats(surf).get("best_sec_per_km"),"surface_avg_sec_per_km":_time_stats(surf).get("avg_sec_per_km"),"recent_latest_sec_per_km":_time_stats(recent).get("latest_sec_per_km")},
-      "06_guncel_form":_stats(recent),
-      "07_ortak_rakip":_common(horse,horses),
-      "08_kilo_performansi":{"today_weight":_wt(horse),"history_sample":len(weights),"history_avg_weight":round(sum(weights)/len(weights),4) if weights else None,"history_min_weight":min(weights) if weights else None,"history_max_weight":max(weights) if weights else None},
-      "09_hp_kalite":{"today_hp":_hp(horse),"history_sample":len(hp),"history_avg_hp":round(sum(hp)/len(hp),4) if hp else None,"history_max_hp":max(hp) if hp else None,"history_min_hp":min(hp) if hp else None},
-      "10_galop_performansi":_workout(horse),
-      "11_galop_trend":{"workout_sample":len(ws),"recent_workout_count":min(len(ws),5)},
-      "12_dinlenme_kgs":rest,
-      "13_yaris_yogunlugu":{"races_last30":rest.get("races_last30"),"races_last60":rest.get("races_last60"),"races_last90":rest.get("races_last90")},
-      "14_start_kulvar":{"history_sample":sum(_num(_first(r,["post","start","kulvar","st"],None)) is not None for r in hs)},
-      "15_tempo_yaris_senaryosu":{"position_fields_available":any(any(k in r for k in ("position","pos","tempo","split","ilk400","ilk600")) for r in hs)},
-      "16_jokey_etkisi":_identity(horse,["jockey","jokey","Jokey"]),
-      "17_antrenor_etkisi":_identity(horse,["trainer","antrenor","Antrenör"]),
-      "18_orijin_pedigri":{"origin":str(_first(horse,["origin","orijin","Orijin","pedigree","baba_anne"],"") or "")},
-      "19_kazanc_kariyer":{"total":_first(horse,["_tjk_total_earnings","totalEarnings","total_earnings","lifetimeEarnings","careerEarnings","totalKazanc","toplamKazanc","kazanc","Kazanç","earnings"],None),"year":_first(horse,["_tjk_year_earnings","yearEarnings","year_earnings","yearlyEarnings","annualEarnings","yearKazanc","buYilKazanc"],None)},
-      "20_piyasa_sinyali":{"odds":_num(_first(horse,["odds","gny","Gny"],None)),"agf":_num(_first(horse,["agf","AGF"],None))},
+    params = {
+        "date": iso_date,
+        "city": city,
     }
 
+    try:
+        response = requests.get(
+            API_DATA,
+            params=params,
+            timeout=timeout,
+            headers={
+                "User-Agent": (
+                    "Race-Intelligence-Streamlit/34 "
+                    "(TJK Gateway Client)"
+                ),
+                "Accept": "application/json,text/plain,*/*",
+                "Cache-Control": "no-cache",
+            },
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Race Intelligence Worker bağlantısı başarısız: {exc}"
+        ) from exc
 
-def attach_feature_vectors(horses, race, target_date=None):
-    out=[dict(h) for h in horses if isinstance(h,dict)]
-    for h in out:
-        f=build_feature_vector(h,race,out,target_date)
-        h["_feature_vector"]=f; h["_feature_data_ready"]=bool(f["data_ready"])
-        h["_feature_history_count"]=f["history_count"]; h["_feature_workout_count"]=f["workout_count"]
-        h["_bizim_skor"]=None
-    return out
+    response_text = response.text or ""
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Worker HTTP {response.status_code}: "
+            f"{response_text[:500]}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "Worker geçerli JSON döndürmedi. "
+            f"İlk cevap: {response_text[:500]}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "Worker cevabı beklenen JSON nesnesi değil."
+        )
+
+    if not data.get("ok", False):
+        error = normalize_text(
+            data.get("error")
+            or data.get("message")
+            or "Worker veri alamadı."
+        )
+
+        raise RuntimeError(
+            f"TJK Worker hatası: {error}"
+        )
+
+    return data
 
 
-def calculate_bizim_ranking(horses, race):
-    # Geriye dönük uyumluluk: asıl 1500 puan motoru bizim_skor_model.py içindedir.
-    from bizim_skor_model import calculate_bizim_ranking as _calculate
-    return _calculate(horses, race)
+# =========================================================
+# ANA PROGRAM ÇEKME
+# =========================================================
+
+def get_program(
+    date_value: Any,
+    city: str,
+) -> Dict[str, Any]:
+
+    iso_date = normalize_date(date_value)
+    city = normalize_text(city)
+
+    data = fetch_worker(
+        date_value=iso_date,
+        city=city,
+    )
+
+    races = data.get("races", [])
+
+    if not isinstance(races, list):
+        races = []
+
+    # -----------------------------------------------------
+    # Worker'dan gelen gerçek değerleri koru
+    # -----------------------------------------------------
+
+    race_count = data.get(
+        "raceCount",
+        len(races),
+    )
+
+    horse_count = data.get(
+        "horseCount",
+        sum(
+            len(r.get("horses", []))
+            for r in races
+            if isinstance(r, dict)
+        ),
+    )
+
+    # -----------------------------------------------------
+    # Debug bilgisi
+    # -----------------------------------------------------
+
+    total_horses = 0
+    horses_per_race = {}
+
+    for race in races:
+
+        if not isinstance(race, dict):
+            continue
+
+        horses = race.get("horses", [])
+
+        if not isinstance(horses, list):
+            horses = []
+
+        race_no = race.get(
+            "no",
+            len(horses_per_race) + 1,
+        )
+
+        horses_per_race[str(race_no)] = len(horses)
+
+        total_horses += len(horses)
+
+    # -----------------------------------------------------
+    # Streamlit'in beklediği standart cevap
+    # -----------------------------------------------------
+
+    result = {
+        "ok": True,
+        "source": data.get(
+            "source",
+            "TJK Günlük Yarış Programı",
+        ),
+        "date": iso_date,
+        "date_tr": format_date_tr(iso_date),
+        "city": city,
+
+        "races": races,
+
+        "race_count": int(race_count or len(races)),
+        "raceCount": int(race_count or len(races)),
+
+        "total_horses": int(
+            total_horses
+            if total_horses
+            else horse_count or 0
+        ),
+
+        "horse_count": int(
+            horse_count
+            if horse_count is not None
+            else total_horses
+        ),
+
+        "horseCount": int(
+            horse_count
+            if horse_count is not None
+            else total_horses
+        ),
+
+        "status": data.get("status"),
+
+        "source_url": data.get("sourceUrl", ""),
+
+        "debug": {
+            "transport": "Cloudflare Worker",
+            "worker_url": API_DATA,
+            "date": iso_date,
+            "date_tr": format_date_tr(iso_date),
+            "city": city,
+            "city_id": CITY_IDS.get(city),
+
+            "worker_status": data.get("status"),
+
+            "race_count": len(races),
+
+            "total_horse_count": total_horses,
+
+            "horses_per_race": horses_per_race,
+
+            "source": data.get(
+                "source",
+                "TJK Günlük Yarış Programı",
+            ),
+
+            "source_url": data.get(
+                "sourceUrl",
+                "",
+            ),
+        },
+    }
+
+    return normalize_program(result)
+
+
+# =========================================================
+# TEK AT / YARDIMCI VERİ NORMALİZASYONU
+# =========================================================
+
+def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Worker V1 -> Streamlit ortak at şeması.
+
+    Worker'ın döndürdüğü alanlar korunur; ayrıca app.py'nin
+    kullandığı V34 alan adları da oluşturulur.
+    """
+    if not isinstance(horse, dict):
+        return {}
+
+    result = dict(horse)
+
+    # Ortak / Worker alanları
+    result["name"] = (
+        result.get("name")
+        or result.get("horse")
+        or result.get("horseName")
+        or result.get("At İsmi")
+        or ""
+    )
+
+    result["no"] = (
+        result.get("no")
+        or result.get("number")
+        or result.get("numara")
+        or result.get("s")
+        or result.get("S")
+        or ""
+    )
+
+    result["age"] = (
+        result.get("age")
+        or result.get("yas")
+        or result.get("Yaş")
+        or ""
+    )
+
+    result["weight"] = (
+        result.get("weight")
+        or result.get("siklet")
+        or result.get("Sıklet")
+        or result.get("kilo")
+        or ""
+    )
+
+    result["jockey"] = (
+        result.get("jockey")
+        or result.get("jokey")
+        or result.get("Jokey")
+        or result.get("jockeyName")
+        or ""
+    )
+
+    result["hp"] = (
+        result.get("hp")
+        or result.get("HP")
+        or result.get("rating")
+        or result.get("RT")
+        or ""
+    )
+
+    result["last6"] = (
+        result.get("last6")
+        or result.get("son6")
+        or result.get("Son 6 Y.")
+        or result.get("lastSix")
+        or ""
+    )
+
+    result["agf"] = (
+        result.get("agf")
+        or result.get("AGF")
+        or ""
+    )
+
+    # AGF ile ganyan/odds birbirine karıştırılmaz.
+    result["odds"] = (
+        result.get("odds")
+        or result.get("Gny")
+        or ""
+    )
+
+    result["st"] = (
+        result.get("st")
+        or result.get("St")
+        or result.get("start")
+        or ""
+    )
+
+    result["kgs"] = (
+        result.get("kgs")
+        or result.get("KGS")
+        or ""
+    )
+
+    result["form"] = (
+        result.get("form")
+        or result.get("Forma")
+        or result.get("last6")
+        or ""
+    )
+
+    result["trainer"] = (
+        result.get("trainer")
+        or result.get("antrenor")
+        or result.get("Antrenörü")
+        or result.get("trainerName")
+        or ""
+    )
+
+    result["owner"] = (
+        result.get("owner")
+        or result.get("sahip")
+        or result.get("Sahip")
+        or result.get("ownerName")
+        or ""
+    )
+
+    # Gerçek TJK at kimliğini standartlaştır.
+    # ÖNEMLİ: program numarası (no) hiçbir zaman atId yerine kullanılmaz.
+    at_id = (
+        result.get("atId")
+        or result.get("at_id")
+        or result.get("horseId")
+        or result.get("horse_id")
+        or result.get("horseKey")
+        or result.get("horse_key")
+        or result.get("id")
+        or result.get("Id")
+        or ""
+    )
+    if at_id not in (None, ""):
+        result["atId"] = str(at_id)
+        result["at_id"] = str(at_id)
+
+    # app.py'nin kullandığı V34 alan adları
+    result["at_ismi"] = result["name"]
+    result["numara"] = result["no"]
+    result["yas"] = result["age"]
+    result["siklet"] = result["weight"]
+    result["jokey"] = result["jockey"]
+
+    return result
+
+
+def normalize_program(program: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Worker V1 yarış şemasını app.py'nin beklediği V34 şemasına çevirir.
+    Worker verisinin orijinal alanları korunur.
+    """
+    if not isinstance(program, dict):
+        return {
+            "ok": False,
+            "races": [],
+            "race_count": 0,
+            "total_horses": 0,
+        }
+
+    races = program.get("races", [])
+    if not isinstance(races, list):
+        races = []
+
+    normalized_races = []
+
+    for index, race in enumerate(races, start=1):
+        if not isinstance(race, dict):
+            continue
+
+        item = dict(race)
+
+        meta = item.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        item["meta"] = meta
+
+        race_no = (
+            item.get("race_number")
+            or item.get("no")
+            or item.get("number")
+            or index
+        )
+
+        race_time = (
+            item.get("race_time")
+            or item.get("time")
+            or meta.get("time")
+            or ""
+        )
+
+        distance = (
+            item.get("distance")
+            or meta.get("distance")
+            or ""
+        )
+
+        surface = (
+            item.get("surface")
+            or meta.get("surface")
+            or ""
+        )
+
+        condition = (
+            item.get("condition")
+            or meta.get("condition")
+            or meta.get("detail")
+            or meta.get("raceName")
+            or ""
+        )
+
+        horses = item.get("horses", [])
+        if not isinstance(horses, list):
+            horses = []
+
+        normalized_horses = [
+            normalize_horse(h)
+            for h in horses
+            if isinstance(h, dict)
+        ]
+
+        # Worker alanlarını koru + app.py uyumlu alanları ekle
+        item["race_number"] = race_no
+        item["race_time"] = race_time
+        item["distance"] = distance
+        item["surface"] = surface
+        item["condition"] = condition
+        item["no"] = race_no
+        item["time"] = race_time
+        item["horses"] = normalized_horses
+
+        normalized_races.append(item)
+
+    program["races"] = normalized_races
+
+    program["race_count"] = len(normalized_races)
+    program["raceCount"] = len(normalized_races)
+
+    total = sum(len(r["horses"]) for r in normalized_races)
+
+    program["total_horses"] = total
+    program["horse_count"] = total
+    program["horseCount"] = total
+
+    # Worker ve Streamlit bağlantısını debug ekranında açıkça göster
+    debug = program.get("debug")
+    if not isinstance(debug, dict):
+        debug = {}
+
+    debug.setdefault("transport", "Cloudflare Worker V1")
+    debug.setdefault("worker_url", API_DATA)
+    debug["city_id"] = CITY_IDS.get(program.get("city"))
+    debug["race_count"] = len(normalized_races)
+    debug["total_horse_count"] = total
+    debug["horses_per_race"] = {
+        str(r.get("race_number", i + 1)): len(r.get("horses", []))
+        for i, r in enumerate(normalized_races)
+    }
+
+    program["debug"] = debug
+
+    return program
+
+
+def get_supported_cities() -> List[str]:
+    return list(CITY_IDS.keys())
+
+
+def get_city_id(city: str) -> int:
+    city = normalize_text(city)
+
+    if city not in CITY_IDS:
+        raise ValueError(
+            f"Bilinmeyen hipodrom: {city}"
+        )
+
+    return CITY_IDS[city]
+
+
+def worker_health() -> Dict[str, Any]:
+
+    try:
+
+        response = requests.get(
+            API_HEALTH,
+            timeout=15,
+            headers={
+                "User-Agent":
+                    "Race-Intelligence-Streamlit/34",
+                "Accept":
+                    "application/json,text/plain,*/*",
+            },
+        )
+
+        if response.status_code != 200:
+            return {
+                "ok": False,
+                "status": response.status_code,
+                "error": response.text[:500],
+            }
+
+        data = response.json()
+
+        return data
+
+    except Exception as exc:
+
+        return {
+            "ok": False,
+            "status": 0,
+            "error": str(exc),
+        }
+
+
+
+# =========================================================
+# GERÇEK AT GEÇMİŞİ / GALOP VERİSİ
+# =========================================================
+
+def _worker_json(
+    url: str,
+    params: Dict[str, Any],
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    response = requests.get(
+        url,
+        params=params,
+        timeout=timeout,
+        headers={
+            "User-Agent": "Race-Intelligence-Streamlit/34",
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+        },
+    )
+    text = response.text or ""
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Worker HTTP {response.status_code}: {text[:400]}"
+        )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Worker geçerli JSON döndürmedi: {text[:400]}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Worker cevabı JSON nesnesi değil.")
+    if data.get("ok") is False:
+        raise RuntimeError(str(data.get("error") or "Worker isteği başarısız."))
+    return data
+
+
+def get_horse_history(
+    at_id: Any,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    if at_id in (None, ""):
+        return {"ok": False, "history": []}
+    return _worker_json(
+        API_HORSE,
+        {"atId": str(at_id)},
+        timeout=timeout,
+    )
+
+
+def get_horse_workouts(
+    horse: str,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    if not normalize_text(horse):
+        return {"ok": False, "workouts": []}
+    return _worker_json(
+        API_WORKOUTS,
+        {"horse": normalize_text(horse)},
+        timeout=timeout,
+    )
+
+
+def get_horse_enrichment(
+    at_id: Any,
+    horse: str,
+    timeout: int = 20,
+    target_date: Any = None,
+    target_city: str = "",
+    target_distance: Any = None,
+    target_surface: str = "",
+    target_class: str = "",
+) -> Dict[str, Any]:
+    """
+    Mevcut uygulama mimarisini bozmadan gerçek koşu geçmişi ve galop verisini
+    hafif Worker endpointlerinden alır.
+
+    ÖNEMLİ:
+    Eski sürüm önce /horsedata çağırıyordu. Bu endpoint tek at için birden
+    fazla TJK sayfası taradığı için Worker 503/resource-limit oluşturabiliyordu.
+    Burada doğrudan mevcut /horse ve /workouts endpointleri kullanılır.
+    target_* parametreleri uygulama ile geriye dönük uyumluluk için korunur.
+    """
+    horse_name = normalize_text(horse)
+    errors: List[str] = []
+
+    def fetch_history() -> Dict[str, Any]:
+        if at_id in (None, ""):
+            return {"ok": False, "history": [], "error": "atId yok"}
+        try:
+            return get_horse_history(at_id, timeout=timeout)
+        except Exception as exc:
+            return {"ok": False, "history": [], "error": str(exc)}
+
+    def fetch_workouts() -> Dict[str, Any]:
+        if not horse_name:
+            return {"ok": False, "workouts": [], "error": "At adı yok"}
+        try:
+            return get_horse_workouts(horse_name, timeout=timeout)
+        except Exception as exc:
+            return {"ok": False, "workouts": [], "error": str(exc)}
+
+    # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        history_future = executor.submit(fetch_history)
+        workout_future = executor.submit(fetch_workouts)
+        history_data = history_future.result()
+        workout_data = workout_future.result()
+
+    history = history_data.get("history", []) if isinstance(history_data, dict) else []
+    workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
+
+    if not isinstance(history, list):
+        history = []
+    if not isinstance(workouts, list):
+        workouts = []
+
+    # Önce hafif /horse endpointini kullan. Geçmiş boş gelirse yalnızca
+    # o at için /horsedata fallback'i çalıştır; böylece eksik at verisi
+    # sessizce 0 puana düşmez. Fallback yalnızca gerçekten gerektiğinde
+    # çağrıldığı için normal analiz hızını gereksiz yere düşürmez.
+    if not history and at_id not in (None, ""):
+        retry = fetch_history()
+        if isinstance(retry, dict) and isinstance(retry.get("history"), list):
+            history = retry.get("history") or []
+        if not history:
+            try:
+                fallback = _worker_json(
+                    API_HORSEDATA,
+                    {"atId": str(at_id), "horse": horse_name},
+                    timeout=min(timeout, 30),
+                )
+                if isinstance(fallback.get("history"), list):
+                    history = fallback.get("history") or []
+                if not workouts and isinstance(fallback.get("workouts"), list):
+                    workouts = fallback.get("workouts") or []
+            except Exception as exc:
+                errors.append(f"horsedata fallback: {exc}")
+        if not history and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"horse: {retry.get('error')}")
+
+    if not workouts and horse_name:
+        retry = fetch_workouts()
+        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
+            workouts = retry.get("workouts") or []
+        if not workouts and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"workouts: {retry.get('error')}")
+
+    if not history and isinstance(history_data, dict) and history_data.get("error"):
+        errors.append(f"horse: {history_data.get('error')}")
+    if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
+        errors.append(f"workouts: {workout_data.get('error')}")
+
+    errors = list(dict.fromkeys(errors))
+
+    result: Dict[str, Any] = {
+        "ok": bool(history or workouts),
+        "history": history,
+        "workouts": workouts,
+        "historyCount": len(history),
+        "workoutCount": len(workouts),
+    }
+    if errors:
+        result["error"] = " | ".join(errors)
+    return result
+
+# =========================================================
+# GERİYE DÖNÜK UYUMLULUK
+# =========================================================
+
+def fetch_program(
+    date_value: Any,
+    city: str,
+) -> Dict[str, Any]:
+
+    return normalize_program(
+        get_program(
+            date_value,
+            city,
+        )
+    )
+
+
+def load_program(
+    date_value: Any,
+    city: str,
+) -> Dict[str, Any]:
+
+    return normalize_program(
+        get_program(
+            date_value,
+            city,
+        )
+    )
