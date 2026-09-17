@@ -1,6 +1,8 @@
 import requests
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor
 
 
 # =========================================================
@@ -671,17 +673,307 @@ def _worker_json(
     return data
 
 
+
+def _clean_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return " ".join(value.replace("\xa0", " ").split()).strip()
+    return value
+
+
+def _first_nonempty(d: Dict[str, Any], keys: List[str], default: Any = "") -> Any:
+    for key in keys:
+        if key in d and d.get(key) not in (None, "", "-", "—", "–"):
+            return _clean_value(d.get(key))
+    return default
+
+
+_HISTORY_KEYS = {
+    "date": ["date", "tarih", "Tarih", "Date"],
+    "city": ["city", "şehir", "sehir", "hipodrom", "Hipodrom", "Hipo"],
+    "distance": ["distance", "mesafe", "Msf", "msf", "Msf."],
+    "surface": ["surface", "pist", "Pist", "track", "zemin", "Surface"],
+    "post": ["post", "start", "St", "st", "kulvar", "Kulvar"],
+    "time": ["time", "derece", "Derece", "finishTime", "süre", "Sure"],
+    "weight": ["weight", "kilo", "Kilo", "siklet", "Sıklet"],
+    "jockey": ["jockey", "jokey", "Jokey", "jockeyName"],
+    "group": ["group", "grup", "Grup"],
+    "raceName": ["raceName", "race_name", "kosu", "Koşu", "Koşu Adı", "race"],
+    "raceType": ["raceType", "race_type", "kosuTuru", "Koşu Türü", "type", "tur"],
+    "trainer": ["trainer", "antrenor", "Antrenör", "Antrenörü", "trainerName"],
+    "owner": ["owner", "sahip", "Sahip", "ownerName"],
+    "hp": ["hp", "HP", "handicap", "handikap", "RT", "rt"],
+    "prize": ["prize", "ikramiye", "Ikramiye", "İkramiye", "Kazanç", "kazanc", "earnings", "earning", "prizeAmount", "prize_amount"],
+    "l20": ["l20", "L20", "son20", "Son20"],
+    "place": ["place", "sira", "Sıra", "S", "finish", "rank", "dereceSirasi"],
+}
+
+
+def _normalize_history_row(row: Any) -> Dict[str, Any] | None:
+    """Worker/TJK geçmiş satırını BİZİM SKOR'un ortak şemasına çevirir."""
+    if isinstance(row, dict):
+        src = dict(row)
+        out = dict(row)
+        for target, aliases in _HISTORY_KEYS.items():
+            value = _first_nonempty(src, aliases, "")
+            if value not in (None, ""):
+                out[target] = value
+        # Bazı Worker sürümlerinde yalnızca 'finish' veya 'S' bulunur.
+        if not out.get("place"):
+            out["place"] = _first_nonempty(src, ["finish", "S", "sira", "siraNo", "rank"], "")
+        return out
+
+    if isinstance(row, (list, tuple)):
+        # TJK AtKosuBilgileri tablosunun bilinen kolon sırası.
+        cols = [
+            "date", "city", "distance", "surface", "post", "time",
+            "weight", "jockey", "group", "raceName", "raceType",
+            "trainer", "owner", "hp", "prize", "l20",
+        ]
+        vals = list(row)
+        if len(vals) < 3:
+            return None
+        out = {cols[i]: _clean_value(vals[i]) for i in range(min(len(vals), len(cols)))}
+        # Bazı tablolar sıralamayı ayrıca taşıyabilir.
+        if len(vals) > 16:
+            out["place"] = _clean_value(vals[16])
+        return out
+    return None
+
+
+def _extract_history_payload(data: Any) -> List[Dict[str, Any]]:
+    """JSON cevabındaki history/rows/items/results/data katmanlarını esnekçe bulur."""
+    candidates: List[Any] = []
+
+    def walk(obj: Any, depth: int = 0) -> None:
+        if depth > 5:
+            return
+        if isinstance(obj, dict):
+            for key in ("history", "History", "rows", "Rows", "items", "Items",
+                        "results", "Results", "data", "Data"):
+                value = obj.get(key)
+                if isinstance(value, list):
+                    candidates.append(value)
+                elif isinstance(value, dict):
+                    walk(value, depth + 1)
+            # history doğrudan tek nesne olarak gelirse
+            if any(k in obj for k in ("date", "tarih", "Tarih", "distance", "mesafe", "Derece", "derece")):
+                candidates.append([obj])
+        elif isinstance(obj, list):
+            candidates.append(obj)
+            for item in obj[:5]:
+                if isinstance(item, (dict, list)):
+                    walk(item, depth + 1)
+
+    walk(data)
+
+    best: List[Dict[str, Any]] = []
+    for cand in candidates:
+        rows = []
+        for raw in cand:
+            nr = _normalize_history_row(raw)
+            if nr:
+                rows.append(nr)
+        if len(rows) > len(best):
+            best = rows
+    return best
+
+
+def _money_to_float(value: Any) -> float:
+    if value in (None, "", "-", "—", "–"):
+        return 0.0
+    s = str(value).strip().replace("₺", "").replace("TL", "").replace("tl", "").strip()
+    # 1.234.567,89 -> 1234567.89
+    if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+(?:,\d+)?", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    try:
+        return float(m.group(0)) if m else 0.0
+    except Exception:
+        return 0.0
+
+
+def _earnings_from_history(history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = 0.0
+    year = 0.0
+    current_year = date.today().year
+    for row in history:
+        prize = _first_nonempty(row, _HISTORY_KEYS["prize"], "")
+        amount = _money_to_float(prize)
+        total += amount
+        ds = str(_first_nonempty(row, _HISTORY_KEYS["date"], ""))
+        if str(current_year) in ds:
+            year += amount
+    return {"total": total if total > 0 else None, "year": year if year > 0 else None}
+
+
+def _merge_history(primary: List[Dict[str, Any]], fallback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aynı yarışları tarih+şehir+mesafe+derece ile tekilleştirerek birleştirir."""
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for row in (primary or []) + (fallback or []):
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("date") or row.get("tarih") or ""),
+            str(row.get("city") or row.get("şehir") or ""),
+            str(row.get("distance") or row.get("mesafe") or ""),
+            str(row.get("time") or row.get("derece") or ""),
+            str(row.get("place") or row.get("S") or row.get("sira") or ""),
+        )
+        if key == ("", "", "", "", ""):
+            key = ("raw", repr(sorted(row.items()))[:500])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+
+class _TJKTableParser:
+    """TJK HTML tablosunu stdlib ile parse eder; BeautifulSoup gerektirmez."""
+    def __init__(self):
+        from html.parser import HTMLParser
+        self.rows = []
+        self._row = None
+        self._cell = None
+        self._buf = []
+        self._href = ""
+
+    def feed(self, html_text: str):
+        from html.parser import HTMLParser
+        outer = self
+
+        class P(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                tag = tag.lower()
+                if tag == "tr":
+                    outer._row = []
+                elif tag in ("td", "th") and outer._row is not None:
+                    outer._cell = {"text": [], "href": ""}
+                    outer._buf = []
+                elif tag == "a" and outer._cell is not None:
+                    for k, v in attrs:
+                        if k.lower() == "href":
+                            outer._cell["href"] = v or ""
+
+            def handle_data(self, data):
+                if outer._cell is not None:
+                    outer._cell["text"].append(data)
+
+            def handle_endtag(self, tag):
+                tag = tag.lower()
+                if tag in ("td", "th") and outer._cell is not None and outer._row is not None:
+                    txt = " ".join("".join(outer._cell["text"]).split())
+                    outer._row.append((txt, outer._cell.get("href", "")))
+                    outer._cell = None
+                elif tag == "tr" and outer._row is not None:
+                    if outer._row:
+                        outer.rows.append(outer._row)
+                    outer._row = None
+
+        P(convert_charrefs=True).feed(html_text)
+        return self.rows
+
+
+def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
+    """TJK AtKosuBilgileri sayfasını doğrudan okuyup ortak geçmiş şemasına çevirir."""
+    urls = [
+        f"https://www.tjk.org/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId={at_id}",
+        f"https://www.tjk.org/TR/map/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId={at_id}",
+        f"https://www.tjk.org/TR/YarisSever/Query/ConnectedPage/AtKosuBilgileri?1=1&QueryParameter_AtId={at_id}",
+    ]
+    last_error = None
+    for url in urls:
+        try:
+            response = requests.get(
+                url,
+                timeout=timeout,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": "https://www.tjk.org/",
+                    "Cache-Control": "no-cache",
+                },
+            )
+            if response.status_code >= 400:
+                last_error = RuntimeError(f"TJK HTTP {response.status_code}")
+                continue
+            parser = _TJKTableParser()
+            rows = parser.feed(response.text or "")
+            parsed: List[Dict[str, Any]] = []
+            for cells in rows:
+                texts = [c[0] for c in cells]
+                if len(texts) < 8:
+                    continue
+                joined = " | ".join(texts).lower()
+                # Başlık satırını atla.
+                if "tarih" in joined and "derece" in joined and "pist" in joined:
+                    continue
+                # TJK'nın AtKosuBilgileri tablosunda yaygın 16 kolon sırası:
+                # Tarih, Hipodrom, Mesafe, Pist, Start, Derece, Kilo, Jokey,
+                # Grup, Koşu, Koşu Türü, Antrenör, Sahip, RT, Kazanç, L20
+                if re.search(r"\d{1,2}[./]\d{1,2}[./]20\d{2}", texts[0] if texts else ""):
+                    cols = [
+                        "date","city","distance","surface","post","time","weight",
+                        "jockey","group","raceName","raceType","trainer","owner",
+                        "hp","prize","l20"
+                    ]
+                    row = {cols[i]: texts[i] for i in range(min(len(cols), len(texts)))}
+                    # Bazı TJK varyantlarında Sıra ayrı kolondur; olası son sayı alanını
+                    # place olarak kullanma, çünkü yanlış kolon seçme riski vardır.
+                    parsed.append(row)
+            if parsed:
+                return parsed
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    return []
+
 def get_horse_history(
     at_id: Any,
     timeout: int = 45,
 ) -> Dict[str, Any]:
     if at_id in (None, ""):
-        return {"ok": False, "history": []}
-    return _worker_json(
-        API_HORSE,
-        {"atId": str(at_id)},
-        timeout=timeout,
-    )
+        return {"ok": False, "history": [], "error": "atId yok"}
+
+    errors: List[str] = []
+    payloads = [
+        (API_HORSE, {"atId": str(at_id)}),
+        (API_HORSEDATA, {"atId": str(at_id), "horse": ""}),
+    ]
+
+    for url, params in payloads:
+        try:
+            data = _worker_json(url, params, timeout=timeout)
+            history = _extract_history_payload(data)
+            if history:
+                earnings = {}
+                if isinstance(data.get("earnings"), dict):
+                    earnings.update(data.get("earnings") or {})
+                derived = _earnings_from_history(history)
+                earnings.setdefault("total", derived.get("total"))
+                earnings.setdefault("year", derived.get("year"))
+                result = dict(data)
+                result["history"] = history
+                result["historyCount"] = len(history)
+                result["earnings"] = earnings
+                return result
+            errors.append(f"{url}: history boş")
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+
+    return {
+        "ok": False,
+        "history": [],
+        "historyCount": 0,
+        "error": " | ".join(errors),
+    }
 
 
 def get_horse_workouts(
@@ -743,7 +1035,7 @@ def get_horse_enrichment(
         history_data = history_future.result()
         workout_data = workout_future.result()
 
-    history = history_data.get("history", []) if isinstance(history_data, dict) else []
+    history = _extract_history_payload(history_data) if isinstance(history_data, dict) else []
     workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
 
     if not isinstance(history, list):
@@ -787,6 +1079,20 @@ def get_horse_enrichment(
     if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
         errors.append(f"workouts: {workout_data.get('error')}")
 
+    # Worker boş dönerse, Streamlit sunucusundan TJK'nın gerçek at geçmişini
+    # doğrudan sorgula. Bu yalnızca Worker geçmişi gerçekten boşsa çalışır.
+    if not history and at_id not in (None, ""):
+        try:
+            direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25))
+            if direct:
+                history = direct
+                history_data = dict(history_data or {})
+                history_data["history"] = history
+                history_data["historyCount"] = len(history)
+                history_data["earnings"] = _earnings_from_history(history)
+        except Exception as exc:
+            errors.append(f"direct TJK history: {exc}")
+
     errors = list(dict.fromkeys(errors))
 
     # Worker /api/tjk/horse artık resmi kazanç ve hangi TJK kaynağının
@@ -807,6 +1113,12 @@ def get_horse_enrichment(
             result["atId"] = history_data.get("atId")
     if "earnings" not in result:
         result["earnings"] = {"total": None, "year": None}
+    if isinstance(result.get("earnings"), dict):
+        derived = _earnings_from_history(history)
+        if result["earnings"].get("total") in (None, "", 0, 0.0):
+            result["earnings"]["total"] = derived.get("total")
+        if result["earnings"].get("year") in (None, "", 0, 0.0):
+            result["earnings"]["year"] = derived.get("year")
 
     if errors:
         result["error"] = " | ".join(errors)
