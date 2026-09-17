@@ -751,11 +751,27 @@ def get_horse_enrichment(
     if not isinstance(workouts, list):
         workouts = []
 
-    # Sadece boş kalan tarafı bir kez tekrar dene.
+    # Önce hafif /horse endpointini kullan. Geçmiş boş gelirse yalnızca
+    # o at için /horsedata fallback'i çalıştır; böylece eksik at verisi
+    # sessizce 0 puana düşmez. Fallback yalnızca gerçekten gerektiğinde
+    # çağrıldığı için normal analiz hızını gereksiz yere düşürmez.
     if not history and at_id not in (None, ""):
         retry = fetch_history()
         if isinstance(retry, dict) and isinstance(retry.get("history"), list):
             history = retry.get("history") or []
+        if not history:
+            try:
+                fallback = _worker_json(
+                    API_HORSEDATA,
+                    {"atId": str(at_id), "horse": horse_name},
+                    timeout=min(timeout, 30),
+                )
+                if isinstance(fallback.get("history"), list):
+                    history = fallback.get("history") or []
+                if not workouts and isinstance(fallback.get("workouts"), list):
+                    workouts = fallback.get("workouts") or []
+            except Exception as exc:
+                errors.append(f"horsedata fallback: {exc}")
         if not history and isinstance(retry, dict) and retry.get("error"):
             errors.append(f"horse: {retry.get('error')}")
 
