@@ -1,18 +1,33 @@
-"""BİZİM SKOR — sabit kural tabanlı motor.
+"""BİZİM SKOR — 20 gerçek veri ailesinden öğrenilen 0–1500 model.
 
-Kullanılan bileşenler yalnızca:
-- Koşu Şartı Uyumu: sınırsız toplam
-- Pist / Mesafe: 100
-- Pist Performansı: 100
-- Güncel Form: 100
-- Start / Kulvar: 50
-
-Skor sabittir; her bileşenin puan aralığı değişmez ve sonuçlar doğrudan toplanır.
+- Yarıştan önce bilinebilen verilerle leakage-safe rolling örnekler üretir.
+- Her veri ailesinin 1–3 sonuçlarını ayırt etme gücünü AUC ile öğrenir.
+- Ağırlıkları otomatik olarak 1500 puana dağıtır.
+- Eksik aileye nötr puan vermez; mevcut ağırlıklar yeniden ölçeklenir.
+- Görünen bileşenlerin toplamı her at için tam olarak BİZİM SKOR'a eşittir.
 """
 from __future__ import annotations
 from datetime import date, datetime
-import math, re
+import hashlib, math, re
 from typing import Any, Dict, List
+
+FAMILIES = [
+    "01_kosu_sarti_uyumu", "02_pist_mesafe", "03_pist_performansi",
+    "04_gercek_derece", "05_gercek_hiz", "06_guncel_form",
+    "07_ortak_rakip", "08_kilo_performansi", "09_hp_kalite",
+    "10_galop_performansi", "11_galop_trend", "12_dinlenme_kgs",
+    "13_yaris_yogunlugu", "14_start_kulvar", "15_tempo_yaris_senaryosu",
+    "16_jokey_etkisi", "17_antrenor_etkisi", "18_orijin_pedigri",
+    "19_kazanc_kariyer", "20_piyasa_sinyali",
+]
+
+MIN_FAMILY_SAMPLES = 4
+MIN_TOTAL_SAMPLES = 12
+MIN_LEARNED_FAMILIES = 2
+MIN_PRIOR_RACES = 2
+_MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
+_MODEL_CACHE_MAX = 6
+
 
 def _first(d, keys, default=None):
     if not isinstance(d, dict): return default
@@ -144,7 +159,7 @@ def _percentile_better(value, values, lower=False):
 
 
 # ============================================================
-# SABİT BİZİM SKOR MOTORU — 5 BİLEŞEN
+# SABİT BİZİM SKOR MOTORU — ÖĞRENME / AUC / ARŞİV YOK
 # ============================================================
 # Koşu Şartı Uyumu: sınırsız toplam
 # Pist/Mesafe: 100
@@ -304,9 +319,7 @@ def _current_values(horse,race):
 
 def calculate_bizim_ranking(horses,race):
     if not isinstance(horses,list) or not horses: return []
-    # Skor doğrudan gerçek koşu geçmişinden hesaplanır.
-    # Veri hiç gelmediyse sonuç üretme.
-    if not any(isinstance(h,dict) and (h.get("_history") or h.get("_workouts")) for h in horses): return []
+    if not any(isinstance(h,dict) and h.get("_feature_data_ready") for h in horses): return []
     results=[]
     for idx,h in enumerate(horses):
         if not isinstance(h,dict): continue
@@ -320,7 +333,7 @@ def calculate_bizim_ranking(horses,race):
         }
         score=round(sum(components.values()),2)
         h["_bizim_skor"]=score
-        h["_bizim_skor_components"]=components
+        h["_bizim_family_values"]=components
         h["_bizim_sart_gruplari"]={k:round(v,2) for k,v in vals["kosu_sarti_gruplari"].items()}
         results.append({
             "horse_index":idx,"score":score,"bizim_skor":score,
