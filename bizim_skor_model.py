@@ -1,842 +1,347 @@
-import requests
+"""BİZİM SKOR — sabit 5 bileşenli kural motoru.
+
+Bileşenler:
+- Koşu Şartı Uyumu: geçmişteki tüm tanınan yarış gruplarının grup ortalamaları toplamı
+- Pist / Mesafe: 100
+- Pist Performansı: 100
+- Güncel Form: 100
+- Start / Kulvar: 50
+
+Öğrenme ve AUC yoktur; disk arşivi veya ekran görüntüsü/snapshot mekanizması yoktur.
+Atın yalnızca 1 geçmiş yarışı olsa bile mevcut verilerle skor hesaplanır.
+Eksik veri olan bileşen 0 puan alır; at analizden çıkarılmaz.
+"""
+from __future__ import annotations
 from datetime import date, datetime
+import hashlib, math, re
 from typing import Any, Dict, List
 
-
-# =========================================================
-# RACE INTELLIGENCE
-# TJK VERİ KAYNAĞI
-# =========================================================
-
-WORKER_URL = "https://fragrant-hat-ae48.raceanaliz.workers.dev"
-
-API_DATA = f"{WORKER_URL}/api/tjk/data"
-API_HEALTH = f"{WORKER_URL}/api/health"
-API_HORSE = f"{WORKER_URL}/api/tjk/horse"
-API_WORKOUTS = f"{WORKER_URL}/api/tjk/workouts"
-API_HORSEDATA = f"{WORKER_URL}/api/tjk/horsedata"
+def _first(d, keys, default=None):
+    if not isinstance(d, dict): return default
+    for k in keys:
+        v=d.get(k)
+        if v not in (None, "", "-"): return v
+    return default
 
 
-# =========================================================
-# ŞEHİR LİSTESİ
-# =========================================================
+def _num(v):
+    """TJK sayısal alanlarını güvenli biçimde float'a çevirir.
 
-CITY_IDS = {
-    "Ankara": 5,
-    "Kocaeli": 9,
-    "İstanbul": 3,
-    "Bursa": 4,
-    "İzmir": 2,
-    "Adana": 1,
-    "Elazığ": 6,
-    "Diyarbakır": 8,
-    "Şanlıurfa": 7,
-    "Antalya": 10,
+    Özellikle 1.24.77 gibi derece değerlerini yanlışlıkla 1.24
+    olarak okumaz; virgüllü ondalıkları ve binlik ayraçlarını destekler.
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            x = float(v)
+            return x if math.isfinite(x) else None
+        except Exception:
+            return None
+    s = str(v).strip()
+    if not s or s in {"-", "—", "–", "None", "nan", "NaN"}:
+        return None
+    # TJK derece biçimi: 1.24.77 / 0.59.43. Bu alan _time tarafından okunmalı.
+    if re.fullmatch(r"\d{1,2}\.\d{2}\.\d{2}", s):
+        return None
+    # Ondalık virgül ve binlik nokta: 1.234,56 -> 1234.56
+    if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+,\d+", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        x = float(m.group(0))
+        return x if math.isfinite(x) else None
+    except Exception:
+        return None
+
+
+def _time(v):
+    """TJK derece değerini saniyeye çevirir."""
+    if v is None:
+        return None
+    s = str(v).strip().replace(",", ".")
+    # 1.24.77 = 84.77 sn
+    m = re.fullmatch(r"(\d{1,2})\.(\d{2})\.(\d{2})", s)
+    if m:
+        return float(m.group(1))*60 + float(m.group(2)) + float(m.group(3))/100
+    # 1:24.77 = 84.77 sn
+    m = re.fullmatch(r"(\d{1,2}):([0-9]+(?:\.[0-9]+)?)", s)
+    if m:
+        return float(m.group(1))*60 + float(m.group(2))
+    # Zaten saniye olan 84.77 gibi değerler
+    return _num(s)
+
+
+def _norm(v):
+    return (str(v or "").strip().lower().replace("ı","i").replace("ş","s").replace("ğ","g").replace("ü","u").replace("ö","o").replace("ç","c"))
+
+
+def _surface(r):
+    s=_norm(_first(r,["surface","pist","Pist","Surface","trackSurface","surfaceType","track","zemin"],""))
+    if s.startswith(("k:","k-")) or s=="k" or any(x in s for x in ("kum","dirt","sand")):return "kum"
+    if s.startswith(("c:","c-","cim:")) or s in ("c","cim") or any(x in s for x in ("cim","grass","turf")):return "cim"
+    if s.startswith(("s:","s-")) or s=="s" or any(x in s for x in ("sentetik","synthetic","polytrack","fiber")):return "sentetik"
+    return s
+
+
+def _dt(v):
+    if isinstance(v,datetime):return v.date()
+    if isinstance(v,date):return v
+    s=str(v or "").strip()
+    for f in ("%d.%m.%Y","%d/%m/%Y","%Y-%m-%d","%Y/%m/%d"):
+        try:return datetime.strptime(s[:10],f).date()
+        except:pass
+    return None
+
+
+def _place(r):
+    x=_num(_first(r,["place","sira","S","finish"],None)); return x if x is not None and x>0 else None
+
+def _dist(r):return _num(_first(r,["distance","msf","mesafe"],None))
+def _wt(r):return _num(_first(r,["weight","kilo","siklet","Sıklet"],None))
+def _hp(r):return _num(_first(r,["hp","HP","handicap","handikap","rating","RT"],None))
+def _rt(r):return _time(_first(r,["time","derece","Derece"],None))
+def _class(r):return _norm(_first(r,["className","class","sinif","Sınıf","raceName","race_name","kosu","Koşu","condition"],""))
+def _city(r):return _norm(_first(r,["city","şehir","sehir","hipodrom"],""))
+def _name(r,keys):return _norm(_first(r,keys,""))
+def _history(h):return [r for r in h.get("_history",[]) if isinstance(r,dict)] if isinstance(h.get("_history",[]),list) else []
+def _workouts(h):return [r for r in h.get("_workouts",[]) if isinstance(r,dict)] if isinstance(h.get("_workouts",[]),list) else []
+
+
+def _mean(xs):
+    clean=[]
+    for x in xs:
+        try:
+            y=float(x)
+            if math.isfinite(y): clean.append(y)
+        except Exception:
+            continue
+    return sum(clean)/len(clean) if clean else None
+
+
+def _stats(rows):
+    p=[_place(r) for r in rows];p=[x for x in p if x is not None]
+    if not p:return None
+    return {"sample":len(p),"wins":sum(x==1 for x in p),"top3":sum(x<=3 for x in p),"top5":sum(x<=5 for x in p),"avg":_mean(p)}
+
+
+def _rate_score(rows):
+    st=_stats(rows)
+    if not st:return None
+    avg_score=max(0.0,min(1.0,1-(st["avg"]-1)/max(8.0,st["sample"]**0.15*8)))
+    return max(0.0,min(1.0,0.65*(st["top3"]/st["sample"])+0.35*avg_score))
+
+
+def _percentile_better(value, values, lower=False):
+    vals=[x for x in values if x is not None and math.isfinite(float(x))]
+    if value is None or not vals:return None
+    if len(set(vals))==1:return 1.0
+    if lower:return sum(x>=value for x in vals)/len(vals)
+    return sum(x<=value for x in vals)/len(vals)
+
+
+
+# ============================================================
+# SABİT BİZİM SKOR MOTORU — ÖĞRENME / AUC / ARŞİV YOK
+# ============================================================
+# Koşu Şartı Uyumu: sınırsız toplam
+# Pist/Mesafe: 100
+# Pist Performansı: 100
+# Güncel Form: 100
+# Start/Kulvar: 50
+# TOPLAM = Şart Uyumu + 100 + 100 + 100 + 50
+
+CLASS_BASE = {
+    # Grup / Açık
+    "G1": 100, "A1": 95, "G2": 90, "A2": 90, "G3": 80, "A3": 80,
+    # Handikap
+    "H24": 90, "H23": 85, "H22": 80, "H21": 70, "H20": 75,
+    "H19": 70, "H18": 65, "H17": 60, "H16": 50, "H15": 40,
+    "H14": 30, "H13": 20,
+    # KV
+    "KV24": 90, "KV18": 80, "KV9": 70, "KV8": 70, "KV7": 60, "KV6": 60,
+    # Şartlı
+    "S27": 15, "S19": 25, "S5": 50, "S4": 40, "S3": 30, "S2": 20, "S1": 10,
+    # Maiden
+    "MAIDEN": 10,
 }
 
+FINISH_FACTOR = {1: 1.00, 2: .80, 3: .65, 4: .50, 5: .35}
 
-# =========================================================
-# YARDIMCI FONKSİYONLAR
-# =========================================================
 
-def normalize_text(value: Any) -> str:
-    if value is None:
+def normalize_race_group(value):
+    s = _norm(value)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
         return ""
+    # Önce daha spesifik numaralı sınıflar.
+    m = re.search(r"\b(?:g|grup|group)\s*[- ]?([123])\b", s)
+    if m: return f"G{m.group(1)}"
+    m = re.search(r"\b(?:açik|acik|açık|a)\s*[- ]?([123])\b", s)
+    if m: return f"A{m.group(1)}"
+    m = re.search(r"\bkv\s*[- ]?(\d+)\b", s)
+    if m: return f"KV{m.group(1)}"
+    m = re.search(r"\b(?:h|handikap)\s*[- ]?(\d+)\b", s)
+    if m: return f"H{m.group(1)}"
+    m = re.search(r"\b(?:s|şartli|sartli|şartlı|sartlı)\s*[- ]?(\d+)\b", s)
+    if m: return f"S{m.group(1)}"
+    if "maiden" in s:
+        return "MAIDEN"
+    # Tek başına AÇIK ifadesi ayrı bir yarış grubu olarak tutulur.
+    if re.search(r"\baçik\b|\bacik\b", s):
+        return "AÇIK"
+    return ""
 
-    return " ".join(str(value).replace("\xa0", " ").split()).strip()
+
+def class_base_points(value):
+    g = normalize_race_group(value)
+    return float(CLASS_BASE.get(g, 0))
 
 
-def normalize_date(value: Any) -> str:
+def finish_factor(place):
+    p = _place({"place": place})
+    if p is None: return None
+    p = int(p)
+    if p in FINISH_FACTOR: return FINISH_FACTOR[p]
+    if p >= 6: return .20
+    return None
+
+
+def _condition_group_scores(prior):
+    """Her yarış grubundaki tüm geçmiş yarışları puanlar.
+
+    Aynı grupta birden fazla yarış varsa mesafe/pist ayrımı yapılmadan
+    o grubun yarış puanları ortalanır. Sonra bütün grup ortalamaları toplanır.
     """
-    Streamlit date_input:
-        datetime.date
-        veya YYYY-MM-DD
-
-    Worker API:
-        YYYY-MM-DD
-    """
-
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-
-    if isinstance(value, date):
-        return value.isoformat()
-
-    text = normalize_text(value)
-
-    if not text:
-        return date.today().isoformat()
-
-    # YYYY-MM-DD
-    if len(text) == 10 and text[4] == "-" and text[7] == "-":
-        return text
-
-    # DD/MM/YYYY
-    if len(text) == 10 and text[2] == "/" and text[5] == "/":
-        dd = text[0:2]
-        mm = text[3:5]
-        yyyy = text[6:10]
-        return f"{yyyy}-{mm}-{dd}"
-
-    # DD.MM.YYYY
-    if len(text) == 10 and text[2] == "." and text[5] == ".":
-        dd = text[0:2]
-        mm = text[3:5]
-        yyyy = text[6:10]
-        return f"{yyyy}-{mm}-{dd}"
-
-    return text
-
-
-def format_date_tr(value: Any) -> str:
-    iso = normalize_date(value)
-
-    try:
-        y, m, d = iso.split("-")
-        return f"{d}/{m}/{y}"
-    except Exception:
-        return iso
-
-
-# =========================================================
-# WORKER BAĞLANTISI
-# =========================================================
-
-def fetch_worker(
-    date_value: Any,
-    city: str,
-    timeout: int = 45,
-) -> Dict[str, Any]:
-
-    iso_date = normalize_date(date_value)
-    city = normalize_text(city)
-
-    if not city:
-        raise ValueError("Hipodrom belirtilmedi.")
-
-    if city not in CITY_IDS:
-        raise ValueError(
-            f"Bilinmeyen hipodrom: {city}. "
-            f"Desteklenenler: {', '.join(CITY_IDS.keys())}"
-        )
-
-    params = {
-        "date": iso_date,
-        "city": city,
-    }
-
-    try:
-        response = requests.get(
-            API_DATA,
-            params=params,
-            timeout=timeout,
-            headers={
-                "User-Agent": (
-                    "Race-Intelligence-Streamlit/34 "
-                    "(TJK Gateway Client)"
-                ),
-                "Accept": "application/json,text/plain,*/*",
-                "Cache-Control": "no-cache",
-            },
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            f"Race Intelligence Worker bağlantısı başarısız: {exc}"
-        ) from exc
-
-    response_text = response.text or ""
-
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Worker HTTP {response.status_code}: "
-            f"{response_text[:500]}"
-        )
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            "Worker geçerli JSON döndürmedi. "
-            f"İlk cevap: {response_text[:500]}"
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            "Worker cevabı beklenen JSON nesnesi değil."
-        )
-
-    if not data.get("ok", False):
-        error = normalize_text(
-            data.get("error")
-            or data.get("message")
-            or "Worker veri alamadı."
-        )
-
-        raise RuntimeError(
-            f"TJK Worker hatası: {error}"
-        )
-
-    return data
-
-
-# =========================================================
-# ANA PROGRAM ÇEKME
-# =========================================================
-
-def get_program(
-    date_value: Any,
-    city: str,
-) -> Dict[str, Any]:
-
-    iso_date = normalize_date(date_value)
-    city = normalize_text(city)
-
-    data = fetch_worker(
-        date_value=iso_date,
-        city=city,
-    )
-
-    races = data.get("races", [])
-
-    if not isinstance(races, list):
-        races = []
-
-    # -----------------------------------------------------
-    # Worker'dan gelen gerçek değerleri koru
-    # -----------------------------------------------------
-
-    race_count = data.get(
-        "raceCount",
-        len(races),
-    )
-
-    horse_count = data.get(
-        "horseCount",
-        sum(
-            len(r.get("horses", []))
-            for r in races
-            if isinstance(r, dict)
-        ),
-    )
-
-    # -----------------------------------------------------
-    # Debug bilgisi
-    # -----------------------------------------------------
-
-    total_horses = 0
-    horses_per_race = {}
-
-    for race in races:
-
-        if not isinstance(race, dict):
+    groups = {}
+    for r in prior:
+        group = normalize_race_group(_class(r))
+        base = class_base_points(group)
+        pos = _place(r)
+        ff = finish_factor(pos)
+        if not group or base <= 0 or ff is None:
             continue
+        groups.setdefault(group, []).append(base * ff)
+    averages = {g: sum(v)/len(v) for g, v in groups.items() if v}
+    return averages
 
-        horses = race.get("horses", [])
 
-        if not isinstance(horses, list):
-            horses = []
+def calculate_condition_score(prior):
+    avgs = _condition_group_scores(prior)
+    return sum(avgs.values()), avgs
 
-        race_no = race.get(
-            "no",
-            len(horses_per_race) + 1,
-        )
 
-        horses_per_race[str(race_no)] = len(horses)
+def score_pist_mesafe(prior, target):
+    surf = _surface(target); td = _dist(target)
+    if not surf or td is None: return 0.0
+    vals=[]
+    for r in prior:
+        if _surface(r) != surf: continue
+        d=_dist(r); p=_place(r)
+        if d is None or p is None: continue
+        diff=abs(d-td)
+        coeff = {0:1.00,100:.85,200:.70,300:.55,400:.40}.get(diff)
+        if coeff is None: continue
+        ff=finish_factor(p)
+        if ff is not None: vals.append(coeff*ff)
+    if not vals: return 0.0
+    return max(0.0,min(100.0,100.0*sum(vals)/len(vals)))
 
-        total_horses += len(horses)
 
-    # -----------------------------------------------------
-    # Streamlit'in beklediği standart cevap
-    # -----------------------------------------------------
+def score_pist_performansi(prior, target):
+    surf=_surface(target); td=_dist(target)
+    if not surf: return 0.0
+    same=[r for r in prior if _surface(r)==surf and _place(r) is not None]
+    near=[r for r in same if td is not None and _dist(r) is not None and abs(_dist(r)-td)<=200]
+    rows=near if len(near)>=2 else same
+    if not rows: return 0.0
+    return max(0.0,min(100.0,100.0*(_rate_score(rows) or 0.0)))
 
-    result = {
-        "ok": True,
-        "source": data.get(
-            "source",
-            "TJK Günlük Yarış Programı",
-        ),
-        "date": iso_date,
-        "date_tr": format_date_tr(iso_date),
-        "city": city,
 
-        "races": races,
+def score_guncel_form(prior):
+    rows=sorted(prior,key=lambda r:(_dt(_first(r,["date","tarih"],None)) or date.min),reverse=True)
+    rows=rows[:6]
+    weights=[1.00,.90,.80,.70,.60,.50]
+    vals=[]; used_weights=[]
+    # Eksik dereceler sonraki yarışın ağırlığını kaydırmaz.
+    for w,r in zip(weights,rows):
+        ff=finish_factor(_place(r))
+        if ff is not None:
+            vals.append(w*ff); used_weights.append(w)
+    if not vals: return 0.0
+    denom=sum(used_weights)
+    return max(0.0,min(100.0,100.0*sum(vals)/denom))
 
-        "race_count": int(race_count or len(races)),
-        "raceCount": int(race_count or len(races)),
 
-        "total_horses": int(
-            total_horses
-            if total_horses
-            else horse_count or 0
-        ),
+def score_start_kulvar(prior,target):
+    post=_num(_first(target,["post","st","start","kulvar"],None))
+    if post is None: return 0.0
+    rows=[r for r in prior if _num(_first(r,["post","st","start","kulvar"],None))==post and _place(r) is not None]
+    if not rows: return 0.0
+    return max(0.0,min(50.0,50.0*(_rate_score(rows) or 0.0)))
 
-        "horse_count": int(
-            horse_count
-            if horse_count is not None
-            else total_horses
-        ),
 
-        "horseCount": int(
-            horse_count
-            if horse_count is not None
-            else total_horses
-        ),
-
-        "status": data.get("status"),
-
-        "source_url": data.get("sourceUrl", ""),
-
-        "debug": {
-            "transport": "Cloudflare Worker",
-            "worker_url": API_DATA,
-            "date": iso_date,
-            "date_tr": format_date_tr(iso_date),
-            "city": city,
-            "city_id": CITY_IDS.get(city),
-
-            "worker_status": data.get("status"),
-
-            "race_count": len(races),
-
-            "total_horse_count": total_horses,
-
-            "horses_per_race": horses_per_race,
-
-            "source": data.get(
-                "source",
-                "TJK Günlük Yarış Programı",
-            ),
-
-            "source_url": data.get(
-                "sourceUrl",
-                "",
-            ),
-        },
+def _current_values(horse,race):
+    target={
+        "surface":race.get("surface") or (race.get("meta") or {}).get("surface",""),
+        "distance":race.get("distance") or (race.get("meta") or {}).get("distance"),
+        "condition":race.get("condition") or race.get("raceName") or (race.get("meta") or {}).get("detail",""),
+        "date":race.get("date") or race.get("tarih"),
+    }
+    prior=_history(horse)
+    condition_total, groups=calculate_condition_score(prior)
+    return {
+        "kosu_sarti_uyumu": condition_total,
+        "kosu_sarti_gruplari": groups,
+        "pist_mesafe": score_pist_mesafe(prior,target),
+        "pist_performansi": score_pist_performansi(prior,target),
+        "guncel_form": score_guncel_form(prior),
+        "start_kulvar": score_start_kulvar(prior,target),
     }
 
-    return normalize_program(result)
 
+def calculate_bizim_ranking(horses,race):
+    """Her atı, geçmiş yarış sayısından bağımsız olarak puanlar.
 
-# =========================================================
-# TEK AT / YARDIMCI VERİ NORMALİZASYONU
-# =========================================================
-
-def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
+    1 geçmiş yarış bile yeterlidir. Bileşenlerden biri için veri yoksa o
+    bileşen 0 olur; atın tamamı analiz dışı bırakılmaz.
     """
-    Worker V1 -> Streamlit ortak at şeması.
-
-    Worker'ın döndürdüğü alanlar korunur; ayrıca app.py'nin
-    kullandığı V34 alan adları da oluşturulur.
-    """
-    if not isinstance(horse, dict):
-        return {}
-
-    result = dict(horse)
-
-    # Ortak / Worker alanları
-    result["name"] = (
-        result.get("name")
-        or result.get("horse")
-        or result.get("horseName")
-        or result.get("At İsmi")
-        or ""
-    )
-
-    result["no"] = (
-        result.get("no")
-        or result.get("number")
-        or result.get("numara")
-        or result.get("s")
-        or result.get("S")
-        or ""
-    )
-
-    result["age"] = (
-        result.get("age")
-        or result.get("yas")
-        or result.get("Yaş")
-        or ""
-    )
-
-    result["weight"] = (
-        result.get("weight")
-        or result.get("siklet")
-        or result.get("Sıklet")
-        or result.get("kilo")
-        or ""
-    )
-
-    result["jockey"] = (
-        result.get("jockey")
-        or result.get("jokey")
-        or result.get("Jokey")
-        or result.get("jockeyName")
-        or ""
-    )
-
-    result["hp"] = (
-        result.get("hp")
-        or result.get("HP")
-        or result.get("rating")
-        or result.get("RT")
-        or ""
-    )
-
-    result["last6"] = (
-        result.get("last6")
-        or result.get("son6")
-        or result.get("Son 6 Y.")
-        or result.get("lastSix")
-        or ""
-    )
-
-    result["agf"] = (
-        result.get("agf")
-        or result.get("AGF")
-        or ""
-    )
-
-    # AGF ile ganyan/odds birbirine karıştırılmaz.
-    result["odds"] = (
-        result.get("odds")
-        or result.get("Gny")
-        or ""
-    )
-
-    result["st"] = (
-        result.get("st")
-        or result.get("St")
-        or result.get("start")
-        or ""
-    )
-
-    result["kgs"] = (
-        result.get("kgs")
-        or result.get("KGS")
-        or ""
-    )
-
-    result["form"] = (
-        result.get("form")
-        or result.get("Forma")
-        or result.get("last6")
-        or ""
-    )
-
-    result["trainer"] = (
-        result.get("trainer")
-        or result.get("antrenor")
-        or result.get("Antrenörü")
-        or result.get("trainerName")
-        or ""
-    )
-
-    result["owner"] = (
-        result.get("owner")
-        or result.get("sahip")
-        or result.get("Sahip")
-        or result.get("ownerName")
-        or ""
-    )
-
-    # Gerçek TJK at kimliğini standartlaştır.
-    # ÖNEMLİ: program numarası (no) hiçbir zaman atId yerine kullanılmaz.
-    at_id = (
-        result.get("atId")
-        or result.get("at_id")
-        or result.get("horseId")
-        or result.get("horse_id")
-        or result.get("horseKey")
-        or result.get("horse_key")
-        or result.get("id")
-        or result.get("Id")
-        or ""
-    )
-    if at_id not in (None, ""):
-        result["atId"] = str(at_id)
-        result["at_id"] = str(at_id)
-
-    # app.py'nin kullandığı V34 alan adları
-    result["at_ismi"] = result["name"]
-    result["numara"] = result["no"]
-    result["yas"] = result["age"]
-    result["siklet"] = result["weight"]
-    result["jokey"] = result["jockey"]
-
-    return result
-
-
-def normalize_program(program: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Worker V1 yarış şemasını app.py'nin beklediği V34 şemasına çevirir.
-    Worker verisinin orijinal alanları korunur.
-    """
-    if not isinstance(program, dict):
-        return {
-            "ok": False,
-            "races": [],
-            "race_count": 0,
-            "total_horses": 0,
+    if not isinstance(horses,list) or not horses: return []
+    results=[]
+    for idx,h in enumerate(horses):
+        if not isinstance(h,dict): continue
+        vals=_current_values(h,race)
+        components={
+            "01_kosu_sarti_uyumu":round(vals["kosu_sarti_uyumu"],2),
+            "02_pist_mesafe":round(vals["pist_mesafe"],2),
+            "03_pist_performansi":round(vals["pist_performansi"],2),
+            "06_guncel_form":round(vals["guncel_form"],2),
+            "14_start_kulvar":round(vals["start_kulvar"],2),
         }
-
-    races = program.get("races", [])
-    if not isinstance(races, list):
-        races = []
-
-    normalized_races = []
-
-    for index, race in enumerate(races, start=1):
-        if not isinstance(race, dict):
-            continue
-
-        item = dict(race)
-
-        meta = item.get("meta")
-        if not isinstance(meta, dict):
-            meta = {}
-        item["meta"] = meta
-
-        race_no = (
-            item.get("race_number")
-            or item.get("no")
-            or item.get("number")
-            or index
-        )
-
-        race_time = (
-            item.get("race_time")
-            or item.get("time")
-            or meta.get("time")
-            or ""
-        )
-
-        distance = (
-            item.get("distance")
-            or meta.get("distance")
-            or ""
-        )
-
-        surface = (
-            item.get("surface")
-            or meta.get("surface")
-            or ""
-        )
-
-        condition = (
-            item.get("condition")
-            or meta.get("condition")
-            or meta.get("detail")
-            or meta.get("raceName")
-            or ""
-        )
-
-        horses = item.get("horses", [])
-        if not isinstance(horses, list):
-            horses = []
-
-        normalized_horses = [
-            normalize_horse(h)
-            for h in horses
-            if isinstance(h, dict)
-        ]
-
-        # Worker alanlarını koru + app.py uyumlu alanları ekle
-        item["race_number"] = race_no
-        item["race_time"] = race_time
-        item["distance"] = distance
-        item["surface"] = surface
-        item["condition"] = condition
-        item["no"] = race_no
-        item["time"] = race_time
-        item["horses"] = normalized_horses
-
-        normalized_races.append(item)
-
-    program["races"] = normalized_races
-
-    program["race_count"] = len(normalized_races)
-    program["raceCount"] = len(normalized_races)
-
-    total = sum(len(r["horses"]) for r in normalized_races)
-
-    program["total_horses"] = total
-    program["horse_count"] = total
-    program["horseCount"] = total
-
-    # Worker ve Streamlit bağlantısını debug ekranında açıkça göster
-    debug = program.get("debug")
-    if not isinstance(debug, dict):
-        debug = {}
-
-    debug.setdefault("transport", "Cloudflare Worker V1")
-    debug.setdefault("worker_url", API_DATA)
-    debug["city_id"] = CITY_IDS.get(program.get("city"))
-    debug["race_count"] = len(normalized_races)
-    debug["total_horse_count"] = total
-    debug["horses_per_race"] = {
-        str(r.get("race_number", i + 1)): len(r.get("horses", []))
-        for i, r in enumerate(normalized_races)
-    }
-
-    program["debug"] = debug
-
-    return program
-
-
-def get_supported_cities() -> List[str]:
-    return list(CITY_IDS.keys())
-
-
-def get_city_id(city: str) -> int:
-    city = normalize_text(city)
-
-    if city not in CITY_IDS:
-        raise ValueError(
-            f"Bilinmeyen hipodrom: {city}"
-        )
-
-    return CITY_IDS[city]
-
-
-def worker_health() -> Dict[str, Any]:
-
-    try:
-
-        response = requests.get(
-            API_HEALTH,
-            timeout=15,
-            headers={
-                "User-Agent":
-                    "Race-Intelligence-Streamlit/34",
-                "Accept":
-                    "application/json,text/plain,*/*",
-            },
-        )
-
-        if response.status_code != 200:
-            return {
-                "ok": False,
-                "status": response.status_code,
-                "error": response.text[:500],
+        score=round(sum(components.values()),2)
+        h["_bizim_skor"]=score
+        h["_bizim_family_values"]=components
+        h["_bizim_sart_gruplari"]={k:round(v,2) for k,v in vals["kosu_sarti_gruplari"].items()}
+        results.append({
+            "horse_index":idx,"score":score,"bizim_skor":score,
+            "label":"BİZİM SKOR","components":components,
+            "condition_groups":h["_bizim_sart_gruplari"],
+            "model":{
+                "method":"fixed_rule_no_learning",
+                "learning":False,
+                "condition_total_unbounded":True,
+                "fixed_components":{
+                    "kosu_sarti_uyumu":"unbounded",
+                    "pist_mesafe":100,"pist_performansi":100,
+                    "guncel_form":100,"start_kulvar":50,
+                },
+                "minimum_prior_races":0,
             }
-
-        data = response.json()
-
-        return data
-
-    except Exception as exc:
-
-        return {
-            "ok": False,
-            "status": 0,
-            "error": str(exc),
-        }
-
-
-
-# =========================================================
-# GERÇEK AT GEÇMİŞİ / GALOP VERİSİ
-# =========================================================
-
-def _worker_json(
-    url: str,
-    params: Dict[str, Any],
-    timeout: int = 45,
-) -> Dict[str, Any]:
-    response = requests.get(
-        url,
-        params=params,
-        timeout=timeout,
-        headers={
-            "User-Agent": "Race-Intelligence-Streamlit/34",
-            "Accept": "application/json",
-            "Cache-Control": "no-cache",
-        },
-    )
-    text = response.text or ""
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Worker HTTP {response.status_code}: {text[:400]}"
-        )
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Worker geçerli JSON döndürmedi: {text[:400]}"
-        ) from exc
-    if not isinstance(data, dict):
-        raise RuntimeError("Worker cevabı JSON nesnesi değil.")
-    if data.get("ok") is False:
-        raise RuntimeError(str(data.get("error") or "Worker isteği başarısız."))
-    return data
-
-
-def get_horse_history(
-    at_id: Any,
-    timeout: int = 45,
-) -> Dict[str, Any]:
-    if at_id in (None, ""):
-        return {"ok": False, "history": []}
-    return _worker_json(
-        API_HORSE,
-        {"atId": str(at_id)},
-        timeout=timeout,
-    )
-
-
-def get_horse_workouts(
-    horse: str,
-    timeout: int = 45,
-) -> Dict[str, Any]:
-    if not normalize_text(horse):
-        return {"ok": False, "workouts": []}
-    return _worker_json(
-        API_WORKOUTS,
-        {"horse": normalize_text(horse)},
-        timeout=timeout,
-    )
-
-
-def get_horse_enrichment(
-    at_id: Any,
-    horse: str,
-    timeout: int = 30,
-    target_date: Any = None,
-    target_city: str = "",
-    target_distance: Any = None,
-    target_surface: str = "",
-    target_class: str = "",
-) -> Dict[str, Any]:
-    """
-    Mevcut uygulama mimarisini bozmadan gerçek koşu geçmişi ve galop verisini
-    hafif Worker endpointlerinden alır.
-
-    ÖNEMLİ:
-    Eski sürüm önce /horsedata çağırıyordu. Bu endpoint tek at için birden
-    fazla TJK sayfası taradığı için Worker 503/resource-limit oluşturabiliyordu.
-    Burada doğrudan mevcut /horse ve /workouts endpointleri kullanılır.
-    target_* parametreleri uygulama ile geriye dönük uyumluluk için korunur.
-    """
-    horse_name = normalize_text(horse)
-    errors: List[str] = []
-
-    def fetch_history() -> Dict[str, Any]:
-        if at_id in (None, ""):
-            return {"ok": False, "history": [], "error": "atId yok"}
-        try:
-            return get_horse_history(at_id, timeout=timeout)
-        except Exception as exc:
-            return {"ok": False, "history": [], "error": str(exc)}
-
-    def fetch_workouts() -> Dict[str, Any]:
-        if not horse_name:
-            return {"ok": False, "workouts": [], "error": "At adı yok"}
-        try:
-            return get_horse_workouts(horse_name, timeout=timeout)
-        except Exception as exc:
-            return {"ok": False, "workouts": [], "error": str(exc)}
-
-    # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        history_future = executor.submit(fetch_history)
-        workout_future = executor.submit(fetch_workouts)
-        history_data = history_future.result()
-        workout_data = workout_future.result()
-
-    history = history_data.get("history", []) if isinstance(history_data, dict) else []
-    workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
-
-    if not isinstance(history, list):
-        history = []
-    if not isinstance(workouts, list):
-        workouts = []
-
-    # Önce hafif /horse endpointini kullan. Geçmiş boş gelirse yalnızca
-    # o at için /horsedata fallback'i çalıştır; böylece eksik at verisi
-    # sessizce 0 puana düşmez. Fallback yalnızca gerçekten gerektiğinde
-    # çağrıldığı için normal analiz hızını gereksiz yere düşürmez.
-    if not history and at_id not in (None, ""):
-        retry = fetch_history()
-        if isinstance(retry, dict) and isinstance(retry.get("history"), list):
-            history = retry.get("history") or []
-        if not history:
-            try:
-                fallback = _worker_json(
-                    API_HORSEDATA,
-                    {"atId": str(at_id), "horse": horse_name},
-                    timeout=min(timeout, 30),
-                )
-                if isinstance(fallback.get("history"), list):
-                    history = fallback.get("history") or []
-                if not workouts and isinstance(fallback.get("workouts"), list):
-                    workouts = fallback.get("workouts") or []
-            except Exception as exc:
-                errors.append(f"horsedata fallback: {exc}")
-        if not history and isinstance(retry, dict) and retry.get("error"):
-            errors.append(f"horse: {retry.get('error')}")
-
-    if not workouts and horse_name:
-        retry = fetch_workouts()
-        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
-            workouts = retry.get("workouts") or []
-        if not workouts and isinstance(retry, dict) and retry.get("error"):
-            errors.append(f"workouts: {retry.get('error')}")
-
-    if not history and isinstance(history_data, dict) and history_data.get("error"):
-        errors.append(f"horse: {history_data.get('error')}")
-    if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
-        errors.append(f"workouts: {workout_data.get('error')}")
-
-    errors = list(dict.fromkeys(errors))
-
-    # Worker /api/tjk/horse artık resmi kazanç ve hangi TJK kaynağının
-    # kullanıldığını da döndürüyor. Bunları Streamlit'e aynen taşı.
-    result: Dict[str, Any] = {
-        "ok": bool(history or workouts),
-        "history": history,
-        "workouts": workouts,
-        "historyCount": len(history),
-        "workoutCount": len(workouts),
-    }
-    if isinstance(history_data, dict):
-        if isinstance(history_data.get("earnings"), dict):
-            result["earnings"] = history_data.get("earnings")
-        if history_data.get("historySource"):
-            result["historySource"] = history_data.get("historySource")
-        if history_data.get("atId"):
-            result["atId"] = history_data.get("atId")
-    if "earnings" not in result:
-        result["earnings"] = {"total": None, "year": None}
-
-    if errors:
-        result["error"] = " | ".join(errors)
-    return result
-
-# =========================================================
-# GERİYE DÖNÜK UYUMLULUK
-# =========================================================
-
-def fetch_program(
-    date_value: Any,
-    city: str,
-) -> Dict[str, Any]:
-
-    return normalize_program(
-        get_program(
-            date_value,
-            city,
-        )
-    )
-
-
-def load_program(
-    date_value: Any,
-    city: str,
-) -> Dict[str, Any]:
-
-    return normalize_program(
-        get_program(
-            date_value,
-            city,
-        )
-    )
+        })
+    results.sort(key=lambda x:x["score"],reverse=True)
+    for rank,item in enumerate(results,1): item["rank"]=rank
+    return results
