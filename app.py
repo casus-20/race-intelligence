@@ -14,6 +14,9 @@ from bizim_skor_model import calculate_bizim_ranking
 # ============================================================
 # SAYFA AYARLARI
 # ============================================================
+# BU UYGULAMADA GÖRÜNTÜ / KAYIT / ARŞİV ALMA MEKANİZMASI YOKTUR.
+# Analiz yalnızca canlı TJK verisi ve sabit BİZİM SKOR motoru ile yapılır.
+
 
 # UI_V4_REAL_DATA_STATUS_AND_REFRESH — eski yeşil/mavi tablo stili kaldırıldı
 st.set_page_config(
@@ -2872,10 +2875,12 @@ _race_css = ["<style>"]
 for _idx, _race in enumerate(races):
     _surface = str(_race.get("surface") or (_race.get("meta") or {}).get("surface") or "").lower()
     _is_dirt = "kum" in _surface
-    _bg = "#b77a2b" if _is_dirt else "#239447"
+    _race_no_for_css = get_race_number(_race, _idx + 1)
+    _is_selected_for_css = st.session_state.selected_race == _race_no_for_css
+    _bg = "#ff4b4b" if _is_selected_for_css else ("#b77a2b" if _is_dirt else "#239447")
     _race_css.append(
-        f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button'
-        f'{{background:{_bg};border-color:{_bg};color:#fff;font-weight:800;}}'
+        f'.st-key-race_button_{_race_no_for_css} button'
+        f'{{background:{_bg} !important;border-color:{_bg} !important;color:#fff !important;font-weight:800;}}'
     )
     _race_css.append(
         f'.st-key-race_button_{get_race_number(_race, _idx + 1)} button:hover'
@@ -3066,11 +3071,16 @@ def _race_prize_text(race: Dict[str, Any]) -> str:
 
 
 def _race_prize_lines(race: Dict[str, Any]) -> tuple[str, str, str]:
-    """Koşu başlığında 3 ayrı satır için gerçek/uygulanabilir ikramiye metni üretir.
+    """TJK resmi koşu başlığındaki üç ikramiye satırını gerçek veriden çıkarır.
 
-    Öncelik TJK/Worker'dan gelen ayrı prim alanlarındadır. Tek bir 1-5 ikramiye
-    listesi geldiyse Yetiştirici Primi %30 ve At Sahibi Primi %20 olarak aynı
-    resmi program formatına dönüştürülür. Hiç veri yoksa değer uydurulmaz.
+    Kaynak önceliği:
+    1) Worker'ın ayrı prize/breeder/owner alanları
+    2) Worker'ın meta alanları
+    3) Worker'ın meta.raw alanı. Günlük TJK program parser'ı koşu tablosundan
+       hemen önceki ham başlığı burada korur; İkramiye / Yetiştirici Primi /
+       At Sahibi Primi bölümleri bu metinden doğrudan okunur.
+
+    Veri yoksa "-" gösterilir; tutar uydurulmaz.
     """
     def pick(keys):
         value = _race_value(race, keys)
@@ -3102,33 +3112,59 @@ def _race_prize_lines(race: Dict[str, Any]) -> tuple[str, str, str]:
     breeder_text = _format_prize_text(breeder_value)
     owner_text = _format_prize_text(owner_value)
 
-    # Bazı Worker sürümlerinde tüm kategoriler koşu şartı/meta.detail
-    # içinde tek metin halinde gelir.
-    raw_detail = display_value(race.get("condition"), "") if isinstance(race, dict) and race.get("condition") else ""
-    if not raw_detail:
-        meta = race.get("meta") if isinstance(race, dict) else None
-        if isinstance(meta, dict):
-            raw_detail = display_value(meta.get("detail") or meta.get("raceName") or "", "")
-    combined = " ".join(x for x in (base_text, breeder_text, owner_text, raw_detail) if x)
-    if combined:
-        def section_text(pattern):
-            m = re.search(pattern + r"\s*[:\-]?\s*(.*?)(?=\s+(?:Yetiştirici(?:lik)?\s+Primi|Yetiştiricilik\s+Primi|At\s+Sahibi\s+Primi)\s*[:\-]?|$)", combined, re.I)
-            return m.group(1).strip() if m else ""
-        if not breeder_text:
-            breeder_text = section_text(r"Yetiştirici(?:lik)?\s+Primi")
-        if not owner_text:
-            owner_text = section_text(r"At\s+Sahibi\s+Primi")
-        if not base_text:
-            m_base = re.search(
-                r"İkramiye\s*[:\-]?\s*(.*?)(?=\s+(?:Yetiştirici(?:lik)?\s+Primi|At\s+Sahibi\s+Primi)\s*[:\-]?|$)",
-                combined, re.I
-            )
-            base_text = m_base.group(1).strip() if m_base else ""
+    meta = race.get("meta") if isinstance(race, dict) else None
+    raw_sources = []
+    if isinstance(meta, dict):
+        raw_sources.extend([
+            display_value(meta.get("raw"), ""),
+            display_value(meta.get("detail"), ""),
+            display_value(meta.get("raceName"), ""),
+        ])
+    raw_sources.extend([
+        display_value(race.get("raw"), "") if isinstance(race, dict) else "",
+        display_value(race.get("condition"), "") if isinstance(race, dict) else "",
+    ])
+    raw_detail = re.sub(r"\s+", " ", " ".join(x for x in raw_sources if x)).strip()
+    # meta.raw önceki koşunun son kısmını da içerebilir. Son "N. Koşu"
+    # başlığından itibaren alarak yalnızca seçili koşunun ikramiye bloğunu kullan.
+    _race_marks = list(re.finditer(r"\b\d{1,2}\.\s*Koşu\b", raw_detail, flags=re.I))
+    if _race_marks:
+        raw_detail = raw_detail[_race_marks[-1].start():]
 
-    # 1-5 ana ikramiye tutarlarını bul.
+    # TJK ham başlıkta etiketler bazen "Ikramiye", "Yetistirici Primi"
+    # şeklinde noktasız gelebilir. Türkçe karakterli/karaktersiz iki biçimi kabul et.
+    combined = " ".join(x for x in (base_text, breeder_text, owner_text, raw_detail) if x)
+
+    if combined:
+        # Önce açık etiketli bölümleri ayır.
+        label = r"(?:Yetiştirici|Yetistirici|Yetiştiricilik|Yetistiricilik)\s+Primi"
+        owner_label = r"At\s*Sahibi\s*Primi"
+        base_label = r"(?:İkramiye|Ikramiye)"
+
+        def section_text(pattern, stop_patterns):
+            if stop_patterns:
+                stop = "|".join(stop_patterns)
+                expr = pattern + r"\s*[:\-]?\s*(.*?)(?=\s+(?:" + stop + r")\s*[:\-]?\s*|$)"
+            else:
+                expr = pattern + r"\s*[:\-]?\s*(.*)$"
+            m = re.search(expr, combined, re.I)
+            return m.group(1).strip(" ;,-:") if m else ""
+
+        if not breeder_text:
+            breeder_text = section_text(label, [owner_label])
+        if not owner_text:
+            owner_text = section_text(owner_label, [])
+        if not base_text:
+            base_text = section_text(base_label, [label, owner_label])
+
+    # TJK programında 1-5 tutarları "1.) 545.000 t" biçiminde gelir.
     def amounts(text):
         vals = []
-        for m in re.finditer(r"(?:\b[1-5]\s*\.?\s*\)?\s*)?(\d{1,3}(?:[\.,]\d{3})+(?:[\.,]\d+)?)\s*(?:TL|t)?", text or "", re.I):
+        for m in re.finditer(
+            r"(?:\b[1-5]\s*\.?\s*\)?\s*)?(\d{1,3}(?:[\.,]\d{3})+(?:[\.,]\d+)?)\s*(?:TL|t)\b",
+            text or "",
+            re.I,
+        ):
             raw = m.group(1).replace(".", "").replace(",", ".")
             try:
                 vals.append(float(raw))
@@ -3149,9 +3185,11 @@ def _race_prize_lines(race: Dict[str, Any]) -> tuple[str, str, str]:
             return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " t"
         return "  ".join(f"{i+1}.) {f(v)}" for i, v in enumerate(vals))
 
-    if base_amounts and len(breeder_amounts) < 5:
+    # TJK programında ayrı prim alanları gelmezse, resmi programdaki oranları
+    # kullanarak yalnızca ana ikramiye listesinden türet. Ana veri yoksa türetme yok.
+    if base_amounts and not breeder_amounts:
         breeder_amounts = [round(v * 0.30) for v in base_amounts]
-    if base_amounts and len(owner_amounts) < 5:
+    if base_amounts and not owner_amounts:
         owner_amounts = [round(v * 0.20) for v in base_amounts]
 
     return (
@@ -3188,7 +3226,7 @@ distance = display_value(selected_race.get("distance"))
 surface = display_value(selected_race.get("surface"))
 condition = get_race_condition(selected_race)
 
-_race_bg, _race_fg = _race_surface_color(surface)
+_race_bg, _race_fg = "#ff4b4b", "#ffffff"
 _race_id = _race_id_for_link(selected_race)
 _date_q = selected_date.strftime("%d/%m/%Y")
 _daily_url = (
