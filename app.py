@@ -3314,13 +3314,6 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
-        # Önceki başarısız/boş TJK cevabının 15 dakikalık Streamlit cache'inde
-        # kalmasını engelle. Gerçek veri analizi her tıklamada yeniden sorgulanır.
-        try:
-            load_horse_enrichment.clear()
-        except Exception:
-            pass
-
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
