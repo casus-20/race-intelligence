@@ -700,7 +700,7 @@ def get_horse_workouts(
 def get_horse_enrichment(
     at_id: Any,
     horse: str,
-    timeout: int = 20,
+    timeout: int = 30,
     target_date: Any = None,
     target_city: str = "",
     target_distance: Any = None,
@@ -764,7 +764,7 @@ def get_horse_enrichment(
                 fallback = _worker_json(
                     API_HORSEDATA,
                     {"atId": str(at_id), "horse": horse_name},
-                    timeout=min(timeout, 20),
+                    timeout=min(timeout, 30),
                 )
                 if isinstance(fallback.get("history"), list):
                     history = fallback.get("history") or []
@@ -789,6 +789,8 @@ def get_horse_enrichment(
 
     errors = list(dict.fromkeys(errors))
 
+    # Worker /api/tjk/horse artık resmi kazanç ve hangi TJK kaynağının
+    # kullanıldığını da döndürüyor. Bunları Streamlit'e aynen taşı.
     result: Dict[str, Any] = {
         "ok": bool(history or workouts),
         "history": history,
@@ -796,6 +798,16 @@ def get_horse_enrichment(
         "historyCount": len(history),
         "workoutCount": len(workouts),
     }
+    if isinstance(history_data, dict):
+        if isinstance(history_data.get("earnings"), dict):
+            result["earnings"] = history_data.get("earnings")
+        if history_data.get("historySource"):
+            result["historySource"] = history_data.get("historySource")
+        if history_data.get("atId"):
+            result["atId"] = history_data.get("atId")
+    if "earnings" not in result:
+        result["earnings"] = {"total": None, "year": None}
+
     if errors:
         result["error"] = " | ".join(errors)
     return result
