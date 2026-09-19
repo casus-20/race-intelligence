@@ -3,3 +3,4 @@ pandas>=2.0
 requests>=2.31
 streamlit-aggrid-v2==0.3.4
 streamlit-aggrid>=0.3.4
+BeautifulSoup
