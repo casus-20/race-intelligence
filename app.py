@@ -626,25 +626,10 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # Uygulamadaki iki Doğu/Güneydoğu hipodromunun Worker tarafındaki
-    # şehir eşlemesi ters olduğu için yalnızca istek yönünü düzelt.
-    # Dönen programın at/koşu verilerine hiçbir müdahale yapılmaz.
-    worker_city = {
-        "Elazığ": "Şanlıurfa",
-        "Şanlıurfa": "Elazığ",
-    }.get(city, city)
-
-    data = get_program(
-        selected_date,
-        worker_city,
-    )
-
-    if isinstance(data, dict):
-        data = dict(data)
-        # Ekranda her zaman kullanıcının seçtiği hipodrom adı gösterilir.
-        data["city"] = city
-
-    return data
+    # TJK'ya seçilen hipodromu doğrudan gönder.
+    # Elazığ / Diyarbakır / Şanlıurfa eşlemesi burada değiştirilmez.
+    # TJK'dan dönen gerçek hipodrom adı veri katmanında korunur.
+    return get_program(selected_date, city)
 
 
 # ============================================================
@@ -678,6 +663,13 @@ def load_active_cities(selected_date: date) -> List[str]:
                     continue
                 races = data.get("races", [])
                 if isinstance(races, list) and len(races) > 0:
+                    # Aktif listeye istek yapılan adı değil, TJK'nın
+                    # döndürdüğü gerçek hipodrom adını koy.
+                    actual = str(data.get("hippodrome") or data.get("city") or city).strip()
+                    actual = re.sub(r"\s+Hipodromu\s*$", "", actual, flags=re.I).strip()
+                    for known in ALL_CITIES:
+                        if actual.casefold() == known.casefold():
+                            return known
                     return city
             except Exception:
                 # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
