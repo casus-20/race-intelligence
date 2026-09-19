@@ -30,8 +30,8 @@ CITY_IDS = {
     "Bursa": 4,
     "İzmir": 2,
     "Adana": 1,
-    "Elazığ": 6,
-    "Diyarbakır": 8,
+    "Elazığ": 8,
+    "Diyarbakır": 6,
     "Şanlıurfa": 7,
     "Antalya": 10,
 }
