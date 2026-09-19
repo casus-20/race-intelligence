@@ -600,6 +600,79 @@ def get_city_id(city: str) -> int:
     return CITY_IDS[city]
 
 
+
+def _canonical_city_name(value: Any) -> str:
+    """Worker cevabındaki hipodrom adını resmi şehir adına çevirir."""
+    s = normalize_text(value)
+    s = re.sub(r"\s+Hipodromu\s*$", "", s, flags=re.I)
+    key = (s.lower().replace("ı", "i").replace("ş", "s")
+           .replace("ğ", "g").replace("ü", "u").replace("ö", "o")
+           .replace("ç", "c"))
+    aliases = {
+        "ankara": "Ankara", "kocaeli": "Kocaeli", "istanbul": "İstanbul",
+        "bursa": "Bursa", "izmir": "İzmir", "adana": "Adana",
+        "elazig": "Elazığ", "diyarbakir": "Diyarbakır",
+        "sanliurfa": "Şanlıurfa", "antalya": "Antalya",
+    }
+    return aliases.get(key, s)
+
+
+def _worker_result_matches_target(data: Dict[str, Any], target_date: str, requested_city: str) -> bool:
+    """Bir Worker cevabının gerçekten istenen tarih ve hipodroma ait olduğunu doğrular."""
+    if not isinstance(data, dict) or not data.get("ok", False):
+        return False
+
+    races = data.get("races")
+    if not isinstance(races, list) or not races:
+        return False
+
+    returned_date = data.get("date") or data.get("targetDate") or data.get("programDate")
+    if returned_date:
+        try:
+            if normalize_date(returned_date) != target_date:
+                return False
+        except Exception:
+            return False
+    else:
+        # Tarih bilgisi yoksa, yanlış tarih programını doğru kabul etme.
+        return False
+
+    returned_city = data.get("city") or data.get("hippodrome") or data.get("hipodrom")
+    if not returned_city:
+        return False
+
+    return _canonical_city_name(returned_city) == _canonical_city_name(requested_city)
+
+
+def get_active_cities(date_value: Any) -> List[str]:
+    """Yalnızca seçilen TARİH ve aynı HİPODROM doğrulaması geçen şehirleri döndürür.
+
+    Burada tahmin, sabit liste veya sayfa başlığı kullanılmaz. Her şehir için
+    mevcut Worker'ın kendi program cevabı alınır; cevaptaki tarih + şehir +
+    yarış listesi birlikte doğrulanır. Böylece örneğin Diyarbakır programı
+    Elazığ olarak kabul edilemez ve başka tarihin programı aktif sayılamaz.
+    """
+    target = normalize_date(date_value)
+    results: Dict[str, bool] = {}
+
+    def check(item):
+        city, _city_id = item
+        try:
+            data = fetch_worker(target, city, timeout=45)
+            return city, _worker_result_matches_target(data, target, city)
+        except Exception:
+            return city, False
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(check, item) for item in CITY_IDS.items()]
+        for future in futures:
+            city, ok = future.result()
+            results[city] = ok
+
+    # CITY_IDS sırası sabit kalsın; app.py'nin mevcut davranışı değişmesin.
+    return [city for city in CITY_IDS if results.get(city, False)]
+
+
 def worker_health() -> Dict[str, Any]:
 
     try:
