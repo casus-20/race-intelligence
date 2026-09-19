@@ -23,16 +23,19 @@ API_HORSEDATA = f"{WORKER_URL}/api/tjk/horsedata"
 # ŞEHİR LİSTESİ
 # =========================================================
 
+# Worker/TJK günlük program URL'lerinde kullanılan şehir kimlikleri.
+# Özellikle Doğu/Güneydoğu şehirlerinde eski uygulamadaki 7/8 tersliği
+# programın yanlış hipodrom adıyla gelmesine yol açabiliyordu.
 CITY_IDS = {
     "Ankara": 5,
     "Kocaeli": 9,
     "İstanbul": 3,
     "Bursa": 4,
-    "İzmir": 2,
-    "Adana": 1,
+    "İzmir": 1,
+    "Adana": 2,
     "Elazığ": 6,
-    "Diyarbakır": 8,
-    "Şanlıurfa": 7,
+    "Diyarbakır": 7,
+    "Şanlıurfa": 8,
     "Antalya": 10,
 }
 
