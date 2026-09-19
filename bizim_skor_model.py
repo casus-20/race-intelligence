@@ -109,27 +109,6 @@ def _class(r):return _norm(_first(r,["className","class","sinif","Sınıf","race
 def _city(r):return _norm(_first(r,["city","şehir","sehir","hipodrom"],""))
 def _name(r,keys):return _norm(_first(r,keys,""))
 def _history(h):return [r for r in h.get("_history",[]) if isinstance(r,dict)] if isinstance(h.get("_history",[]),list) else []
-
-def _prior_history(horse, target_date):
-    """BİZİM SKOR için yalnızca koşu tarihinden önceki yarışları kullanır.
-
-    Hedef koşunun yapıldığı günün yarışları kesinlikle hesaba katılmaz.
-    Hedef tarihten bir gün önceki ve daha eski tüm yarışlar kullanılabilir.
-    Tarih bilgisi çözülemeyen kayıtlar, hedef tarih biliniyorsa güvenli tarafta
-    kalmak için puanlamaya alınmaz.
-    """
-    rows = _history(horse)
-    td = _dt(target_date)
-    if td is None:
-        # Hedef tarih yoksa mevcut veriyle yanlışlıkla bugünkü koşuyu
-        # geçmiş kabul etmemek için hiçbir geçmiş kaydı kullanma.
-        return []
-    prior = []
-    for row in rows:
-        rd = _dt(_first(row, ["date", "tarih", "Tarih"], None))
-        if rd is not None and rd < td:
-            prior.append(row)
-    return prior
 def _workouts(h):return [r for r in h.get("_workouts",[]) if isinstance(r,dict)] if isinstance(h.get("_workouts",[]),list) else []
 
 
@@ -313,7 +292,7 @@ def _current_values(horse,race):
         "condition":race.get("condition") or race.get("raceName") or (race.get("meta") or {}).get("detail",""),
         "date":race.get("date") or race.get("tarih"),
     }
-    prior=_prior_history(horse, target.get("date"))
+    prior=_history(horse)
     condition_total, groups=calculate_condition_score(prior)
     return {
         "kosu_sarti_uyumu": condition_total,
