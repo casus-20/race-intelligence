@@ -626,18 +626,21 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # Hipodrom adı seçilen tarihle birlikte doğrudan TJK/Worker'a gönderilir.
-    # Eski sürümde Elazığ <-> Şanlıurfa zorlaması vardı; bu yanlış eşleşme
-    # nedeniyle bazı tarihlerde Elazığ seçiliyken başka hipodrom programı
-    # gösterilebiliyordu. Artık şehir adı değiştirilmez.
+    # Uygulamadaki iki Doğu/Güneydoğu hipodromunun Worker tarafındaki
+    # şehir eşlemesi ters olduğu için yalnızca istek yönünü düzelt.
+    # Dönen programın at/koşu verilerine hiçbir müdahale yapılmaz.
+    worker_city = {
+        "Elazığ": "Şanlıurfa",
+        "Şanlıurfa": "Elazığ",
+    }.get(city, city)
+
     data = get_program(
         selected_date,
-        city,
+        worker_city,
     )
 
     if isinstance(data, dict):
         data = dict(data)
-        data["requested_city"] = city
         # Ekranda her zaman kullanıcının seçtiği hipodrom adı gösterilir.
         data["city"] = city
 
@@ -682,8 +685,7 @@ def load_active_cities(selected_date: date) -> List[str]:
         return None
 
     active = []
-    # Aktif hipodrom keşfi de yaklaşık %50 daha paralel çalışır.
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
             try:
@@ -1209,10 +1211,8 @@ def enrich_race_horses(
 
     ordered = [None] * total
     done = 0
-    # 6 at aynı anda işlenir; her atın history + workout çağrıları içeride
-    # paraleldir. Böylece ilk gerçek veri analizinde yaklaşık %50 daha yüksek
-    # eşzamanlılık sağlanır. Veri şeması ve sırası değişmez.
-    with ThreadPoolExecutor(max_workers=min(6, total)) as executor:
+    # 4 worker x (history + workouts) = at most ~8 upstream requests.
+    with ThreadPoolExecutor(max_workers=min(4, total)) as executor:
         futures = [executor.submit(one, pair) for pair in enumerate(enriched)]
         for future in as_completed(futures):
             idx, item, name = future.result()
@@ -3013,12 +3013,6 @@ if selected_race is None:
             1,
         )
     )
-
-# BİZİM SKOR'un hedef tarihi kesin olsun. Böylece hedef günün yarışları
-# geçmiş veri olarak puanlamaya hiçbir şekilde giremez.
-if isinstance(selected_race, dict):
-    selected_race["date"] = selected_date.isoformat()
-    selected_race["tarih"] = selected_date.isoformat()
 
 
 # Koşu değiştiğinde eski at seçimini ve eski analiz durumunu temizle.
