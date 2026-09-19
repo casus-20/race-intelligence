@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from tjk_fetch import get_program, get_horse_enrichment
+from tjk_fetch import get_program, get_horse_enrichment, get_active_cities
 from bizim_skor_model import calculate_bizim_ranking
 
 
@@ -626,17 +626,11 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # Uygulamadaki iki Doğu/Güneydoğu hipodromunun Worker tarafındaki
-    # şehir eşlemesi ters olduğu için yalnızca istek yönünü düzelt.
-    # Dönen programın at/koşu verilerine hiçbir müdahale yapılmaz.
-    worker_city = {
-        "Elazığ": "Şanlıurfa",
-        "Şanlıurfa": "Elazığ",
-    }.get(city, city)
-
+    # Program doğrudan TJK'dan alınır.
+    # Şehir isimleri kesinlikle başka bir hipodrom adına çevrilmez.
     data = get_program(
         selected_date,
-        worker_city,
+        city,
     )
 
     if isinstance(data, dict):
@@ -652,17 +646,7 @@ def load_program(
 # ============================================================
 
 def load_active_cities(selected_date: date) -> List[str]:
-    """
-    Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
-
-    ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
-    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
-    "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
-
-    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
-    gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
-    Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
-    """
+    """Seçilen tarihte aktif hipodromları doğrudan TJK'dan alır."""
     cache_key = selected_date.isoformat()
     cached = st.session_state.get("_active_cities_cache", {})
     if isinstance(cached, dict):
@@ -670,42 +654,17 @@ def load_active_cities(selected_date: date) -> List[str]:
         if isinstance(saved, list) and saved:
             return [c for c in ALL_CITIES if c in saved]
 
-    def check_city(city: str):
-        for attempt in range(3):
-            try:
-                data = load_program(selected_date, city)
-                if not isinstance(data, dict):
-                    continue
-                races = data.get("races", [])
-                if isinstance(races, list) and len(races) > 0:
-                    return city
-            except Exception:
-                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
-                pass
-        return None
+    try:
+        active = get_active_cities(selected_date)
+    except Exception:
+        active = []
 
-    active = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
-        for future in as_completed(futures):
-            try:
-                city = future.result()
-                if city:
-                    active.append(city)
-            except Exception:
-                pass
-
-    # Worker şehir sırasını koru; tamamlanma sırasını kullanma.
     active = [city for city in ALL_CITIES if city in active]
-
-    # SADECE dolu sonuç cache'e alınır. Boş sonuç asla cache'lenmez.
     if active:
-        cached = st.session_state.get("_active_cities_cache", {})
         if not isinstance(cached, dict):
             cached = {}
         cached[cache_key] = active
         st.session_state["_active_cities_cache"] = cached
-
     return active
 
 
@@ -2680,7 +2639,7 @@ if not active_cities:
         f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
     )
     st.info(
-        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
+        "Bu tarih için TJK günlük yarış programında aktif hipodrom bulunamadı."
     )
     st.stop()
 
@@ -3432,7 +3391,7 @@ else:
         if not ranking:
             st.error("Gerçek veri geldi ancak BİZİM SKOR motoru sonuç üretmedi. Bu durum veri çekiminden değil, skor motoru girişinden kaynaklanıyor.")
         elif _hist_total == 0:
-            st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
+            st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. TJK at geçmişi bağlantısı ve AtId kontrol edilmeli.")
 
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
