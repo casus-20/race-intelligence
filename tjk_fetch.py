@@ -1,830 +1,496 @@
+from __future__ import annotations
+
 import re
-import html as _html
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlencode, urljoin, parse_qs, urlparse
-from html.parser import HTMLParser
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
 import requests
-
+from bs4 import BeautifulSoup
 
 TJK_BASE = "https://www.tjk.org"
 PROGRAM_URL = f"{TJK_BASE}/TR/YarisSever/Info/Page/GunlukYarisProgrami"
-HISTORY_URL = f"{TJK_BASE}/TR/YarisSever/Query/ConnectedPage/AtKosuBilgileri"
+HISTORY_URL = f"{TJK_BASE}/TR/kurumsal/Query/ConnectedPage/AtKosuBilgileri"
 WORKOUT_URL = f"{TJK_BASE}/TR/YarisSever/Query/Page/IdmanIstatistikleri"
 
+# TJK şehir ID'leri sabittir; aktiflik bu listedeki URL'lerin gerçekten yarış
+# içerip içermediğine bakılarak belirlenir. Şehir adı program sayfasından okunur.
 CITY_IDS = {
-    "Ankara": 5, "Kocaeli": 9, "İstanbul": 3, "Bursa": 4, "İzmir": 2,
-    "Adana": 1, "Elazığ": 6, "Diyarbakır": 8, "Şanlıurfa": 7, "Antalya": 10,
+    "Ankara": 5, "Kocaeli": 9, "İstanbul": 3, "Bursa": 4,
+    "İzmir": 2, "Adana": 1, "Elazığ": 6, "Diyarbakır": 8,
+    "Şanlıurfa": 7, "Antalya": 10,
+}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Cache-Control": "no-cache",
+    "Referer": TJK_BASE + "/",
 }
 
 
-
-class _MiniTag:
-    def __init__(self, name="", attrs=None, parent=None):
-        self.name = name
-        self.attrs = dict(attrs or [])
-        self.parent = parent
-        self.children = []
-        self._text = []
-
-    def get(self, key, default=None):
-        return self.attrs.get(key, default)
-
-    def get_text(self, sep="", strip=False):
-        parts = []
-        def walk(node):
-            if node._text:
-                parts.extend(node._text)
-            for child in node.children:
-                walk(child)
-        walk(self)
-        text = sep.join(x for x in parts if x) if sep else "".join(parts)
-        return text.strip() if strip else text
-
-    def find_all(self, names=None, href=False, limit=None):
-        wanted = None
-        if names is not None:
-            wanted = {str(x).lower() for x in names} if isinstance(names, (list, tuple, set)) else {str(names).lower()}
-        out = []
-        def walk(node):
-            for child in node.children:
-                if wanted is None or child.name.lower() in wanted:
-                    if not href or child.get("href") is not None:
-                        out.append(child)
-                        if limit and len(out) >= limit:
-                            return True
-                if walk(child) and limit and len(out) >= limit:
-                    return True
-            return False
-        walk(self)
-        return out
-
-    def find_parent(self, name):
-        wanted = str(name).lower()
-        node = self.parent
-        while node is not None:
-            if node.name.lower() == wanted:
-                return node
-            node = node.parent
-        return None
-
-
-class _MiniSoup(_MiniTag):
-    def __init__(self):
-        super().__init__("document")
-        self._title = None
-
-    @property
-    def title(self):
-        if self._title is None:
-            titles = self.find_all("title", limit=1)
-            self._title = titles[0] if titles else None
-        return self._title
-
-
-class _TJKHTMLParser(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.root = _MiniSoup()
-        self.stack = [self.root]
-
-    def handle_starttag(self, tag, attrs):
-        node = _MiniTag(tag, attrs, self.stack[-1])
-        self.stack[-1].children.append(node)
-        if tag.lower() not in {"meta", "link", "img", "br", "hr", "input", "source", "area", "base", "col", "embed", "param", "track", "wbr"}:
-            self.stack.append(node)
-
-    def handle_startendtag(self, tag, attrs):
-        node = _MiniTag(tag, attrs, self.stack[-1])
-        self.stack[-1].children.append(node)
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        for i in range(len(self.stack) - 1, 0, -1):
-            if self.stack[i].name.lower() == tag:
-                del self.stack[i:]
-                break
-
-    def handle_data(self, data):
-        if data:
-            self.stack[-1]._text.append(data)
-
-
-def BeautifulSoup(text, parser="html.parser"):
-    p = _TJKHTMLParser()
-    p.feed(text or "")
-    p.close()
-    return p.root
-
-
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.7",
-    "Referer": TJK_BASE + "/",
-})
-
-
 def normalize_text(value: Any) -> str:
-    if value is None:
-        return ""
+    return " ".join(str(value or "").replace("\xa0", " ").split()).strip()
 
-    return " ".join(str(value).replace("\xa0", " ").split()).strip()
 
 def normalize_date(value: Any) -> str:
-    """
-    Streamlit date_input:
-        datetime.date
-        veya YYYY-MM-DD
-
-    Worker API:
-        YYYY-MM-DD
-    """
-
     if isinstance(value, datetime):
         return value.date().isoformat()
-
     if isinstance(value, date):
         return value.isoformat()
-
-    text = normalize_text(value)
-
-    if not text:
-        return date.today().isoformat()
-
-    # YYYY-MM-DD
-    if len(text) == 10 and text[4] == "-" and text[7] == "-":
-        return text
-
-    # DD/MM/YYYY
-    if len(text) == 10 and text[2] == "/" and text[5] == "/":
-        dd = text[0:2]
-        mm = text[3:5]
-        yyyy = text[6:10]
-        return f"{yyyy}-{mm}-{dd}"
-
-    # DD.MM.YYYY
-    if len(text) == 10 and text[2] == "." and text[5] == ".":
-        dd = text[0:2]
-        mm = text[3:5]
-        yyyy = text[6:10]
-        return f"{yyyy}-{mm}-{dd}"
-
-    return text
+    s = normalize_text(value)
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(s[:10], fmt).date().isoformat()
+        except Exception:
+            pass
+    raise ValueError(f"Geçersiz tarih: {value}")
 
 
 def format_date_tr(value: Any) -> str:
-    iso = normalize_date(value)
-
-    try:
-        y, m, d = iso.split("-")
-        return f"{d}/{m}/{y}"
-    except Exception:
-        return iso
-
-
-# =========================================================
-# WORKER BAĞLANTISI
-# =========================================================
-
-
-def _request_html(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 35) -> str:
-    try:
-        r = SESSION.get(url, params=params, timeout=timeout)
-        r.raise_for_status()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"TJK bağlantısı başarısız: {exc}") from exc
-    text = r.text or ""
-    if len(text) < 200:
-        raise RuntimeError("TJK boş/geçersiz HTML döndürdü.")
-    return text
-
-
-def _date_tr(value: Any) -> str:
-    iso = normalize_date(value)
-    y,m,d = iso.split("-")
+    y, m, d = normalize_date(value).split("-")
     return f"{d}/{m}/{y}"
 
 
-def _program_params(date_value: Any, city: str, city_id: int) -> List[Dict[str, Any]]:
-    d = _date_tr(date_value)
-    # TJK'nin kullandığı tarih/şehir parametrelerini birlikte gönderiyoruz.
-    return [
-        {"QueryParameter_Tarih": d, "SehirAdi": city, "SehirId": city_id},
-        {"QueryParameter_Tarih": d, "SehirAdi": city},
-        {"Tarih": d, "SehirAdi": city, "SehirId": city_id},
-    ]
+def _city_key(name: str) -> str:
+    s = normalize_text(name).lower()
+    return (s.replace("ı", "i").replace("ş", "s").replace("ğ", "g")
+             .replace("ü", "u").replace("ö", "o").replace("ç", "c"))
 
 
-def _clean(s: Any) -> str:
-    return re.sub(r"\s+", " ", _html.unescape(str(s or ""))).strip()
+def _canonical_city(text: str) -> str:
+    s = normalize_text(text)
+    s = re.sub(r"\s+Hipodromu.*$", "", s, flags=re.I)
+    s = re.sub(r"\s+Hipodrom.*$", "", s, flags=re.I)
+    mapping = {
+        "diyarbakir": "Diyarbakır", "sanliurfa": "Şanlıurfa", "elazig": "Elazığ",
+        "istanbul": "İstanbul", "ankara": "Ankara", "izmir": "İzmir", "bursa": "Bursa",
+        "kocaeli": "Kocaeli", "adana": "Adana", "antalya": "Antalya",
+    }
+    return mapping.get(_city_key(s), s)
 
 
-def _num(s: Any) -> str:
-    m = re.search(r"\b(\d{1,2})\b", _clean(s))
-    return m.group(1) if m else ""
+def _session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    return s
 
 
-def _horse_id(href: str) -> str:
-    q = parse_qs(urlparse(urljoin(TJK_BASE, href)).query)
-    for key in ("QueryParameter_AtId", "AtId", "atId", "at_id", "id"):
-        if q.get(key):
-            return q[key][0]
-    m = re.search(r"(?:AtId|atId)[=/_-](\d+)", href or "")
-    return m.group(1) if m else ""
+def _get(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 45) -> requests.Response:
+    r = _session().get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    return r
+
+
+def _program_url(date_value: Any, city: str, city_id: int) -> str:
+    return PROGRAM_URL + "?" + urlencode({
+        "QueryParameter_Tarih": format_date_tr(date_value),
+        "SehirAdi": city,
+        "SehirId": city_id,
+    })
 
 
 def _actual_hippodrome(soup: BeautifulSoup, fallback: str) -> str:
-    # Önce sayfanın başlık/heading alanlarını kullan; tüm sayfada greedy regex kullanma.
-    candidates = []
+    # Önce title ve başlıkları kontrol et. Tüm sayfa metninde greedy regex
+    # kullanmak Elazığ/Diyarbakır gibi isimleri yanlış yakalayabiliyordu.
+    candidates: List[str] = []
     if soup.title:
-        candidates.append(soup.title.get_text(" ", strip=True))
-    for tag in soup.find_all(["h1","h2","h3","h4"], limit=20):
-        candidates.append(tag.get_text(" ", strip=True))
+        candidates.append(normalize_text(soup.title.get_text(" ", strip=True)))
+    for tag in soup.find_all(["h1", "h2", "h3", "h4"], limit=40):
+        candidates.append(normalize_text(tag.get_text(" ", strip=True)))
+
     for text in candidates:
-        m = re.search(r"([A-Za-zÇĞİÖŞÜçğıöşüİı0-9.'’\- ]+?)\s+Hipodromu\b", text, re.I)
+        m = re.search(r"\b([A-Za-zÇĞİÖŞÜçğıöşüİı\-]+)\s+Hipodromu\b", text, re.I)
         if m:
-            return _clean(m.group(1))
-    return fallback
+            return _canonical_city(m.group(1))
+        c = _canonical_city(text)
+        if c in CITY_IDS:
+            return c
+
+    return _canonical_city(fallback)
 
 
-def _find_header_map(table) -> Dict[str,int]:
-    rows = table.find_all("tr")
-    if not rows: return {}
-    for row in rows[:3]:
-        cells = row.find_all(["th","td"])
-        heads = [_clean(c.get_text(" ", strip=True)).lower() for c in cells]
-        if any(("at" in h or "isim" in h or "jokey" in h or "siklet" in h or "hp" in h) for h in heads):
-            return {h:i for i,h in enumerate(heads)}
-    return {}
+def _parse_race_header(text: str) -> Optional[Dict[str, Any]]:
+    text = normalize_text(text)
+    m = re.search(r"(?:^|\s)(\d+)\.\s*Koşu\s+(\d{1,2}\.\d{2})", text, re.I)
+    if not m:
+        return None
+    distance = re.search(r"\b(\d{3,4})\s*m\b", text, re.I)
+    surface = re.search(r"\b(Kum|Çim|Sentetik)\b", text, re.I)
+    return {
+        "race_number": int(m.group(1)),
+        "race_time": m.group(2),
+        "distance": int(distance.group(1)) if distance else "",
+        "surface": surface.group(1).capitalize() if surface else "",
+        "condition": text,
+    }
 
 
-def _pick(cells, hmap, names, default=""):
-    for name in names:
-        for h,i in hmap.items():
-            if name in h and i < len(cells):
-                return cells[i]
-    return default
+def _horse_id_from_row(row: Any) -> str:
+    for a in row.find_all("a", href=True):
+        href = unquote(urljoin(TJK_BASE, a["href"]))
+        q = parse_qs(urlparse(href).query)
+        for key in ("QueryParameter_AtId", "AtId", "atId", "QueryParameter_ATID", "id"):
+            vals = q.get(key)
+            if vals and re.fullmatch(r"\d+", vals[0]):
+                return vals[0]
+        m = re.search(r"(?:AtId|atId|AtID)[=/](\d+)", href, re.I)
+        if m:
+            return m.group(1)
+    return ""
 
 
-def _parse_program_html(html_text: str, city: str, date_value: Any) -> Dict[str, Any]:
-    soup = BeautifulSoup(html_text, "html.parser")
-    actual_city = _actual_hippodrome(soup, city)
-    races = []
-    current = None
+def _parse_program_html(html: str, requested_city: str, source_url: str, target_date: str) -> Dict[str, Any]:
+    soup = BeautifulSoup(html, "html.parser")
+    actual_city = _actual_hippodrome(soup, requested_city)
+    races: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
 
-    # Belge sırasını koruyarak yarış başlıklarını ve at satırlarını eşleştir.
-    for node in soup.find_all(["h1","h2","h3","h4","h5","div","tr"]):
-        text = _clean(node.get_text(" ", strip=True))
-        if not text:
-            continue
-
-        rm = re.search(r"(?<!\d)(\d{1,2})\.\s*Koşu\b(?:\s*[-–—]?\s*(\d{1,2}:\d{2}))?", text, re.I)
-        if rm:
-            no = int(rm.group(1))
-            tm = rm.group(2) or ""
-            current = {"race_number": no, "race_time": tm, "distance": "", "surface": "",
-                       "condition": text, "horses": [], "meta": {}}
+    # TJK'da koşu başlığı ve at satırları aynı DOM içinde bulunabiliyor.
+    # Başlıkları gördükçe yeni koşu aç; yalnızca gerçek at bağlantısı bulunan
+    # tablo satırlarını ata dönüştür.
+    for tag in soup.find_all(["tr", "div", "p", "h1", "h2", "h3", "h4"]):
+        txt = normalize_text(tag.get_text(" ", strip=True))
+        header = _parse_race_header(txt)
+        if header and (tag.name != "tr" or len(tag.find_all("td")) <= 3):
+            current = dict(header)
+            current.update({"date": target_date, "city": actual_city, "horses": []})
             races.append(current)
-            dm = re.search(r"\b(\d{3,4})\s*m\b", text, re.I)
-            if dm: current["distance"] = dm.group(1)
-            sm = re.search(r"\b(kum|çim|sentetik)\b", text, re.I)
-            if sm: current["surface"] = sm.group(1).title()
             continue
 
-        if node.name != "tr" or current is None:
+        if current is None or tag.name != "tr":
             continue
 
-        links = node.find_all("a", href=True)
-        horse_link = None
-        for a in links:
-            hid = _horse_id(a.get("href",""))
-            if hid:
-                horse_link = (a,hid)
-                break
-        if not horse_link:
+        cells_nodes = tag.find_all("td")
+        cells = [normalize_text(c.get_text(" ", strip=True)) for c in cells_nodes]
+        if len(cells) < 3:
             continue
 
-        cells = [_clean(c.get_text(" ", strip=True)) for c in node.find_all(["th","td"])]
-        if not cells: continue
-        hmap = _find_header_map(node.find_parent("table")) if node.find_parent("table") else {}
+        # En güvenli ayraç: satırda TJK at detay bağlantısı veya ilk hücrede
+        # yarış numarası. Böylece başlık satırları at olarak alınmaz.
+        hrefs = [unquote(urljoin(TJK_BASE, a.get("href", ""))) for a in tag.find_all("a", href=True)]
+        has_horse_link = any("AtId" in h or "AtID" in h or "AtId=" in h for h in hrefs)
+        num_m = re.match(r"^\s*(\d+)\s*(?:\.|\)|$)", cells[0])
+        if not num_m and not has_horse_link:
+            continue
 
-        name = _clean(horse_link[0].get_text(" ", strip=True))
-        number = cells[0] if cells and re.fullmatch(r"\d{1,2}", cells[0]) else _num(cells[0])
+        hno = int(num_m.group(1)) if num_m else ""
+        name_idx = 1 if len(cells) > 1 else 0
+        name = cells[name_idx]
+        if not name or name.lower() in {"at", "at ismi", "adı"}:
+            continue
+
+        at_id = _horse_id_from_row(tag)
         horse = {
-            "atId": horse_link[1], "at_id": horse_link[1], "name": name, "horse": name,
-            "no": number, "number": number,
-            "age": _pick(cells,hmap,["yaş","yas"]),
-            "weight": _pick(cells,hmap,["siklet","kilo","kg"]),
-            "jockey": _pick(cells,hmap,["jokey"]),
-            "hp": _pick(cells,hmap,["hp","handikap"]),
-            "agf": _pick(cells,hmap,["agf"]),
-            "odds": _pick(cells,hmap,["gny","ganyan","oran"]),
-            "st": _pick(cells,hmap,["st","start","kulvar"]),
-            "kgs": _pick(cells,hmap,["kgs"]),
-            "form": _pick(cells,hmap,["son 6","son6","form"]),
+            "no": hno,
+            "number": hno,
+            "name": name,
+            "at_ismi": name,
+            "atId": at_id,
+            "at_id": at_id,
             "raw_cells": cells,
         }
-        # Header bulunamadığında temel alanları hücre pozisyonundan güvenli biçimde tamamla.
-        if not horse["age"] and len(cells) > 1 and re.search(r"\d", cells[1]): horse["age"] = cells[1]
-        if not horse["weight"]:
-            for c in cells:
-                if re.search(r"\b\d{2}(?:[.,]\d)?\b", c):
-                    horse["weight"] = c; break
+        joined = " | ".join(cells)
+        age = re.search(r"\b(\d+)Y\b", joined, re.I)
+        if age:
+            horse["age"] = age.group(1)
+        # TJK programlarında kilo çoğunlukla 5x.x biçimindedir.
+        wm = re.findall(r"\b(4\d(?:[.,]\d)?|5\d(?:[.,]\d)?|6\d(?:[.,]\d)?)\b", joined)
+        if wm:
+            horse["weight"] = wm[-1]
         current["horses"].append(horse)
 
-    # Aynı yarış numarası birden fazla DOM düğümünde açılmışsa atları birleştir.
-    merged = {}
-    for r in races:
-        key = r["race_number"]
-        if key not in merged: merged[key] = r
+    # Bazı TJK sayfa sürümlerinde başlık div'i at tablosundan sonra tekrar
+    # geldiği için aynı koşu iki kez oluşabilir; numaraya göre birleştir.
+    merged: Dict[int, Dict[str, Any]] = {}
+    for race in races:
+        no = int(race.get("race_number") or 0)
+        if no not in merged:
+            merged[no] = race
         else:
-            if not merged[key].get("race_time"): merged[key]["race_time"] = r.get("race_time","")
-            merged[key]["horses"].extend(r.get("horses",[]))
-    races = list(merged.values())
-    for r in races:
-        # duplicate at rows temizle
-        seen=set(); uniq=[]
-        for h in r["horses"]:
-            k=(str(h.get("atId","")), str(h.get("name","")).upper())
-            if k in seen: continue
-            seen.add(k); uniq.append(h)
-        r["horses"]=uniq
+            merged[no]["horses"].extend(race.get("horses", []))
+            for key in ("race_time", "distance", "surface", "condition"):
+                if not merged[no].get(key) and race.get(key):
+                    merged[no][key] = race[key]
+
+    final_races = []
+    for no in sorted(merged):
+        r = merged[no]
+        # Tekrarlanan at satırlarını numara+id+isim ile temizle.
+        seen = set()
+        horses = []
+        for h in r.get("horses", []):
+            key = (str(h.get("no")), str(h.get("atId")), _city_key(h.get("name", "")))
+            if key in seen:
+                continue
+            seen.add(key)
+            horses.append(h)
+        r["horses"] = horses
+        if horses:
+            r["no"] = no
+            r["time"] = r.get("race_time", "")
+            r["meta"] = {"distance": r.get("distance", ""), "surface": r.get("surface", ""), "detail": r.get("condition", "")}
+            final_races.append(r)
+
+    total = sum(len(r["horses"]) for r in final_races)
     return {
-        "ok": bool(races),
+        "ok": True,
         "source": "TJK Günlük Yarış Programı",
-        "date": normalize_date(date_value),
-        "date_tr": _date_tr(date_value),
+        "source_url": source_url,
+        "date": target_date,
+        "date_tr": format_date_tr(target_date),
         "city": actual_city,
-        "races": races,
-        "source_url": "",
-        "status": "ok" if races else "empty",
+        "races": final_races,
+        "race_count": len(final_races),
+        "raceCount": len(final_races),
+        "total_horses": total,
+        "horse_count": total,
+        "horseCount": total,
+        "debug": {
+            "transport": "TJK direct",
+            "requested_city": requested_city,
+            "actual_city": actual_city,
+            "source_url": source_url,
+        },
     }
 
 
-def fetch_worker(date_value: Any, city: str, timeout: int = 45) -> Dict[str, Any]:
-    # İsim geriye dönük uyumluluk için korunuyor; artık Worker çağrısı yok.
-    city = normalize_text(city)
-    if city not in CITY_IDS:
-        raise ValueError(f"Bilinmeyen hipodrom: {city}")
-    last_error = None
-    for params in _program_params(date_value, city, CITY_IDS[city]):
-        try:
-            html_text = _request_html(PROGRAM_URL, params=params, timeout=timeout)
-            data = _parse_program_html(html_text, city, date_value)
-            if data.get("races"):
-                data["source_url"] = PROGRAM_URL + "?" + urlencode(params)
-                data["city_requested"] = city
-                data["hippodrome"] = data.get("city") or city
-                return data
-        except Exception as exc:
-            last_error = exc
-    if last_error:
-        raise RuntimeError(f"TJK günlük program alınamadı ({city}): {last_error}") from last_error
-    return {"ok":False,"races":[],"city":city,"date":normalize_date(date_value)}
-
-def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Worker V1 -> Streamlit ortak at şeması.
-
-    Worker'ın döndürdüğü alanlar korunur; ayrıca app.py'nin
-    kullandığı V34 alan adları da oluşturulur.
-    """
-    if not isinstance(horse, dict):
-        return {}
-
-    result = dict(horse)
-
-    # Ortak / Worker alanları
-    result["name"] = (
-        result.get("name")
-        or result.get("horse")
-        or result.get("horseName")
-        or result.get("At İsmi")
-        or ""
-    )
-
-    result["no"] = (
-        result.get("no")
-        or result.get("number")
-        or result.get("numara")
-        or result.get("s")
-        or result.get("S")
-        or ""
-    )
-
-    result["age"] = (
-        result.get("age")
-        or result.get("yas")
-        or result.get("Yaş")
-        or ""
-    )
-
-    result["weight"] = (
-        result.get("weight")
-        or result.get("siklet")
-        or result.get("Sıklet")
-        or result.get("kilo")
-        or ""
-    )
-
-    result["jockey"] = (
-        result.get("jockey")
-        or result.get("jokey")
-        or result.get("Jokey")
-        or result.get("jockeyName")
-        or ""
-    )
-
-    result["hp"] = (
-        result.get("hp")
-        or result.get("HP")
-        or result.get("rating")
-        or result.get("RT")
-        or ""
-    )
-
-    result["last6"] = (
-        result.get("last6")
-        or result.get("son6")
-        or result.get("Son 6 Y.")
-        or result.get("lastSix")
-        or ""
-    )
-
-    result["agf"] = (
-        result.get("agf")
-        or result.get("AGF")
-        or ""
-    )
-
-    # AGF ile ganyan/odds birbirine karıştırılmaz.
-    result["odds"] = (
-        result.get("odds")
-        or result.get("Gny")
-        or ""
-    )
-
-    result["st"] = (
-        result.get("st")
-        or result.get("St")
-        or result.get("start")
-        or ""
-    )
-
-    result["kgs"] = (
-        result.get("kgs")
-        or result.get("KGS")
-        or ""
-    )
-
-    result["form"] = (
-        result.get("form")
-        or result.get("Forma")
-        or result.get("last6")
-        or ""
-    )
-
-    result["trainer"] = (
-        result.get("trainer")
-        or result.get("antrenor")
-        or result.get("Antrenörü")
-        or result.get("trainerName")
-        or ""
-    )
-
-    result["owner"] = (
-        result.get("owner")
-        or result.get("sahip")
-        or result.get("Sahip")
-        or result.get("ownerName")
-        or ""
-    )
-
-    # Gerçek TJK at kimliğini standartlaştır.
-    # ÖNEMLİ: program numarası (no) hiçbir zaman atId yerine kullanılmaz.
-    at_id = (
-        result.get("atId")
-        or result.get("at_id")
-        or result.get("horseId")
-        or result.get("horse_id")
-        or result.get("horseKey")
-        or result.get("horse_key")
-        or result.get("id")
-        or result.get("Id")
-        or ""
-    )
-    if at_id not in (None, ""):
-        result["atId"] = str(at_id)
-        result["at_id"] = str(at_id)
-
-    # app.py'nin kullandığı V34 alan adları
-    result["at_ismi"] = result["name"]
-    result["numara"] = result["no"]
-    result["yas"] = result["age"]
-    result["siklet"] = result["weight"]
-    result["jokey"] = result["jockey"]
-
-    return result
+def _get_program_for_city(date_value: Any, city: str, city_id: int) -> Optional[Dict[str, Any]]:
+    target = normalize_date(date_value)
+    url = _program_url(target, city, city_id)
+    try:
+        r = _get(url, timeout=45)
+    except Exception:
+        return None
+    try:
+        data = _parse_program_html(r.text, city, r.url, target)
+    except Exception:
+        return None
+    # Yalnız gerçekten koşu içeren şehir aktif kabul edilir.
+    if data.get("races"):
+        return data
+    return None
 
 
-def normalize_program(program: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Worker V1 yarış şemasını app.py'nin beklediği V34 şemasına çevirir.
-    Worker verisinin orijinal alanları korunur.
-    """
-    if not isinstance(program, dict):
-        return {
-            "ok": False,
-            "races": [],
-            "race_count": 0,
-            "total_horses": 0,
+def discover_active_cities(date_value: Any) -> List[Dict[str, str]]:
+    """Seçilen tarihte TJK'da gerçekten programı bulunan hipodromları bulur."""
+    found: List[Dict[str, str]] = []
+    target = normalize_date(date_value)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {
+            ex.submit(_get_program_for_city, target, city, cid): (city, cid)
+            for city, cid in CITY_IDS.items()
         }
+        for fut in as_completed(futures):
+            city, cid = futures[fut]
+            try:
+                data = fut.result()
+            except Exception:
+                data = None
+            if data and data.get("races"):
+                actual = _canonical_city(data.get("city") or city)
+                found.append({
+                    "city": actual,
+                    "city_id": str(cid),
+                    "url": data.get("source_url", ""),
+                })
+    # Ekran sırası sabit olsun; tamamlanma sırası kullanılmasın.
+    order = {name: i for i, name in enumerate(CITY_IDS)}
+    found.sort(key=lambda x: order.get(x["city"], 999))
+    return found
 
-    races = program.get("races", [])
-    if not isinstance(races, list):
-        races = []
 
-    normalized_races = []
-
-    for index, race in enumerate(races, start=1):
-        if not isinstance(race, dict):
-            continue
-
-        item = dict(race)
-
-        meta = item.get("meta")
-        if not isinstance(meta, dict):
-            meta = {}
-        item["meta"] = meta
-
-        race_no = (
-            item.get("race_number")
-            or item.get("no")
-            or item.get("number")
-            or index
-        )
-
-        race_time = (
-            item.get("race_time")
-            or item.get("time")
-            or meta.get("time")
-            or ""
-        )
-
-        distance = (
-            item.get("distance")
-            or meta.get("distance")
-            or ""
-        )
-
-        surface = (
-            item.get("surface")
-            or meta.get("surface")
-            or ""
-        )
-
-        condition = (
-            item.get("condition")
-            or meta.get("condition")
-            or meta.get("detail")
-            or meta.get("raceName")
-            or ""
-        )
-
-        horses = item.get("horses", [])
-        if not isinstance(horses, list):
-            horses = []
-
-        normalized_horses = [
-            normalize_horse(h)
-            for h in horses
-            if isinstance(h, dict)
-        ]
-
-        # Worker alanlarını koru + app.py uyumlu alanları ekle
-        item["race_number"] = race_no
-        item["race_time"] = race_time
-        item["distance"] = distance
-        item["surface"] = surface
-        item["condition"] = condition
-        item["no"] = race_no
-        item["time"] = race_time
-        item["horses"] = normalized_horses
-
-        normalized_races.append(item)
-
-    program["races"] = normalized_races
-
-    program["race_count"] = len(normalized_races)
-    program["raceCount"] = len(normalized_races)
-
-    total = sum(len(r["horses"]) for r in normalized_races)
-
-    program["total_horses"] = total
-    program["horse_count"] = total
-    program["horseCount"] = total
-
-    # Worker ve Streamlit bağlantısını debug ekranında açıkça göster
-    debug = program.get("debug")
-    if not isinstance(debug, dict):
-        debug = {}
-
-    debug.setdefault("transport", "TJK direct")
-    debug["city_id"] = CITY_IDS.get(program.get("city"))
-    debug["race_count"] = len(normalized_races)
-    debug["total_horse_count"] = total
-    debug["horses_per_race"] = {
-        str(r.get("race_number", i + 1)): len(r.get("horses", []))
-        for i, r in enumerate(normalized_races)
-    }
-
-    program["debug"] = debug
-
-    return program
+def get_active_cities(date_value: Any) -> List[str]:
+    return [x["city"] for x in discover_active_cities(date_value)]
 
 
 def get_supported_cities() -> List[str]:
     return list(CITY_IDS.keys())
 
 
-def get_city_id(city: str) -> int:
-    city = normalize_text(city)
-    if city not in CITY_IDS:
-        raise ValueError(f"Bilinmeyen hipodrom: {city}")
-    return CITY_IDS[city]
-
-
-def worker_health() -> Dict[str, Any]:
-    return {"ok": True, "transport": "TJK direct", "source": TJK_BASE}
+def get_city_id(city: str) -> Optional[str]:
+    for name, cid in CITY_IDS.items():
+        if _city_key(name) == _city_key(city):
+            return str(cid)
+    return None
 
 
 def get_program(date_value: Any, city: str) -> Dict[str, Any]:
-    data = fetch_worker(date_value, city)
-    races = data.get("races", [])
-    result = {
-        "ok": bool(races),
-        "source": data.get("source","TJK Günlük Yarış Programı"),
-        "date": normalize_date(date_value),
-        "date_tr": _date_tr(date_value),
-        # Gerçek TJK hipodrom adı korunur; istek yapılan şehir adıyla
-        # üzerine yazılmaz.
-        "city": normalize_text(data.get("city") or data.get("hippodrome") or city),
-        "hippodrome": data.get("hippodrome") or data.get("city") or normalize_text(city),
-        "races": races,
-        "race_count": len(races),
-        "raceCount": len(races),
-        "total_horses": sum(len(r.get("horses",[])) for r in races if isinstance(r,dict)),
-        "horse_count": sum(len(r.get("horses",[])) for r in races if isinstance(r,dict)),
-        "horseCount": sum(len(r.get("horses",[])) for r in races if isinstance(r,dict)),
-        "status": data.get("status"),
-        "source_url": data.get("source_url",""),
-        "debug": {
-            "transport": "TJK direct",
-            "source": "TJK Günlük Yarış Programı",
-            "city": normalize_text(city),
-            "hippodrome": data.get("hippodrome") or data.get("city") or normalize_text(city),
-            "source_url": data.get("source_url",""),
-            "race_count": len(races),
-        },
-    }
-    return normalize_program(result)
+    target = normalize_date(date_value)
+    requested = _canonical_city(city)
+    cid = CITY_IDS.get(requested)
+    if cid is None:
+        raise RuntimeError(f"Bilinmeyen hipodrom: {requested}")
+    data = _get_program_for_city(target, requested, cid)
+    if not data:
+        raise RuntimeError(f"{format_date_tr(target)} tarihinde TJK programında {requested} için yarış bulunamadı.")
+    return data
 
 
-def _table_dicts(soup: BeautifulSoup) -> List[Dict[str,str]]:
-    out=[]
+def _parse_history(html: str) -> List[Dict[str, Any]]:
+    soup = BeautifulSoup(html, "html.parser")
+    out: List[Dict[str, Any]] = []
     for table in soup.find_all("table"):
-        rows=table.find_all("tr")
-        if len(rows)<2: continue
-        header_cells=rows[0].find_all(["th","td"])
-        headers=[_clean(c.get_text(" ",strip=True)).lower() for c in header_cells]
-        if not headers: continue
-        for row in rows[1:]:
-            cells=[_clean(c.get_text(" ",strip=True)) for c in row.find_all(["th","td"])]
-            if len(cells)<2: continue
-            d={headers[i] if i<len(headers) else f"col{i}":cells[i] for i in range(len(cells))}
-            out.append(d)
-    return out
-
-
-def _history_row(d: Dict[str,str]) -> Dict[str,Any]:
-    def v(names):
-        return next((val for k,val in d.items() if any(n in k for n in names) and val not in ("","-")), "")
-    return {
-        "date": v(["tarih","date"]), "city": v(["hipodrom","şehir","sehir"]),
-        "distance": v(["mesafe"]), "surface": v(["pist"]),
-        "place": v(["sıra","derece","sira"]), "time": v(["derece","zaman"]),
-        "weight": v(["kilo","siklet"]), "equipment": v(["takı"]),
-        "jockey": v(["jokey"]), "post": v(["st","kulvar"]),
-        "odds": v(["ganyan","gny"]), "group": v(["grup","koşu şart","kosu sart"]),
-        "raceName": v(["koşu adı","kosu adi","koşu"]), "raceType": v(["koşu türü","kosu turu"]),
-        "trainer": v(["antrenör","antrenor"]), "owner": v(["sahip"]),
-        "hp": v(["hp","handikap"]), "prize": v(["ikramiye","kazanç"]),
-        "l20": v(["20"]), "raw": d,
-    }
-
-
-def _direct_tjk_history(at_id: str, timeout: int = 30) -> List[Dict[str,Any]]:
-    url = f"{HISTORY_URL}?1=1&QueryParameter_AtId={at_id}"
-    soup = BeautifulSoup(_request_html(url, timeout=timeout), "html.parser")
-    rows = [_history_row(d) for d in _table_dicts(soup)]
-    rows = [r for r in rows if r.get("date")]
-    return rows
-
-
-def get_horse_history(at_id: Any, timeout: int = 30) -> Dict[str,Any]:
-    if at_id in (None,""): return {"ok":False,"history":[],"error":"atId yok"}
-    try:
-        hist = _direct_tjk_history(str(at_id), timeout=timeout)
-        return {"ok":bool(hist),"history":hist,"historyCount":len(hist),
-                "historySource":"TJK AtKosuBilgileri"}
-    except Exception as exc:
-        return {"ok":False,"history":[],"historyCount":0,"error":str(exc),
-                "historySource":"TJK AtKosuBilgileri"}
-
-
-def get_horse_workouts(horse: str, timeout: int = 30) -> Dict[str,Any]:
-    # TJK idman sayfası at adına göre filtrelenebildiğinden önce doğrudan sorgulanır.
-    if not normalize_text(horse): return {"ok":False,"workouts":[]}
-    params={"QueryParameter_AtAdi":normalize_text(horse)}
-    try:
-        soup=BeautifulSoup(_request_html(WORKOUT_URL,params=params,timeout=timeout),"html.parser")
-        rows=_table_dicts(soup)
-        workouts=[]
-        for d in rows:
-            text=" ".join(d.values())
-            if re.search(r"\b\d{2,4}\s*m\b|idman|galop|kenter",text,re.I):
-                workouts.append(d)
-        return {"ok":bool(workouts),"workouts":workouts,"workoutCount":len(workouts),
-                "workoutSource":"TJK İdman İstatistikleri"}
-    except Exception as exc:
-        return {"ok":False,"workouts":[],"workoutCount":0,"error":str(exc)}
-
-
-def history_before_target(history: List[Dict[str,Any]], target_date: Any) -> List[Dict[str,Any]]:
-    td = normalize_date(target_date)
-    out=[]
-    for row in history or []:
-        raw=row.get("date") if isinstance(row,dict) else ""
-        try:
-            s=str(raw).strip()
-            d=""
-            m=re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})",s)
-            if m: d=f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
-            else:
-                m=re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})",s)
-                if m: d=f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-            if d and d < td: out.append(row)
-        except Exception:
+        rows = table.find_all("tr")
+        if not rows:
             continue
+        headers = [normalize_text(x.get_text(" ", strip=True)) for x in rows[0].find_all(["th", "td"])]
+        if len(headers) < 8:
+            continue
+        norm = [re.sub(r"[^a-z0-9çğıöşü]", "", h.lower()) for h in headers]
+        if not any("tarih" in h or "date" in h for h in norm):
+            continue
+        for row in rows[1:]:
+            cells = [normalize_text(x.get_text(" ", strip=True)) for x in row.find_all(["td", "th"])]
+            if len(cells) < min(8, len(headers)):
+                continue
+            raw = {headers[i]: cells[i] for i in range(min(len(headers), len(cells)))}
+            def pick(*terms: str) -> str:
+                for k, v in raw.items():
+                    nk = re.sub(r"[^a-z0-9çğıöşü]", "", k.lower())
+                    if any(t in nk for t in terms):
+                        return v
+                return ""
+            out.append({
+                "date": pick("tarih", "date"), "city": pick("hipodrom", "şehir", "sehir", "city"),
+                "distance": pick("mesafe", "distance"), "surface": pick("pist", "surface"),
+                "place": pick("sıra", "sira", "place", "dereceyeri"), "time": pick("derece", "time"),
+                "weight": pick("kilo", "siklet", "weight"), "jockey": pick("jokey"),
+                "post": pick("st", "start", "kulvar"), "odds": pick("gny", "ganyan"),
+                "group": pick("grup", "şart", "sart"), "raceName": pick("koşuadı", "kosuadi", "koşu", "kosu"),
+                "raceType": pick("koşutürü", "kosuturu", "type"), "trainer": pick("antrenör", "antrenor"),
+                "owner": pick("sahip"), "hp": pick("hp", "handikap"), "prize": pick("ikramiye", "prize"),
+                "l20": pick("son20"), "raw": raw,
+            })
+        if out:
+            break
     return out
 
 
-def _earnings_from_history(history: List[Dict[str,Any]]) -> Dict[str,Any]:
-    total=0.0; year=0.0; current_year=datetime.now().year
-    for r in history or []:
-        val=r.get("prize") if isinstance(r,dict) else ""
-        nums=re.sub(r"[^0-9,.-]","",str(val).replace(".","").replace(",","."))
-        try: amount=float(nums) if nums else 0.0
-        except: amount=0.0
-        total += amount
-        if str(r.get("date","")).endswith(str(current_year)): year += amount
-    return {"total": total or None, "year": year or None}
+def get_horse_history(at_id: Any, timeout: int = 30) -> Dict[str, Any]:
+    if not at_id:
+        return {"ok": False, "history": [], "error": "atId yok"}
+    r = _get(HISTORY_URL, {"1": "1", "QueryParameter_AtId": str(at_id)}, timeout=timeout)
+    rows = _parse_history(r.text)
+    return {"ok": True, "history": rows, "historyCount": len(rows), "source_url": r.url}
 
 
-def get_horse_enrichment(at_id: Any, horse: str, timeout: int = 30,
-                         target_date: Any = None, target_city: str = "",
-                         target_distance: Any = None, target_surface: str = "",
-                         target_class: str = "") -> Dict[str,Any]:
-    errors=[]
+def get_horse_workouts(horse_name: str, timeout: int = 30) -> Dict[str, Any]:
+    if not horse_name:
+        return {"ok": False, "workouts": [], "error": "At adı yok"}
+    r = _get(WORKOUT_URL, {"1": "1", "QueryParameter_ATADI": horse_name}, timeout=timeout)
+    soup = BeautifulSoup(r.text, "html.parser")
+    workouts = []
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+        hs = [normalize_text(x.get_text(" ", strip=True)) for x in rows[0].find_all(["th", "td"])]
+        if not any("600" in h or "400" in h or "İdman" in h for h in hs):
+            continue
+        for row in rows[1:]:
+            cells = [normalize_text(x.get_text(" ", strip=True)) for x in row.find_all(["td", "th"])]
+            if len(cells) < 2:
+                continue
+            raw = {hs[i]: cells[i] for i in range(min(len(hs), len(cells)))}
+            def pick(term: str) -> str:
+                for k, v in raw.items():
+                    if term.lower() in k.lower():
+                        return v
+                return ""
+            workouts.append({"date": pick("tarih"), "m600": pick("600"), "m400": pick("400"), "m200": pick("200"), "m800": pick("800"), "raw": raw})
+        if workouts:
+            break
+    return {"ok": True, "workouts": workouts, "workoutCount": len(workouts), "source_url": r.url}
+
+
+def _parse_date_value(v: Any) -> Optional[date]:
+    try:
+        return datetime.fromisoformat(normalize_date(v)).date()
+    except Exception:
+        return None
+
+
+def history_before_target(history: List[Dict[str, Any]], target_date: Any) -> List[Dict[str, Any]]:
+    td = _parse_date_value(target_date)
+    if not td:
+        return list(history or [])
+    out = []
+    for row in history or []:
+        d = _parse_date_value(row.get("date") if isinstance(row, dict) else None)
+        if d and d < td:
+            out.append(row)
+    out.sort(key=lambda r: _parse_date_value(r.get("date")) or date.min, reverse=True)
+    return out
+
+
+def get_horse_enrichment(at_id: Any, horse_name: str = "", target_date: Any = None, timeout: int = 30) -> Dict[str, Any]:
+    history, workouts, errors = [], [], []
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fh=ex.submit(get_horse_history,at_id,timeout)
-        fw=ex.submit(get_horse_workouts,horse,timeout)
-        hd=fh.result(); wd=fw.result()
-    history=hd.get("history",[]) if isinstance(hd,dict) else []
-    workouts=wd.get("workouts",[]) if isinstance(wd,dict) else []
-    if target_date and history:
-        history=history_before_target(history,target_date)
-    if not isinstance(history,list): history=[]
-    if not isinstance(workouts,list): workouts=[]
-    if hd.get("error"): errors.append(f"horse: {hd['error']}")
-    if wd.get("error"): errors.append(f"workouts: {wd['error']}")
-    result={"ok":bool(history or workouts),"history":history,"workouts":workouts,
-            "historyCount":len(history),"workoutCount":len(workouts),
-            "earnings":hd.get("earnings") if isinstance(hd,dict) else None}
-    if not result["earnings"]: result["earnings"]=_earnings_from_history(history)
-    if errors: result["error"]=" | ".join(errors)
-    result["historySource"]="TJK AtKosuBilgileri"
+        fh = ex.submit(get_horse_history, at_id, timeout) if at_id else None
+        fw = ex.submit(get_horse_workouts, horse_name, timeout) if horse_name else None
+        try:
+            history = (fh.result() if fh else {}).get("history", []) or []
+        except Exception as exc:
+            errors.append(f"history: {exc}")
+        try:
+            workouts = (fw.result() if fw else {}).get("workouts", []) or []
+        except Exception as exc:
+            errors.append(f"workouts: {exc}")
+    result = {
+        "ok": not errors,
+        "history": history_before_target(history, target_date) if target_date else history,
+        "workouts": workouts,
+        "history_all": history,
+        "historySource": "TJK direct",
+    }
+    if errors:
+        result["error"] = " | ".join(errors)
     return result
 
 
-def fetch_program(date_value: Any, city: str) -> Dict[str,Any]:
-    return normalize_program(get_program(date_value,city))
+def enrich_race_horses(horses: List[Dict[str, Any]], target_date: Any = None, target_city: str = "", target_distance: Any = None, target_surface: str = "", target_class: str = "", progress_callback=None) -> List[Dict[str, Any]]:
+    out = [dict(h) for h in horses if isinstance(h, dict)]
+    total = len(out)
+    with ThreadPoolExecutor(max_workers=min(6, max(1, total))) as ex:
+        futures = {}
+        for i, h in enumerate(out):
+            at_id = h.get("atId") or h.get("at_id") or h.get("id")
+            name = h.get("name") or h.get("at_ismi") or ""
+            futures[ex.submit(get_horse_enrichment, at_id, name, target_date)] = i
+        done = 0
+        for fut in as_completed(futures):
+            i = futures[fut]
+            try:
+                data = fut.result()
+                out[i]["_history"] = data.get("history", [])
+                out[i]["_workouts"] = data.get("workouts", [])
+                out[i]["_at_id"] = str(out[i].get("atId") or out[i].get("at_id") or "")
+                if data.get("error"):
+                    out[i]["_enrichment_error"] = data["error"]
+            except Exception as exc:
+                out[i]["_history"] = []
+                out[i]["_workouts"] = []
+                out[i]["_enrichment_error"] = str(exc)
+            done += 1
+            if progress_callback:
+                try:
+                    progress_callback(done, total, out[i].get("name", ""))
+                except Exception:
+                    pass
+    return out
 
 
-def load_program(date_value: Any, city: str) -> Dict[str,Any]:
-    return normalize_program(get_program(date_value,city))
+def fetch_program(date_value: Any, city: str) -> Dict[str, Any]:
+    return get_program(date_value, city)
+
+
+def load_program(date_value: Any, city: str) -> Dict[str, Any]:
+    return get_program(date_value, city)
+
+
+def worker_health() -> Dict[str, Any]:
+    # Geriye dönük app uyumluluğu; artık Worker çağrısı yapılmıyor.
+    return {"ok": True, "transport": "TJK direct", "source": TJK_BASE}
