@@ -4,9 +4,9 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode, urljoin, parse_qs, urlparse
+from html.parser import HTMLParser
 
 import requests
-from bs4 import BeautifulSoup
 
 
 TJK_BASE = "https://www.tjk.org"
@@ -18,6 +18,106 @@ CITY_IDS = {
     "Ankara": 5, "Kocaeli": 9, "İstanbul": 3, "Bursa": 4, "İzmir": 2,
     "Adana": 1, "Elazığ": 6, "Diyarbakır": 8, "Şanlıurfa": 7, "Antalya": 10,
 }
+
+
+
+class _MiniTag:
+    def __init__(self, name="", attrs=None, parent=None):
+        self.name = name
+        self.attrs = dict(attrs or [])
+        self.parent = parent
+        self.children = []
+        self._text = []
+
+    def get(self, key, default=None):
+        return self.attrs.get(key, default)
+
+    def get_text(self, sep="", strip=False):
+        parts = []
+        def walk(node):
+            if node._text:
+                parts.extend(node._text)
+            for child in node.children:
+                walk(child)
+        walk(self)
+        text = sep.join(x for x in parts if x) if sep else "".join(parts)
+        return text.strip() if strip else text
+
+    def find_all(self, names=None, href=False, limit=None):
+        wanted = None
+        if names is not None:
+            wanted = {str(x).lower() for x in names} if isinstance(names, (list, tuple, set)) else {str(names).lower()}
+        out = []
+        def walk(node):
+            for child in node.children:
+                if wanted is None or child.name.lower() in wanted:
+                    if not href or child.get("href") is not None:
+                        out.append(child)
+                        if limit and len(out) >= limit:
+                            return True
+                if walk(child) and limit and len(out) >= limit:
+                    return True
+            return False
+        walk(self)
+        return out
+
+    def find_parent(self, name):
+        wanted = str(name).lower()
+        node = self.parent
+        while node is not None:
+            if node.name.lower() == wanted:
+                return node
+            node = node.parent
+        return None
+
+
+class _MiniSoup(_MiniTag):
+    def __init__(self):
+        super().__init__("document")
+        self._title = None
+
+    @property
+    def title(self):
+        if self._title is None:
+            titles = self.find_all("title", limit=1)
+            self._title = titles[0] if titles else None
+        return self._title
+
+
+class _TJKHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _MiniSoup()
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = _MiniTag(tag, attrs, self.stack[-1])
+        self.stack[-1].children.append(node)
+        if tag.lower() not in {"meta", "link", "img", "br", "hr", "input", "source", "area", "base", "col", "embed", "param", "track", "wbr"}:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        node = _MiniTag(tag, attrs, self.stack[-1])
+        self.stack[-1].children.append(node)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        for i in range(len(self.stack) - 1, 0, -1):
+            if self.stack[i].name.lower() == tag:
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        if data:
+            self.stack[-1]._text.append(data)
+
+
+def BeautifulSoup(text, parser="html.parser"):
+    p = _TJKHTMLParser()
+    p.feed(text or "")
+    p.close()
+    return p.root
+
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -534,8 +634,7 @@ def normalize_program(program: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(debug, dict):
         debug = {}
 
-    debug.setdefault("transport", "Cloudflare Worker V1")
-    debug.setdefault("worker_url", API_DATA)
+    debug.setdefault("transport", "TJK direct")
     debug["city_id"] = CITY_IDS.get(program.get("city"))
     debug["race_count"] = len(normalized_races)
     debug["total_horse_count"] = total
