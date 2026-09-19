@@ -626,10 +626,19 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # TJK'ya seçilen hipodromu doğrudan gönder.
-    # Elazığ / Diyarbakır / Şanlıurfa eşlemesi burada değiştirilmez.
-    # TJK'dan dönen gerçek hipodrom adı veri katmanında korunur.
-    return get_program(selected_date, city)
+    # Şehir adı TJK'ya aynen gönderilir. Elazığ, Diyarbakır ve Şanlıurfa
+    # birbirine eşlenmez; gerçek hipodrom adı TJK program sayfasından alınır.
+    data = get_program(
+        selected_date,
+        city,
+    )
+
+    if isinstance(data, dict):
+        data = dict(data)
+        # TJK'nın sayfadan döndürdüğü gerçek hipodrom adı korunur.
+        # Seçilen şehir ile gerçek program farklıysa bunu gizlemiyoruz.
+
+    return data
 
 
 # ============================================================
@@ -641,10 +650,10 @@ def load_active_cities(selected_date: date) -> List[str]:
     Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
 
     ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
-    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
+    TJK geçici hata verdiğinde boş listenin cache'lenmesi,
     "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
 
-    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
+    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 TJK isteği
     gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
     Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
     """
@@ -663,16 +672,9 @@ def load_active_cities(selected_date: date) -> List[str]:
                     continue
                 races = data.get("races", [])
                 if isinstance(races, list) and len(races) > 0:
-                    # Aktif listeye istek yapılan adı değil, TJK'nın
-                    # döndürdüğü gerçek hipodrom adını koy.
-                    actual = str(data.get("hippodrome") or data.get("city") or city).strip()
-                    actual = re.sub(r"\s+Hipodromu\s*$", "", actual, flags=re.I).strip()
-                    for known in ALL_CITIES:
-                        if actual.casefold() == known.casefold():
-                            return known
                     return city
             except Exception:
-                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
+                # Geçici TJK hatasında şehir elenmesin; tekrar dene.
                 pass
         return None
 
@@ -2672,7 +2674,7 @@ if not active_cities:
         f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
     )
     st.info(
-        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
+        "Bu tarih için TJK'dan hipodrom listesi alınamadı. TJK program bağlantısını kontrol edin."
     )
     st.stop()
 
