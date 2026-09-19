@@ -72,21 +72,47 @@ def _canonical_city(value: Any) -> str:
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS)
+    # TJK tarafında bazı istekler ana sayfadan alınan ASP.NET/session
+    # çerezleri olmadan farklı/boş içerik döndürebiliyor. Her bağımsız
+    # sorguda önce ana sayfayı açıp oturumu ısıtıyoruz.
+    try:
+        s.get(TJK_BASE + "/TR/YarisSever", timeout=15)
+    except Exception:
+        pass
     return s
 
 
-def _get(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 30) -> requests.Response:
-    r = _session().get(url, params=params, timeout=timeout)
-    r.raise_for_status()
-    return r
+def _get(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 30, session: Optional[requests.Session] = None) -> requests.Response:
+    s = session or _session()
+    last = None
+    for attempt in range(3):
+        try:
+            r = s.get(url, params=params, timeout=timeout)
+            last = r
+            if r.status_code in (429, 500, 502, 503, 504):
+                import time
+                time.sleep(0.8 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            return r
+        except requests.RequestException:
+            if attempt == 2:
+                raise
+    if last is not None:
+        last.raise_for_status()
+    raise RuntimeError("TJK isteği başarısız")
 
 
-def _program_page_url(date_value: Any, city: str, city_id: int) -> str:
+def _program_page_url(date_value: Any, city: str, city_id: int, include_city_id: bool = False) -> str:
+    # TJK'nın günlük program bağlantılarında SehirAdi parametresi temel
+    # parametredir. SehirId bazı eski sayfa sürümlerinde kullanılmıştır;
+    # ilk URL'de göndermiyoruz, yalnızca alternatif sorguda kullanıyoruz.
     params = {
         "QueryParameter_Tarih": format_date_tr(date_value),
         "SehirAdi": city,
-        "SehirId": city_id,
     }
+    if include_city_id:
+        params["SehirId"] = city_id
     return PROGRAM_URL + "?" + urlencode(params)
 
 
@@ -181,9 +207,15 @@ def _page_has_races(text: str) -> bool:
     t = normalize_text(text)
     if not t:
         return False
-    # Program olmayan sayfalarda da "Koşu" kelimesi geçebilir; yarış başlığı daha güçlü kanıttır.
-    return bool(re.search(r"\b\d+\s*\.\s*Koşu\b", t, re.I) or
-                re.search(r"\b\d+\s*Koşu\b", t, re.I))
+    # TJK sayfa sürümlerinde başlık; "1. Koşu", "1 Koşu" veya yalnızca
+    # koşu saatleri şeklinde gelebiliyor. Birden fazla saat tek başına yeterli
+    # kabul edilmez; Koşu ifadesiyle birlikte değerlendirilir.
+    if re.search(r"\b\d+\s*\.\s*Koşu\b", t, re.I):
+        return True
+    if re.search(r"\b\d+\s*Koşu\b", t, re.I):
+        return True
+    return bool(re.search(r"(?:Koşu|KOŞU).{0,80}\b\d{1,2}[:.]\d{2}\b", t, re.I) or
+                re.search(r"\b\d{1,2}[:.]\d{2}\b.{0,80}(?:Koşu|KOŞU)", t, re.I))
 
 
 def _parse_race_header(text: str) -> Optional[Dict[str, Any]]:
@@ -279,9 +311,30 @@ def _parse_program_html(raw_html: str, requested_city: str, source_url: str, tar
 
 
 def _fetch_city_program(date_value: Any, city: str, city_id: int, timeout: int = 30):
-    url = _program_page_url(date_value, city, city_id)
-    r = _get(url, timeout=timeout)
-    return r, _parse_program_html(r.text, city, r.url, normalize_date(date_value))
+    target = normalize_date(date_value)
+    session = _session()
+    # Önce resmi TJK günlük-program URL'sinin SehirAdi biçimi.
+    urls = [
+        _program_page_url(target, city, city_id, include_city_id=False),
+        _program_page_url(target, city, city_id, include_city_id=True),
+        PROGRAM_URL + "?" + urlencode({"QueryParameter_Tarih": format_date_tr(target), "SehirId": city_id}),
+    ]
+    last_response = None
+    last_parsed = None
+    for url in urls:
+        try:
+            r = _get(url, timeout=timeout, session=session)
+            parsed = _parse_program_html(r.text, city, r.url, target)
+            last_response, last_parsed = r, parsed
+            text = normalize_text(r.text)
+            # Yarış başlığı/saati veya parser'ın bulduğu koşular yeterli kanıttır.
+            if parsed.get("races") or _page_has_races(text) or re.search(r"\b\d{1,2}[:.]\d{2}\b", text):
+                return r, parsed
+        except Exception:
+            continue
+    if last_response is None:
+        raise RuntimeError(f"TJK program isteği başarısız: {city}")
+    return last_response, (last_parsed or {"ok": False, "races": [], "city": city, "date": target})
 
 
 def get_active_cities(date_value: Any) -> List[str]:
