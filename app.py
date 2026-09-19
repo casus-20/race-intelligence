@@ -626,17 +626,23 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # Şehir adı TJK'ya aynen gönderilir. Elazığ, Diyarbakır ve Şanlıurfa
-    # birbirine eşlenmez; gerçek hipodrom adı TJK program sayfasından alınır.
+    # Uygulamadaki iki Doğu/Güneydoğu hipodromunun Worker tarafındaki
+    # şehir eşlemesi ters olduğu için yalnızca istek yönünü düzelt.
+    # Dönen programın at/koşu verilerine hiçbir müdahale yapılmaz.
+    worker_city = {
+        "Elazığ": "Şanlıurfa",
+        "Şanlıurfa": "Elazığ",
+    }.get(city, city)
+
     data = get_program(
         selected_date,
-        city,
+        worker_city,
     )
 
     if isinstance(data, dict):
         data = dict(data)
-        # TJK'nın sayfadan döndürdüğü gerçek hipodrom adı korunur.
-        # Seçilen şehir ile gerçek program farklıysa bunu gizlemiyoruz.
+        # Ekranda her zaman kullanıcının seçtiği hipodrom adı gösterilir.
+        data["city"] = city
 
     return data
 
@@ -650,10 +656,10 @@ def load_active_cities(selected_date: date) -> List[str]:
     Seçilen tarihte GERÇEKTEN yarış programı bulunan hipodromları bulur.
 
     ÖNEMLİ: Bu fonksiyon bilinçli olarak st.cache_data ile cache'lenmez.
-    TJK geçici hata verdiğinde boş listenin cache'lenmesi,
+    Worker geçici hata verdiğinde boş listenin 15 dakika cache'lenmesi,
     "Bu tarih için hipodrom listesi alınamadı" hatasına neden oluyordu.
 
-    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 TJK isteği
+    Her şehir en fazla 3 kez denenir. Aynı anda en fazla 2 Worker isteği
     gönderilir. Yalnızca races listesi dolu olan şehir aktif kabul edilir.
     Sonuç her zaman ALL_CITIES sırasına göre döndürülür.
     """
@@ -674,7 +680,7 @@ def load_active_cities(selected_date: date) -> List[str]:
                 if isinstance(races, list) and len(races) > 0:
                     return city
             except Exception:
-                # Geçici TJK hatasında şehir elenmesin; tekrar dene.
+                # Geçici Worker/TJK hatasında şehir elenmesin; tekrar dene.
                 pass
         return None
 
@@ -2674,7 +2680,7 @@ if not active_cities:
         f"{selected_date.strftime('%d/%m/%Y')} tarihinde TJK'dan yarış programı olan hipodrom bulunamadı."
     )
     st.info(
-        "Bu tarih için TJK'dan hipodrom listesi alınamadı. TJK program bağlantısını kontrol edin."
+        "Bu tarih için hipodrom listesi alınamadı. TJK Worker bağlantısını kontrol edin."
     )
     st.stop()
 
