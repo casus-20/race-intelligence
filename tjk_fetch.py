@@ -671,7 +671,9 @@ def get_program(date_value: Any, city: str) -> Dict[str, Any]:
         "source": data.get("source","TJK Günlük Yarış Programı"),
         "date": normalize_date(date_value),
         "date_tr": _date_tr(date_value),
-        "city": normalize_text(city),
+        # Gerçek TJK hipodrom adı korunur; istek yapılan şehir adıyla
+        # üzerine yazılmaz.
+        "city": normalize_text(data.get("city") or data.get("hippodrome") or city),
         "hippodrome": data.get("hippodrome") or data.get("city") or normalize_text(city),
         "races": races,
         "race_count": len(races),
