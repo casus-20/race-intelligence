@@ -1192,7 +1192,7 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=10800, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
@@ -1225,7 +1225,7 @@ def enrich_race_horses(
     Hız optimizasyonu:
     - Atlar tek tek beklenmez; en fazla 4 at aynı anda sorgulanır.
     - Her atın geçmiş + galop sorgusu tjk_fetch içinde zaten paraleldir.
-    - Cache anahtarı yalnızca at kimliğidir; yarış parametreleri cache'i parçalamaz.
+    - At geçmişi/galop cache'i 180 dakika tutulur.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
     if not enriched:
@@ -3495,6 +3495,17 @@ st.markdown(
 
 
 # ============================================================
+# 180 DAKİKALIK ANALİZ CACHE
+# ============================================================
+# Aynı tarih + hipodrom + koşu + at geçmişi ile yapılan analiz 180 dakika
+# bellekte tutulur. Cache hit olduğunda TJK geçmişi/galop yeniden çekilmez
+# ve BİZİM SKOR motoru yeniden çalıştırılmaz.
+@st.cache_data(ttl=10800, show_spinner=False)
+def calculate_bizim_ranking_cached(horses: List[Dict[str, Any]], race: Dict[str, Any]):
+    return calculate_bizim_ranking(horses, race)
+
+
+# ============================================================
 # AT LİSTESİ
 # ============================================================
 
@@ -3526,13 +3537,6 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
-        # Önceki başarısız/boş TJK cevabının 15 dakikalık Streamlit cache'inde
-        # kalmasını engelle. Gerçek veri analizi her tıklamada yeniden sorgulanır.
-        try:
-            load_horse_enrichment.clear()
-        except Exception:
-            pass
-
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -3571,6 +3575,7 @@ else:
                 state="complete",
                 expanded=False,
             )
+            st.caption("🧠 Analiz sonucu 180 dakika bellekte tutulacak; aynı tarih/hipodrom/koşu tekrar açılırsa yeniden hesaplanmayacak.")
             if missing_atid:
                 st.warning(f"{missing_atid} atta TJK AtId bulunamadı; bu at için gerçek geçmiş sorgulanamaz.")
 
@@ -3610,7 +3615,7 @@ else:
     # BİZİM SKOR'a yalnızca gerçek analizde kullanılan güncel horse listesi
     # gönderilir. Böylece eski state/cache sonucu kullanılmaz.
     _ranking_input = horses if isinstance(horses, list) else []
-    ranking = calculate_bizim_ranking(_ranking_input, selected_race)
+    ranking = calculate_bizim_ranking_cached(_ranking_input, selected_race)
 
     # Gerçek veri analizi sonrası motorun gerçekten yeni veriyi gördüğünü kontrol et.
     if st.session_state.get("real_analysis_done"):
