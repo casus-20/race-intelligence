@@ -8,8 +8,23 @@ from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tjk_fetch import get_program, get_horse_enrichment
-# BİZİM SKOR: sabit 5 bileşenli model; tarih filtresi model içinde uygulanır.
-from bizim_skor_model import calculate_bizim_ranking
+
+# BİZİM SKOR: Uygulama ile aynı klasördeki sabit 5 bileşenli motoru
+# zorunlu olarak yükle. Böylece Streamlit ortamında eski/başka bir
+# "bizim_skor_model" modülünün yanlışlıkla import edilmesi engellenir.
+import importlib.util as _importlib_util
+from pathlib import Path as _Path
+
+_BIZIM_MODEL_PATH = _Path(__file__).with_name("bizim_skor_model.py")
+_BIZIM_SPEC = _importlib_util.spec_from_file_location(
+    "race_intelligence_bizim_skor_model",
+    _BIZIM_MODEL_PATH,
+)
+if _BIZIM_SPEC is None or _BIZIM_SPEC.loader is None:
+    raise ImportError(f"BİZİM SKOR motoru bulunamadı: {_BIZIM_MODEL_PATH}")
+_BIZIM_MODULE = _importlib_util.module_from_spec(_BIZIM_SPEC)
+_BIZIM_SPEC.loader.exec_module(_BIZIM_MODULE)
+calculate_bizim_ranking = _BIZIM_MODULE.calculate_bizim_ranking
 
 
 # ============================================================
@@ -1201,13 +1216,60 @@ def enrich_race_horses(
                 if item.get("owner") and item.get("trainer"):
                     break
 
+        # SON KOŞU sütunu analiz edilen koşunun günündeki yarışı göstermez.
+        # Seçili koşu tarihi T ise yalnızca tarih < T olan geçmiş yarışlar
+        # arasından en yeni tarihli yarış gösterilir.
         item["_last_race"] = None
-        for row in item["_history"]:
-            if not isinstance(row, dict):
-                continue
-            if (row.get("date") or row.get("tarih")) and (row.get("time") or row.get("derece")):
-                item["_last_race"] = row
-                break
+        try:
+            _target_dt = None
+            if target_date is not None:
+                if isinstance(target_date, datetime):
+                    _target_dt = target_date.date()
+                elif isinstance(target_date, date):
+                    _target_dt = target_date
+                else:
+                    _ts = str(target_date).strip()
+                    for _fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                        try:
+                            _target_dt = datetime.strptime(_ts[:10], _fmt).date()
+                            break
+                        except Exception:
+                            pass
+
+            _eligible_last = []
+            for row in item["_history"]:
+                if not isinstance(row, dict):
+                    continue
+                _date_text = row.get("date") or row.get("tarih") or row.get("Tarih")
+                _time_value = row.get("time") or row.get("derece") or row.get("Derece")
+                if not _date_text or not _time_value:
+                    continue
+
+                _row_dt = None
+                _rs = str(_date_text).strip()
+                for _fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                    try:
+                        _row_dt = datetime.strptime(_rs[:10], _fmt).date()
+                        break
+                    except Exception:
+                        pass
+
+                # Tarih çözülemiyorsa bugünkü/son yarış olduğu varsayılıp
+                # SON KOŞU sütununa alınmaz.
+                if _row_dt is None:
+                    continue
+
+                # KRİTİK KURAL: aynı gün ve sonrası kesinlikle dışarıda.
+                if _target_dt is not None and _row_dt >= _target_dt:
+                    continue
+
+                _eligible_last.append((_row_dt, row))
+
+            if _eligible_last:
+                _eligible_last.sort(key=lambda x: x[0], reverse=True)
+                item["_last_race"] = _eligible_last[0][1]
+        except Exception:
+            item["_last_race"] = None
         return idx, item, name
 
     ordered = [None] * total
@@ -3428,14 +3490,40 @@ else:
     # Geçmiş hesaplarında yalnızca bu tarihten ÖNCEKİ gün ve daha eski
     # yarışlar kullanılmalıdır; aynı gün ve sonraki kayıtlar kullanılmaz.
     selected_race["date"] = selected_date.isoformat()
-    ranking = calculate_bizim_ranking(horses, selected_race)
+    # BİZİM SKOR'a yalnızca gerçek analizde kullanılan güncel horse listesi
+    # gönderilir. Böylece eski state/cache sonucu kullanılmaz.
+    _ranking_input = horses if isinstance(horses, list) else []
+    ranking = calculate_bizim_ranking(_ranking_input, selected_race)
 
     # Gerçek veri analizi sonrası motorun gerçekten yeni veriyi gördüğünü kontrol et.
     if st.session_state.get("real_analysis_done"):
         _hist_total = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
         _work_total = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
         if not ranking:
-            st.error("Gerçek veri geldi ancak BİZİM SKOR motoru sonuç üretmedi. Bu durum veri çekiminden değil, skor motoru girişinden kaynaklanıyor.")
+            st.error(
+                f"BİZİM SKOR sonuç üretmedi. Motor girdisi: {len(_ranking_input)} at. "
+                f"Model: {_BIZIM_MODEL_PATH.name}. "
+                "Bu durumda artık veri çekimi değil, motor girdisinin yapısı kontrol edilmelidir."
+            )
+            # Boş sonuç oluştuğunda sessizce devam etmek yerine gerçek giriş
+            # yapısını göster; böylece hata doğrudan teşhis edilebilir.
+            with st.expander("🔧 BİZİM SKOR GİRİŞ KONTROLÜ", expanded=True):
+                st.write({
+                    "horse_count": len(_ranking_input),
+                    "horse_type": type(_ranking_input).__name__,
+                    "race_type": type(selected_race).__name__,
+                    "race_date": selected_race.get("date"),
+                    "model_file": str(_BIZIM_MODEL_PATH),
+                    "model_function": getattr(calculate_bizim_ranking, "__module__", "-"),
+                })
+                if _ranking_input:
+                    st.write({
+                        "first_horse_type": type(_ranking_input[0]).__name__,
+                        "first_horse_keys": list(_ranking_input[0].keys())[:30]
+                        if isinstance(_ranking_input[0], dict) else [],
+                        "first_history_count": len(_ranking_input[0].get("_history", []))
+                        if isinstance(_ranking_input[0], dict) else 0,
+                    })
         elif _hist_total == 0:
             st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
 
