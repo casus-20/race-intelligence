@@ -642,17 +642,13 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # Uygulamadaki iki Doğu/Güneydoğu hipodromunun Worker tarafındaki
-    # şehir eşlemesi ters olduğu için yalnızca istek yönünü düzelt.
-    # Dönen programın at/koşu verilerine hiçbir müdahale yapılmaz.
-    worker_city = {
-        "Elazığ": "Şanlıurfa",
-        "Şanlıurfa": "Elazığ",
-    }.get(city, city)
-
+    # TJK/Worker şehir kimlikleri artık doğrudan resmi şehir adıyla
+    # eşleşiyor. Elazığ <-> Şanlıurfa ters eşlemesi KULLANILMAMALI.
+    # Özellikle 21/09/2026 gibi dinamik programlarda yanlış hipodrom
+    # gösterilmesini önlemek için seçilen şehir aynen gönderilir.
     data = get_program(
         selected_date,
-        worker_city,
+        city,
     )
 
     if isinstance(data, dict):
