@@ -3423,6 +3423,10 @@ else:
             st.session_state.real_analysis_requested = False
 
 
+    # BİZİM SKOR için hedef koşu tarihi açıkça sabitlenir.
+    # Geçmiş hesaplarında yalnızca bu tarihten ÖNCEKİ gün ve daha eski
+    # yarışlar kullanılmalıdır; aynı gün ve sonraki kayıtlar kullanılmaz.
+    selected_race["date"] = selected_date.isoformat()
     ranking = calculate_bizim_ranking(horses, selected_race)
 
     # Gerçek veri analizi sonrası motorun gerçekten yeni veriyi gördüğünü kontrol et.
