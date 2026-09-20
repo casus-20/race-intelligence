@@ -3085,8 +3085,12 @@ _current_race_signature = (
     int(st.session_state.get("selected_race", 1)),
 )
 if st.session_state.get("_last_race_signature") != _current_race_signature:
+    # Koşu değiştiğinde önceki koşunun seçili atı/gerçek veri ayrıntısı
+    # kesinlikle yeni koşuya taşınmayacak.
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
+    st.session_state["_selected_detail_fetch_key"] = None
+    st.session_state["_last_eid_click_token"] = ""
     # Kullanıcı aynı rerun içinde GERÇEK VERİ butonuna bastıysa isteği
     # kesinlikle silme. Eski sürümde bu blok butondan sonra çalıştığı için
     # ilk tıklamada real_analysis_requested tekrar False olabiliyordu.
@@ -4518,7 +4522,10 @@ else:
         update_mode="SELECTION_CHANGED",
         data_return_mode="AS_INPUT",
         theme="streamlit",
-        key="horse_table_aggrid",
+        # Her koşunun AgGrid state'i ayrı tutulmalı. Aynı key kullanılırsa
+        # önceki koşunun seçili satırı yeni koşuya taşınabilir ve TJK geçmişi
+        # yanlış koşunun tablosunun altında açılabilir.
+        key=f"horse_table_aggrid_{race_number}_{selected_date.isoformat()}_{selected_city}",
     )
 
     raw_selected_rows = None
@@ -4574,9 +4581,18 @@ else:
                 selected_horse_index + 1,
             )
             st.session_state.selected_horse_index = selected_horse_index
-            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
+            _detail_fetch_key = (
+                str(race_number),
+                str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""),
+                str(selected_horse_index),
+                str(selected_date),
+                str(selected_city),
+                str(distance),
+                str(surface),
+                str(condition),
+            )
 
-            if horse_name_clicked and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
+            if horse_name_clicked and st.session_state.get("_selected_detail_fetch_key") != _detail_fetch_key:
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 horse_status = st.status(
@@ -4630,16 +4646,15 @@ else:
             selected_horse = horses[fallback_index]
 
     selected_no = st.session_state.get("selected_horse_no")
-    if selected_no is not None:
-        selected_horse = next(
-            (
-                h for h in horses
-                if str(get_horse_number(h, 0)) == str(selected_no)
-            ),
-            None,
-        )
+    if selected_no is not None and selected_horse is None:
+        # Yalnızca mevcut koşunun seçili index'i üzerinden geri yükle.
+        # At numarasına göre global arama yapılması farklı koşulardaki
+        # seçimlerin birbirine karışmasına yol açabilir.
+        current_index = st.session_state.get("selected_horse_index")
+        if isinstance(current_index, int) and 0 <= current_index < len(horses):
+            selected_horse = horses[current_index]
 
-        if selected_horse:
+    if selected_horse:
             st.markdown("---")
             # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
             # at için aç/kapatılabilir bilgi alanında göster.
