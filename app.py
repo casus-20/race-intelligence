@@ -4588,67 +4588,103 @@ else:
     # Her sütun kendi değerlerine göre sıralanır. İlk 3 yeşil, son 3 kırmızı,
     # aradaki değerler sarı tonlarıdır. İlk 3'ün yazısı beyaz, son 3'ün yazısı mavidir.
     _score_circle_renderer = JsCode(r"""
-    function(params) {
-        var value = Number(params.value);
-        if (!isFinite(value) || !params.api) {
-            return params.value == null ? '' : String(params.value);
-        }
+    class ScoreCircleRenderer {
+        init(params) {
+            const root = document.createElement('div');
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.alignItems = 'center';
+            root.style.justifyContent = 'center';
+            root.style.boxSizing = 'border-box';
+            root.style.overflow = 'hidden';
 
-        var field = params.colDef.field;
-        var values = [];
-        params.api.forEachNodeAfterFilterAndSort(function(node) {
-            if (!node.data) return;
-            var x = Number(node.data[field]);
-            if (isFinite(x)) values.push(x);
-        });
-
-        // Büyükten küçüğe sıralama; eşit değerler aynı dereceyi paylaşır.
-        values.sort(function(a, b) { return b - a; });
-
-        var unique = [];
-        values.forEach(function(x) {
-            if (!unique.length || unique[unique.length - 1] !== x) unique.push(x);
-        });
-
-        var rank = unique.indexOf(value) + 1;
-        var bottomRank = unique.length - 2;
-        var bg = '#f3c84b';
-        var fg = '#222222';
-        var border = '#d6a900';
-
-        // En yüksek 3 farklı değer: yeşil tonları + beyaz yazı.
-        if (rank >= 1 && rank <= 3) {
-            var green = ['#16803c', '#2ca25f', '#55b879'][rank - 1];
-            bg = green;
-            fg = '#ffffff';
-            border = '#116b31';
-        }
-        // En düşük 3 farklı değer: kırmızı tonları + mavi yazı.
-        else if (unique.length >= 3 && rank >= bottomRank) {
-            var redRank = rank - bottomRank;
-            var red = ['#e76f51', '#d94a3a', '#b91c1c'][Math.max(0, Math.min(2, redRank))];
-            bg = red;
-            fg = '#0057b8';
-            border = '#991b1b';
-        }
-        // Orta değerler sarı tonları.
-        else {
-            var mid = unique.length > 1 ? (rank - 1) / (unique.length - 1) : 0.5;
-            if (mid < 0.5) {
-                bg = '#f7d774';
-                border = '#d6ad32';
-            } else {
-                bg = '#f1bd3a';
-                border = '#c99618';
+            const value = Number(params.value);
+            if (!isFinite(value) || !params.api) {
+                const plain = document.createElement('span');
+                plain.textContent = params.value == null ? '' : String(params.value);
+                plain.style.fontWeight = '900';
+                plain.style.fontSize = '13px';
+                root.appendChild(plain);
+                this.eGui = root;
+                return;
             }
-        }
 
-        return '<span style="display:inline-flex;align-items:center;justify-content:center;'
-             + 'width:42px;height:42px;border-radius:50%;box-sizing:border-box;'
-             + 'background:' + bg + ';border:2px solid ' + border + ';'
-             + 'color:' + fg + ';font-weight:900;font-size:13px;line-height:1;'
-             + 'text-align:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);">'
-             + String(params.value) + '</span>';
+            const field = params.colDef.field;
+            const values = [];
+            params.api.forEachNodeAfterFilterAndSort(function(node) {
+                if (!node.data) return;
+                const x = Number(node.data[field]);
+                if (isFinite(x)) values.push(x);
+            });
+
+            values.sort(function(a, b) { return b - a; });
+
+            // Aynı değere aynı sıra verilir.
+            const unique = [];
+            values.forEach(function(x) {
+                if (!unique.length || unique[unique.length - 1] !== x) unique.push(x);
+            });
+
+            const rank = unique.indexOf(value) + 1;
+            const bottomStart = Math.max(1, unique.length - 2);
+
+            let bg = '#f3c84b';
+            let fg = '#222222';
+            let border = '#d6a900';
+
+            // İlk 3: yeşil tonları + beyaz yazı.
+            if (rank <= 3) {
+                const greens = ['#16803c', '#2ca25f', '#55b879'];
+                bg = greens[rank - 1] || greens[2];
+                fg = '#ffffff';
+                border = '#116b31';
+            }
+            // Son 3: kırmızı tonları + mavi yazı.
+            else if (unique.length >= 3 && rank >= bottomStart) {
+                const redIndex = rank - bottomStart;
+                const reds = ['#e76f51', '#d94a3a', '#b91c1c'];
+                bg = reds[Math.max(0, Math.min(2, redIndex))];
+                fg = '#0057b8';
+                border = '#991b1b';
+            }
+            // Ortadakiler: sarı tonları.
+            else {
+                const ratio = unique.length > 1 ? (rank - 1) / (unique.length - 1) : 0.5;
+                if (ratio < 0.5) {
+                    bg = '#f7d774';
+                    border = '#d6ad32';
+                } else {
+                    bg = '#f1bd3a';
+                    border = '#c99618';
+                }
+            }
+
+            const circle = document.createElement('span');
+            circle.textContent = String(params.value);
+            circle.style.display = 'inline-flex';
+            circle.style.alignItems = 'center';
+            circle.style.justifyContent = 'center';
+            circle.style.width = '42px';
+            circle.style.height = '42px';
+            circle.style.minWidth = '42px';
+            circle.style.borderRadius = '50%';
+            circle.style.boxSizing = 'border-box';
+            circle.style.background = bg;
+            circle.style.border = '2px solid ' + border;
+            circle.style.color = fg;
+            circle.style.fontWeight = '900';
+            circle.style.fontSize = '13px';
+            circle.style.lineHeight = '1';
+            circle.style.textAlign = 'center';
+            circle.style.whiteSpace = 'nowrap';
+            circle.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
+
+            root.appendChild(circle);
+            this.eGui = root;
+        }
+        refresh(params) { return false; }
+        getGui() { return this.eGui; }
     }
     """)
 
