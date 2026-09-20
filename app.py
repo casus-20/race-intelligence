@@ -1636,14 +1636,17 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
 
 
 def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int, target_date: Any = None, target_city_name: str = "") -> str:
-    """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
+    """Analiz edilen yarışın TJK gerçek sonucunu bulur.
 
-    Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
-    Sonuç yoksa hiçbir derece uydurulmaz.
+    Bu gösterim BİZİM SKOR hesabına dahil değildir. Amaç yalnızca yarış
+    sonuçlandıktan sonra At İsmi'nin sonunda (1.), (2.) gibi sonucu göstermektir.
+    Bir at aynı gün normalde tek yarış koştuğu için, tarih + atın geçmişindeki
+    sonuç kaydı birincil eşleştirmedir; şehir/mesafe gibi alanlar yalnızca
+    destekleyici doğrulama olarak kullanılır.
     """
     def _position(value: Any) -> int | None:
         if isinstance(value, dict):
-            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition"):
+            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
                 if value.get(k) not in (None, "", "-"):
                     return _position(value.get(k))
             return None
@@ -1658,34 +1661,7 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
         except Exception:
             return None
 
-    # 1) TJK program/result nesnesindeki gerçek sonuç.
-    for key in (
-        "finish", "place", "sira", "S", "result", "sonuc",
-        "position", "finishPosition", "finish_position", "rank",
-    ):
-        if key in horse and horse.get(key) not in (None, "", "-"):
-            pos = _position(horse.get(key))
-            if pos is not None:
-                return f"({pos}.)"
-
-    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
-    no = get_horse_number(horse, horse_index + 1)
-    for container in (
-        race.get("results"), race.get("result"), race.get("resultMap"),
-        race.get("result_map"), race.get("finish"),
-    ):
-        if isinstance(container, dict):
-            for key in (no, str(no), horse.get("no"), horse.get("numara")):
-                if key in container:
-                    pos = _position(container.get(key))
-                    if pos is not None:
-                        return f"({pos}.)"
-
-    # 3) Koşu günü geçmişi TJK tarafından güncellendiyse, hedef tarihteki
-    # gerçek yarış sonucunu geçmiş satırından otomatik bul.
-    # BİZİM SKOR'un tarih kuralını bozmamak için bu kayıt skorlamaya
-    # sokulmaz; yalnızca sonuç göstergesi olarak kullanılır.
-    def _parse_date(value):
+    def _parse_date(value: Any):
         if value in (None, "", "-"):
             return None
         if isinstance(value, datetime):
@@ -1700,93 +1676,62 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                 pass
         return None
 
-    # Yarış nesnesinde tarih/hipodrom alanı bulunmayabildiği için
-    # ekranın seçtiği tarih ve hipodromu doğrudan kullan.
-    target_dt = _parse_date(
-        race.get("date") or race.get("tarih") or race.get("Tarih") or target_date
-    )
-    target_city = str(
-        race.get("city") or race.get("hipodrom") or target_city_name or ""
-    ).strip().lower()
-    target_distance = str(race.get("distance") or race.get("mesafe") or "").strip().lower()
-    target_surface = str(race.get("surface") or race.get("pist") or "").strip().lower()
-    target_number = _position(race.get("race_number") or race.get("raceNo") or race.get("kosuNo") or race.get("raceNumber"))
-    target_condition = " ".join(
-        str(race.get(k) or "")
-        for k in ("condition", "raceCondition", "race_condition", "raceName", "race_name", "title", "name")
-    ).strip().lower()
+    # 1) Program sonucunda doğrudan sonuç varsa kullan.
+    for key in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+        if horse.get(key) not in (None, "", "-"):
+            pos = _position(horse.get(key))
+            if pos is not None:
+                return f"({pos}.)"
 
+    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
+    no = get_horse_number(horse, horse_index + 1)
+    for container in (race.get("results"), race.get("result"), race.get("resultMap"), race.get("result_map"), race.get("finish")):
+        if isinstance(container, dict):
+            for key in (no, str(no), horse.get("no"), horse.get("numara")):
+                if key in container:
+                    pos = _position(container.get(key))
+                    if pos is not None:
+                        return f"({pos}.)"
+
+    target_dt = _parse_date(target_date or race.get("date") or race.get("tarih") or race.get("Tarih"))
     if target_dt is not None:
-        candidates = []
+        same_day = []
         for row in horse.get("_history", []):
             if not isinstance(row, dict):
                 continue
-            if _parse_date(row.get("date") or row.get("tarih") or row.get("Tarih")) != target_dt:
+            row_dt = _parse_date(row.get("date") or row.get("tarih") or row.get("Tarih"))
+            if row_dt != target_dt:
                 continue
-
-            row_city = str(row.get("city") or row.get("şehir") or row.get("sehir") or row.get("hipodrom") or "").strip().lower()
-            row_distance = str(row.get("distance") or row.get("mesafe") or row.get("msf") or "").strip().lower()
-            row_surface = str(row.get("surface") or row.get("pist") or row.get("zemin") or "").strip().lower()
-            row_number = _position(row.get("race_number") or row.get("raceNo") or row.get("kosuNo") or row.get("raceNumber"))
-
-            # Önce yarış numarası mevcutsa kesin eşleştir. Fetcher bazı TJK
-            # cevaplarında bu alanı vermediği için şehir/mesafe/pist de kullanılır.
-            if target_number is not None and row_number is not None and row_number != target_number:
-                continue
-            if target_city and row_city and target_city not in row_city and row_city not in target_city:
-                continue
-            if target_distance and row_distance and re.sub(r"\D", "", target_distance) and re.sub(r"\D", "", target_distance) != re.sub(r"\D", "", row_distance):
-                continue
-            if target_surface and row_surface:
-                def _norm_surface(x):
-                    return re.sub(r"[^a-zçğıöşü]", "", x.replace("ı", "i").replace("ş", "s").replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c"))
-                if _norm_surface(target_surface) not in _norm_surface(row_surface) and _norm_surface(row_surface) not in _norm_surface(target_surface):
-                    continue
-
-            # Aynı gün/hipodrom/mesafede birden fazla koşu varsa koşu şartı
-            # ile ikinci doğrulama yap. Alan yoksa bu filtre uygulanmaz.
-            if target_condition:
-                row_condition = " ".join(
-                    str(row.get(k) or "")
-                    for k in ("condition", "raceCondition", "race_condition", "raceName", "race_name", "race", "group", "raceType")
-                ).strip().lower()
-                if row_condition:
-                    def _norm_text(x):
-                        return re.sub(r"[^a-z0-9çğıöşü]", "", x.replace("ı", "i").replace("ş", "s").replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c"))
-                    tc = _norm_text(target_condition)
-                    rc = _norm_text(row_condition)
-                    if tc not in rc and rc not in tc:
-                        # Yarış şartının yalnızca bir kısmı ortaksa da kabul et.
-                        tc_words = [w for w in re.split(r"\s+", target_condition) if len(w) >= 4]
-                        if not any(w in row_condition for w in tc_words[:4]):
-                            continue
-
-            pos = _position(row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("rank"))
+            pos = _position(row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("position") or row.get("finishPosition") or row.get("rank"))
             if pos is not None:
-                candidates.append((row, pos))
+                same_day.append((row, pos))
 
-        # Tek hedef yarış kaydı varsa veya filtreler kesin eşleştirdiyse kullan.
-        if len(candidates) == 1:
-            return f"({candidates[0][1]}.)"
-        if candidates:
-            # Aynı gün birden fazla yarış kaldıysa yarış adı/şart ile son bir eşleştirme yap.
-            race_text = " ".join(str(race.get(k) or "") for k in ("condition", "raceName", "race_name", "title", "name")).strip().lower()
-            if race_text:
-                for row, pos in candidates:
-                    row_text = " ".join(str(row.get(k) or "") for k in ("raceName", "race_name", "race", "group", "raceType")).strip().lower()
-                    if row_text and (race_text in row_text or row_text in race_text):
-                        return f"({pos}.)"
+        # En güçlü eşleşme: atın geçmişinde hedef tarihteki sonuç.
+        if same_day:
+            target_city = str(target_city_name or race.get("city") or race.get("hipodrom") or "").strip().lower()
+            target_distance = re.sub(r"\D", "", str(race.get("distance") or race.get("mesafe") or ""))
+            target_surface = str(race.get("surface") or race.get("pist") or "").strip().lower()
+            for row, pos in same_day:
+                row_city = str(row.get("city") or row.get("şehir") or row.get("sehir") or row.get("hipodrom") or "").strip().lower()
+                row_distance = re.sub(r"\D", "", str(row.get("distance") or row.get("mesafe") or row.get("msf") or ""))
+                row_surface = str(row.get("surface") or row.get("pist") or row.get("zemin") or "").strip().lower()
+                city_ok = not target_city or not row_city or target_city in row_city or row_city in target_city
+                distance_ok = not target_distance or not row_distance or target_distance == row_distance
+                surface_ok = not target_surface or not row_surface or target_surface in row_surface or row_surface in target_surface
+                if city_ok and distance_ok and surface_ok:
+                    return f"({pos}.)"
+            # Aynı gün için tek sonuç varsa diğer alanlar eksik olsa bile kabul et.
+            if len(same_day) == 1:
+                return f"({same_day[0][1]}.)"
 
-    # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
+    # Koşmaz/çekildi bilgisi varsa göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
     try:
-        equipment_text = get_horse_equipment(horse)
+        status_text += " " + str(get_horse_equipment(horse))
     except Exception:
-        equipment_text = ""
-    status_text += " " + str(equipment_text)
+        pass
     if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
         return "(Koşmaz)"
-
     return ""
 
 
@@ -3986,67 +3931,62 @@ else:
             root.style.overflow = 'hidden';
             root.style.lineHeight = '1.08';
             root.style.boxSizing = 'border-box';
+
             const parts = String(params.value ?? '').split(/\r?\n/).filter(x => x !== '');
-            parts.forEach((part, i) => {
+            const nameLine = document.createElement('div');
+            nameLine.style.display = 'flex';
+            nameLine.style.alignItems = 'baseline';
+            nameLine.style.width = '100%';
+            nameLine.style.minWidth = '0';
+            nameLine.style.overflow = 'hidden';
+            nameLine.style.whiteSpace = 'nowrap';
+
+            const base = document.createElement('span');
+            base.textContent = parts.length ? parts[0] : '';
+            base.style.color = '#d40000';
+            base.style.fontWeight = '900';
+            base.style.fontSize = '13px';
+            base.style.whiteSpace = 'nowrap';
+            base.style.overflow = 'hidden';
+            base.style.textOverflow = 'clip';
+            nameLine.appendChild(base);
+
+            const result = String((params.data && params.data._race_finish) || '').trim();
+            if (result) {
+                const wrap = document.createElement('span');
+                wrap.style.marginLeft = '4px';
+                wrap.style.fontSize = '12px';
+                wrap.style.fontWeight = '950';
+                wrap.style.whiteSpace = 'nowrap';
+                wrap.style.flex = '0 0 auto';
+                const m = result.match(/^\((.*?)\)$/);
+                if (m) {
+                    const l = document.createElement('span'); l.textContent = '('; l.style.color = '#1565c0';
+                    const v = document.createElement('span'); v.textContent = m[1]; v.style.color = '#126b2f'; v.style.fontWeight = '950';
+                    const rr = document.createElement('span'); rr.textContent = ')'; rr.style.color = '#1565c0';
+                    wrap.appendChild(l); wrap.appendChild(v); wrap.appendChild(rr);
+                } else {
+                    wrap.textContent = result;
+                    wrap.style.color = '#126b2f';
+                }
+                nameLine.appendChild(wrap);
+            }
+            root.appendChild(nameLine);
+
+            for (let i = 1; i < parts.length; i++) {
                 const span = document.createElement('span');
-                span.textContent = part;
-                span.style.color = (i === 0) ? '#d40000' : '#f1c40f';
+                span.textContent = parts[i];
+                span.style.color = '#f1c40f';
                 span.style.fontWeight = '900';
                 span.style.whiteSpace = 'nowrap';
                 span.style.maxWidth = '100%';
                 span.style.overflow = 'hidden';
                 span.style.textOverflow = 'clip';
                 span.style.display = 'block';
-                span.style.fontSize = '13px';
+                span.style.fontSize = '12px';
                 root.appendChild(span);
-            });
-
-            // Yarış sonuçlandıysa dereceyi at adının hemen sonunda göster.
-            // Parantezler mavi, parantez içindeki sıra koyu yeşildir.
-            const result = String((params.data && params.data._race_finish) || '').trim();
-            if (result) {
-                const resultWrap = document.createElement('span');
-                resultWrap.style.display = 'inline-flex';
-                resultWrap.style.alignItems = 'center';
-                resultWrap.style.marginLeft = '4px';
-                resultWrap.style.fontSize = '12px';
-                resultWrap.style.fontWeight = '900';
-                resultWrap.style.whiteSpace = 'nowrap';
-
-                const m = result.match(/^\((.*?)\)$/);
-                if (m) {
-                    const left = document.createElement('span');
-                    left.textContent = '(';
-                    left.style.color = '#1565c0';
-                    const value = document.createElement('span');
-                    value.textContent = m[1];
-                    value.style.color = '#126b2f';
-                    value.style.fontWeight = '950';
-                    const right = document.createElement('span');
-                    right.textContent = ')';
-                    right.style.color = '#1565c0';
-                    resultWrap.appendChild(left);
-                    resultWrap.appendChild(value);
-                    resultWrap.appendChild(right);
-                } else {
-                    resultWrap.textContent = result;
-                    resultWrap.style.color = '#126b2f';
-                }
-                root.appendChild(resultWrap);
             }
             this.eGui = root;
-            this.fitText = () => {
-                const spans = root.querySelectorAll('span');
-                spans.forEach(span => {
-                    let size = 13;
-                    span.style.fontSize = size + 'px';
-                    while (size > 8 && span.scrollWidth > root.clientWidth) {
-                        size -= 0.5;
-                        span.style.fontSize = size + 'px';
-                    }
-                });
-            };
-            requestAnimationFrame(this.fitText);
         }
         refresh(params) { return false; }
         getGui() { return this.eGui; }
