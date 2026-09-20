@@ -946,68 +946,138 @@ def get_horse_age(
     return text
 
 def get_race_condition(race: Dict[str, Any]) -> str:
-    """Koşu başlığında TJK'nın gerçek yarış şartını gösterir.
+    """TJK'nın gerçek koşu şartını başlıktan çıkarır.
 
-    'Tüm Koşular' program filtresi bilgisidir; yarış şartı değildir.
-    Bu nedenle gerçek şart alanı varsa onu tercih ederiz.
+    Önemli: ``Tüm Koşular`` bir filtre değeridir; koşu şartı değildir.
+    TJK program parser'ının koruduğu ``meta.raw`` / ``raw`` başlığı varsa,
+    şartı doğrudan o başlıktan çıkarıyoruz. Böylece örneğin:
+
+        9. Koşu 18:00 Handikap 16/DHÖW /H1, 4 ve Yukarı Araplar 1500 Sentetik ...
+
+    başlığından yalnızca gerçek şart:
+
+        Handikap 16/DHÖW /H1, 4 ve Yukarı Araplar
+
+    alınır.
     """
+    def clean(value: Any) -> str:
+        text = display_value(value, "") if value not in (None, "") else ""
+        text = re.sub(r"\s+", " ", text).strip(" ,;-:")
+        if text.lower() in {"tüm koşular", "tum kosular", "-"}:
+            return ""
+        return text
+
+    race_no = get_race_number(race, 0)
+    race_time = clean(race.get("race_time") or race.get("time"))
+    distance = clean(race.get("distance"))
+    surface = clean(race.get("surface"))
+
+    # 1) TJK'nın ham koşu başlığından çıkar. Bu, önceki denemede eksik kalan
+    # kritik kısımdır: condition alanı '-' olsa bile meta.raw gerçek başlığı taşır.
+    raw_sources = []
+    meta = race.get("meta")
+    if isinstance(meta, dict):
+        for key in ("raw", "detail", "raceDetail", "race_detail", "header", "raceHeader", "race_header"):
+            value = clean(meta.get(key))
+            if value:
+                raw_sources.append(value)
+    for key in ("raw", "detail", "raceDetail", "race_detail", "header", "raceHeader", "race_header"):
+        value = clean(race.get(key))
+        if value:
+            raw_sources.append(value)
+
+    for raw in raw_sources:
+        # Bir raw metni birden fazla koşuyu içerebiliyorsa seçili koşunun
+        # son "N. Koşu" işaretinden itibaren olan bölümünü kullan.
+        marks = list(re.finditer(r"\b(\d{1,2})\.\s*Koşu\b", raw, flags=re.I))
+        if marks:
+            wanted = [m for m in marks if race_no and int(m.group(1)) == int(race_no)]
+            raw = raw[(wanted[-1] if wanted else marks[-1]).start():]
+
+        # Başlangıç: "9. Koşu 18:00". Saat yoksa sadece "9. Koşu".
+        if race_no:
+            prefix = rf"\b{int(race_no)}\.\s*Koşu\b"
+        else:
+            prefix = r"\b\d{1,2}\.\s*Koşu\b"
+        m = re.search(prefix, raw, flags=re.I)
+        if not m:
+            continue
+        tail = raw[m.end():].strip()
+
+        if race_time and race_time != "-":
+            # Saat formatı 18:00 / 18.00 vb. olabilir.
+            tm = re.search(r"^\s*" + re.escape(race_time) + r"\s*", tail)
+            if tm:
+                tail = tail[tm.end():]
+            else:
+                tm = re.search(r"^\s*\d{1,2}[:.]\d{2}\s*", tail)
+                if tm:
+                    tail = tail[tm.end():]
+
+        # İkramiye ve prim bölümlerine gelmeden önce kes.
+        tail = re.split(
+            r"\s+(?=(?:İkramiye|Ikramiye|Yetiştirici(?:lik)? Primi|Yetistirici(?:lik)? Primi|At\s*Sahibi\s*Primi)\s*[:\-]?)",
+            tail,
+            maxsplit=1,
+            flags=re.I,
+        )[0].strip(" ,;-:")
+
+        # Mesafe + pist kısmından hemen önceki metin gerçek koşu şartıdır.
+        if distance and distance != "-":
+            dm = re.search(r"\b" + re.escape(distance) + r"\b", tail, flags=re.I)
+            if dm:
+                candidate = clean(tail[:dm.start()])
+                if candidate:
+                    return candidate
+
+        # Mesafe alanı farklı biçimde geldiyse, pist adı üzerinden kes.
+        if surface and surface != "-":
+            sm = re.search(r"\b" + re.escape(surface) + r"\b", tail, flags=re.I)
+            if sm:
+                before_surface = tail[:sm.start()].strip()
+                # Son sayı grubunu mesafe kabul edip çıkar.
+                candidate = re.sub(r"\s+\d{3,4}\s*$", "", before_surface).strip(" ,;-:")
+                candidate = clean(candidate)
+                if candidate:
+                    return candidate
+
+        # Son çare: ham başlıktaki ilk anlamlı metin; ancak filtre/boş değer dönmesin.
+        candidate = clean(tail)
+        candidate = re.sub(r"\s+\d{3,4}\s+(?:Kum|Çim|Sentetik)\b.*$", "", candidate, flags=re.I)
+        if candidate:
+            return candidate
+
+    # 2) Ham başlık yoksa doğrudan normalize edilmiş alanları kullan.
     candidates = []
-
-    def add(value):
-        value = display_value(value, "") if value not in (None, "") else ""
-        if value and value.strip().lower() not in {"tüm koşular", "tum kosular"}:
-            candidates.append(value.strip())
-
-    # Önce doğrudan koşu şartı alanlarını kontrol et.
     for key in (
         "condition", "raceCondition", "race_condition",
-        "conditionName", "condition_name",
-        "className", "class", "sinif", "sınıf",
-        "raceName", "race_name", "kosu",
+        "conditionName", "condition_name", "className", "class",
+        "sinif", "sınıf", "raceName", "race_name", "kosu",
         "title", "name",
     ):
-        add(race.get(key))
+        value = clean(race.get(key))
+        if value:
+            candidates.append(value)
 
-    meta = race.get("meta")
     if isinstance(meta, dict):
         for key in (
             "condition", "raceCondition", "race_condition",
-            "conditionName", "condition_name",
-            "className", "class", "sinif", "sınıf",
-            "raceName", "race_name", "kosu",
-            "detail", "title", "name",
+            "conditionName", "condition_name", "className", "class",
+            "sinif", "sınıf", "raceName", "race_name", "kosu",
+            "title", "name", "detail",
         ):
-            add(meta.get(key))
+            value = clean(meta.get(key))
+            if value:
+                candidates.append(value)
 
-    # Program verisinde şart ayrı alanda yoksa, yarış başlığını taşıyan
-    # diğer alanlardan gerçek şartı bul.
-    if not candidates:
-        for key in (
-            "detail", "raceDetail", "race_detail", "description",
-            "raceDescription", "race_description", "header",
-            "raceHeader", "race_header",
-        ):
-            add(race.get(key))
-        if isinstance(meta, dict):
-            for key in (
-                "detail", "raceDetail", "race_detail", "description",
-                "raceDescription", "race_description", "header",
-                "raceHeader", "race_header",
-            ):
-                add(meta.get(key))
-
-    if not candidates:
-        return "-"
-
-    # "Tüm Koşular" yalnızca program filtresidir; hiçbir zaman yarış şartı
-    # olarak döndürülmez.
     for candidate in candidates:
-        cleaned = re.split(
-            r"\s+(?=İkramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s+Sahibi\s+Primi\s*:)",
-            candidate, maxsplit=1, flags=re.I
-        )[0].strip(" ,;-:")
-        if cleaned and cleaned.lower() not in {"tüm koşular", "tum kosular", "-"}:
-            return cleaned
+        candidate = re.split(
+            r"\s+(?=İkramiye\s*:|Ikramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s*Sahibi\s*Primi\s*:)",
+            candidate, maxsplit=1, flags=re.I,
+        )[0]
+        candidate = clean(candidate)
+        if candidate:
+            return candidate
 
     return "-"
 
