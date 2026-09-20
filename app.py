@@ -4584,63 +4584,80 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF için hücre bazlı göreli renk skalası.
-    # Her sütunun kendi satırları içinde min-max hesaplanır:
-    # düşük = kırmızı tonları, orta = sarı tonları, yüksek = yeşil tonları.
-    # Değer değişmez; yalnızca hücrenin arka planı ve okunabilirlik için yazı rengi değişir.
-    _score_heatmap_style = JsCode(r"""
+    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
+    # Her sütun kendi değerlerine göre sıralanır. İlk 3 yeşil, son 3 kırmızı,
+    # aradaki değerler sarı tonlarıdır. İlk 3'ün yazısı beyaz, son 3'ün yazısı mavidir.
+    _score_circle_renderer = JsCode(r"""
     function(params) {
-        var v = Number(params.value);
-        if (!isFinite(v) || !params.api) {
-            return {fontWeight: '900'};
+        var value = Number(params.value);
+        if (!isFinite(value) || !params.api) {
+            return params.value == null ? '' : String(params.value);
         }
 
-        var min = Infinity, max = -Infinity;
-        params.api.forEachNode(function(node) {
+        var field = params.colDef.field;
+        var values = [];
+        params.api.forEachNodeAfterFilterAndSort(function(node) {
             if (!node.data) return;
-            var x = Number(node.data[params.colDef.field]);
-            if (isFinite(x)) {
-                if (x < min) min = x;
-                if (x > max) max = x;
-            }
+            var x = Number(node.data[field]);
+            if (isFinite(x)) values.push(x);
         });
 
-        var t = 0.5;
-        if (isFinite(min) && isFinite(max) && max > min) {
-            t = (v - min) / (max - min);
-            t = Math.max(0, Math.min(1, t));
+        // Büyükten küçüğe sıralama; eşit değerler aynı dereceyi paylaşır.
+        values.sort(function(a, b) { return b - a; });
+
+        var unique = [];
+        values.forEach(function(x) {
+            if (!unique.length || unique[unique.length - 1] !== x) unique.push(x);
+        });
+
+        var rank = unique.indexOf(value) + 1;
+        var bottomRank = unique.length - 2;
+        var bg = '#f3c84b';
+        var fg = '#222222';
+        var border = '#d6a900';
+
+        // En yüksek 3 farklı değer: yeşil tonları + beyaz yazı.
+        if (rank >= 1 && rank <= 3) {
+            var green = ['#16803c', '#2ca25f', '#55b879'][rank - 1];
+            bg = green;
+            fg = '#ffffff';
+            border = '#116b31';
+        }
+        // En düşük 3 farklı değer: kırmızı tonları + mavi yazı.
+        else if (unique.length >= 3 && rank >= bottomRank) {
+            var redRank = rank - bottomRank;
+            var red = ['#e76f51', '#d94a3a', '#b91c1c'][Math.max(0, Math.min(2, redRank))];
+            bg = red;
+            fg = '#0057b8';
+            border = '#991b1b';
+        }
+        // Orta değerler sarı tonları.
+        else {
+            var mid = unique.length > 1 ? (rank - 1) / (unique.length - 1) : 0.5;
+            if (mid < 0.5) {
+                bg = '#f7d774';
+                border = '#d6ad32';
+            } else {
+                bg = '#f1bd3a';
+                border = '#c99618';
+            }
         }
 
-        // Kırmızı -> sarı -> yeşil. Tonlar değere göre yumuşak geçiş yapar.
-        var r, g, b;
-        if (t < 0.5) {
-            var q = t * 2;
-            r = Math.round(220 + (245 - 220) * q);
-            g = Math.round(70 + (190 - 70) * q);
-            b = Math.round(70 + (60 - 70) * q);
-        } else {
-            var q2 = (t - 0.5) * 2;
-            r = Math.round(245 - (245 - 55) * q2);
-            g = Math.round(190 + (185 - 190) * q2);
-            b = Math.round(60 + (75 - 60) * q2);
-        }
-
-        var bg = 'rgb(' + r + ',' + g + ',' + b + ')';
-        var luminance = (0.299 * r + 0.587 * g + 0.114 * b);
-        var fg = luminance < 145 ? '#ffffff' : '#222222';
-
-        return {
-            backgroundColor: bg,
-            color: fg,
-            fontWeight: '900',
-            textAlign: 'center'
-        };
+        return '<span style="display:inline-flex;align-items:center;justify-content:center;'
+             + 'width:42px;height:42px;border-radius:50%;box-sizing:border-box;'
+             + 'background:' + bg + ';border:2px solid ' + border + ';'
+             + 'color:' + fg + ';font-weight:900;font-size:13px;line-height:1;'
+             + 'text-align:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);">'
+             + String(params.value) + '</span>';
     }
     """)
 
-    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=_score_heatmap_style)
-    gb.configure_column("REYTİNG", width=105, minWidth=90, cellStyle=_score_heatmap_style)
-    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=_score_heatmap_style)
+    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
+                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
+    gb.configure_column("REYTİNG", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
+                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
+    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellRenderer=_score_circle_renderer,
+                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
