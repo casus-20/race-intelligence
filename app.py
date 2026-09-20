@@ -4584,9 +4584,63 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
-    gb.configure_column("REYTİNG", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
-    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
+    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF için hücre bazlı göreli renk skalası.
+    # Her sütunun kendi satırları içinde min-max hesaplanır:
+    # düşük = kırmızı tonları, orta = sarı tonları, yüksek = yeşil tonları.
+    # Değer değişmez; yalnızca hücrenin arka planı ve okunabilirlik için yazı rengi değişir.
+    _score_heatmap_style = JsCode(r"""
+    function(params) {
+        var v = Number(params.value);
+        if (!isFinite(v) || !params.api) {
+            return {fontWeight: '900'};
+        }
+
+        var min = Infinity, max = -Infinity;
+        params.api.forEachNode(function(node) {
+            if (!node.data) return;
+            var x = Number(node.data[params.colDef.field]);
+            if (isFinite(x)) {
+                if (x < min) min = x;
+                if (x > max) max = x;
+            }
+        });
+
+        var t = 0.5;
+        if (isFinite(min) && isFinite(max) && max > min) {
+            t = (v - min) / (max - min);
+            t = Math.max(0, Math.min(1, t));
+        }
+
+        // Kırmızı -> sarı -> yeşil. Tonlar değere göre yumuşak geçiş yapar.
+        var r, g, b;
+        if (t < 0.5) {
+            var q = t * 2;
+            r = Math.round(220 + (245 - 220) * q);
+            g = Math.round(70 + (190 - 70) * q);
+            b = Math.round(70 + (60 - 70) * q);
+        } else {
+            var q2 = (t - 0.5) * 2;
+            r = Math.round(245 - (245 - 55) * q2);
+            g = Math.round(190 + (185 - 190) * q2);
+            b = Math.round(60 + (75 - 60) * q2);
+        }
+
+        var bg = 'rgb(' + r + ',' + g + ',' + b + ')';
+        var luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+        var fg = luminance < 145 ? '#ffffff' : '#222222';
+
+        return {
+            backgroundColor: bg,
+            color: fg,
+            fontWeight: '900',
+            textAlign: 'center'
+        };
+    }
+    """)
+
+    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=_score_heatmap_style)
+    gb.configure_column("REYTİNG", width=105, minWidth=90, cellStyle=_score_heatmap_style)
+    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=_score_heatmap_style)
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
