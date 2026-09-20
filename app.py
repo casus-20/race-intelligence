@@ -3764,6 +3764,43 @@ else:
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
         for hidx in df["_horse_index"].tolist()
     ]
+    # SON KOŞU bilgi balonu için gerçek geçmiş kaydının ayrıntılarını gizli alanlara taşı.
+    def _last_race_meta_for_table(h):
+        row = h.get("_last_race") if isinstance(h, dict) else None
+        if not isinstance(row, dict):
+            return ("", "", "", "", "", "", "", "", "", "", "")
+        return (
+            display_value(_first_value(row, ["date", "tarih", "Tarih"]), ""),
+            display_value(_first_value(row, ["city", "şehir", "Sehir"]), ""),
+            display_value(_first_value(row, ["distance", "msf", "mesafe"]), ""),
+            display_value(_first_value(row, ["surface", "pist", "Pist"]), ""),
+            display_value(_first_value(row, ["place", "sira", "S"]), ""),
+            display_value(_first_value(row, ["weight", "kilo", "siklet"]), ""),
+            display_value(_first_value(row, ["jockey", "jokey"]), ""),
+            display_value(_first_value(row, ["hp", "HP"]), ""),
+            display_value(_first_value(row, ["raceName", "race_name", "kosu"]), ""),
+            display_value(_first_value(row, ["className", "class", "sinif"]), ""),
+            display_value(_first_value(row, ["prize", "ikramiye", "Ikramiye"]), ""),
+        )
+
+    _last_meta = [
+        _last_race_meta_for_table(horses[int(hidx)])
+        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict)
+        else ("", "", "", "", "", "", "", "", "", "", "")
+        for hidx in df["_horse_index"].tolist()
+    ]
+    df_grid["_last_date"] = [x[0] for x in _last_meta]
+    df_grid["_last_city"] = [x[1] for x in _last_meta]
+    df_grid["_last_distance"] = [x[2] for x in _last_meta]
+    # _last_surface zaten yukarıda kullanılıyor; aynı gerçek değeri burada da koruyoruz.
+    df_grid["_last_place"] = [x[4] for x in _last_meta]
+    df_grid["_last_weight"] = [x[5] for x in _last_meta]
+    df_grid["_last_jockey"] = [x[6] for x in _last_meta]
+    df_grid["_last_hp"] = [x[7] for x in _last_meta]
+    df_grid["_last_race_name"] = [x[8] for x in _last_meta]
+    df_grid["_last_class"] = [x[9] for x in _last_meta]
+    df_grid["_last_prize"] = [x[10] for x in _last_meta]
+
     df_grid["_form_surfaces"] = [
         _last_six_surface_data(horses[int(hidx)])
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
@@ -3797,6 +3834,7 @@ else:
     st.markdown("""
     <style>
     .ag-theme-streamlit .ag-cell.ri-eid-cell { overflow: visible !important; }
+    .ag-theme-streamlit .ag-cell.ri-last-race-cell { overflow: visible !important; }
     .ag-theme-streamlit .ag-root-wrapper,
     .ag-theme-streamlit .ag-root,
     .ag-theme-streamlit .ag-body-viewport,
@@ -4421,9 +4459,22 @@ else:
     class LastRaceRenderer {
         init(params) {
             const span = document.createElement('span');
-            span.textContent = String(params.value ?? '');
-            const rawSurf = String((params.data && params.data._last_surface) || '').trim();
-            const normalized = rawSurf.toLowerCase()
+            const degree = String(params.value ?? '').trim();
+            const data = params.data || {};
+            const date = String(data._last_date || '').trim();
+            const city = String(data._last_city || '').trim();
+            const distance = String(data._last_distance || '').trim();
+            const surface = String(data._last_surface || '').trim();
+            const place = String(data._last_place || '').trim();
+            const weight = String(data._last_weight || '').trim();
+            const jockey = String(data._last_jockey || '').trim();
+            const hp = String(data._last_hp || '').trim();
+            const raceName = String(data._last_race_name || '').trim();
+            const raceClass = String(data._last_class || '').trim();
+            const prize = String(data._last_prize || '').trim();
+
+            span.textContent = degree || '-';
+            const normalized = surface.toLowerCase()
                 .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g')
                 .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
             if (/^(c|cim|grass|turf)(?:[:\s-]|$)/.test(normalized) || normalized.includes('cim') || normalized.includes('grass') || normalized.includes('turf')) {
@@ -4436,6 +4487,66 @@ else:
                 span.style.color = '#000000';
             }
             span.style.fontWeight = '900';
+            span.style.cursor = 'help';
+            span.style.position = 'relative';
+            span.style.display = 'inline-block';
+
+            let message = '';
+            if (degree) message += 'Son Koşu Derecesi: ' + degree;
+            if (city) message += (message ? '\n' : '') + 'Hipodrom: ' + city;
+            if (date) message += (message ? '\n' : '') + 'Tarih: ' + date;
+            if (distance) message += (message ? '\n' : '') + 'Mesafe: ' + distance;
+            if (surface) message += (message ? '\n' : '') + 'Pist: ' + surface;
+            if (place) message += (message ? '\n' : '') + 'Sıra: ' + place;
+            if (weight) message += (message ? '\n' : '') + 'Sıklet: ' + weight;
+            if (jockey) message += (message ? '\n' : '') + 'Jokey: ' + jockey;
+            if (hp) message += (message ? '\n' : '') + 'HP: ' + hp;
+            if (raceName) message += (message ? '\n' : '') + 'Koşu: ' + raceName;
+            if (raceClass) message += (message ? '\n' : '') + 'Sınıf: ' + raceClass;
+            if (prize) message += (message ? '\n' : '') + 'İkramiye: ' + prize;
+
+            span.addEventListener('mouseenter', function() {
+                if (!message) return;
+                if (window.__ri_remove_last_race_tooltip) window.__ri_remove_last_race_tooltip();
+                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
+
+                const tooltip = document.createElement('div');
+                tooltip.textContent = message;
+                tooltip.style.position = 'fixed';
+                tooltip.style.zIndex = '2147483647';
+                tooltip.style.width = '270px';
+                tooltip.style.maxWidth = '320px';
+                tooltip.style.padding = '10px 12px';
+                tooltip.style.background = '#ffffff';
+                tooltip.style.color = '#ff0000';
+                tooltip.style.border = '1px solid #ff0000';
+                tooltip.style.borderRadius = '6px';
+                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.25)';
+                tooltip.style.textAlign = 'left';
+                tooltip.style.whiteSpace = 'pre-line';
+                tooltip.style.fontSize = '13px';
+                tooltip.style.fontWeight = '700';
+                tooltip.style.lineHeight = '1.4';
+                tooltip.style.pointerEvents = 'none';
+
+                document.body.appendChild(tooltip);
+                window.__ri_last_race_tooltip = tooltip;
+
+                const r = span.getBoundingClientRect();
+                const tw = tooltip.offsetWidth;
+                const th = tooltip.offsetHeight;
+                let left = r.left + (r.width / 2) - (tw / 2);
+                let top = r.top - th - 10;
+                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+                if (top < 8) top = r.bottom + 10;
+                tooltip.style.left = left + 'px';
+                tooltip.style.top = top + 'px';
+            });
+
+            span.addEventListener('mouseleave', function() {
+                if (window.__ri_remove_last_race_tooltip) window.__ri_remove_last_race_tooltip();
+            });
+
             this.eGui = span;
         }
         getGui() { return this.eGui; }
@@ -4466,6 +4577,12 @@ else:
         "onGridReady": JsCode("""
             function(params) {
                 window.__ri_selected_horse_index = %s;
+                window.__ri_last_race_tooltip = null;
+                window.__ri_remove_last_race_tooltip = function() {
+                    const t = window.__ri_last_race_tooltip;
+                    if (t && t.parentNode) t.parentNode.removeChild(t);
+                    window.__ri_last_race_tooltip = null;
+                };
                 window.__ri_eid_tooltip = null;
                 window.__ri_remove_eid_tooltip = function() {
                     const t = window.__ri_eid_tooltip;
@@ -4691,11 +4808,21 @@ else:
     gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellRenderer=_score_circle_renderer,
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
+    gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer, cellClass="ri-last-race-cell")
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("_horse_index", hide=True)
     gb.configure_column("_last_surface", hide=True)
+    gb.configure_column("_last_date", hide=True)
+    gb.configure_column("_last_city", hide=True)
+    gb.configure_column("_last_distance", hide=True)
+    gb.configure_column("_last_place", hide=True)
+    gb.configure_column("_last_weight", hide=True)
+    gb.configure_column("_last_jockey", hide=True)
+    gb.configure_column("_last_hp", hide=True)
+    gb.configure_column("_last_race_name", hide=True)
+    gb.configure_column("_last_class", hide=True)
+    gb.configure_column("_last_prize", hide=True)
     gb.configure_column("_form_surfaces", hide=True)
     gb.configure_column("_best_city", hide=True)
     gb.configure_column("_best_date", hide=True)
