@@ -1635,7 +1635,7 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     return "|".join(values)
 
 
-def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
+def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int, target_date: Any = None, target_city_name: str = "") -> str:
     """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
 
     Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
@@ -1700,11 +1700,21 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                 pass
         return None
 
-    target_dt = _parse_date(race.get("date") or race.get("tarih") or race.get("Tarih"))
-    target_city = str(race.get("city") or race.get("hipodrom") or "").strip().lower()
+    # Yarış nesnesinde tarih/hipodrom alanı bulunmayabildiği için
+    # ekranın seçtiği tarih ve hipodromu doğrudan kullan.
+    target_dt = _parse_date(
+        race.get("date") or race.get("tarih") or race.get("Tarih") or target_date
+    )
+    target_city = str(
+        race.get("city") or race.get("hipodrom") or target_city_name or ""
+    ).strip().lower()
     target_distance = str(race.get("distance") or race.get("mesafe") or "").strip().lower()
     target_surface = str(race.get("surface") or race.get("pist") or "").strip().lower()
     target_number = _position(race.get("race_number") or race.get("raceNo") or race.get("kosuNo") or race.get("raceNumber"))
+    target_condition = " ".join(
+        str(race.get(k) or "")
+        for k in ("condition", "raceCondition", "race_condition", "raceName", "race_name", "title", "name")
+    ).strip().lower()
 
     if target_dt is not None:
         candidates = []
@@ -1732,6 +1742,24 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                     return re.sub(r"[^a-zçğıöşü]", "", x.replace("ı", "i").replace("ş", "s").replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c"))
                 if _norm_surface(target_surface) not in _norm_surface(row_surface) and _norm_surface(row_surface) not in _norm_surface(target_surface):
                     continue
+
+            # Aynı gün/hipodrom/mesafede birden fazla koşu varsa koşu şartı
+            # ile ikinci doğrulama yap. Alan yoksa bu filtre uygulanmaz.
+            if target_condition:
+                row_condition = " ".join(
+                    str(row.get(k) or "")
+                    for k in ("condition", "raceCondition", "race_condition", "raceName", "race_name", "race", "group", "raceType")
+                ).strip().lower()
+                if row_condition:
+                    def _norm_text(x):
+                        return re.sub(r"[^a-z0-9çğıöşü]", "", x.replace("ı", "i").replace("ş", "s").replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c"))
+                    tc = _norm_text(target_condition)
+                    rc = _norm_text(row_condition)
+                    if tc not in rc and rc not in tc:
+                        # Yarış şartının yalnızca bir kısmı ortaksa da kabul et.
+                        tc_words = [w for w in re.split(r"\s+", target_condition) if len(w) >= 4]
+                        if not any(w in row_condition for w in tc_words[:4]):
+                            continue
 
             pos = _position(row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("rank"))
             if pos is not None:
@@ -3775,7 +3803,7 @@ else:
                     get_horse_equipment(horse),
                 ) if x]
             ),
-            "_race_finish": _race_finish_label(horse, selected_race, horse_index),
+            "_race_finish": _race_finish_label(horse, selected_race, horse_index, target_date=selected_date, target_city_name=selected_city),
             "Yaş": get_horse_age(horse),
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
             "Kilo": get_horse_weight(horse),
