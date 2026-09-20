@@ -685,7 +685,7 @@ def load_active_cities(selected_date: date) -> List[str]:
         return None
 
     active = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
             try:
@@ -1211,8 +1211,8 @@ def enrich_race_horses(
 
     ordered = [None] * total
     done = 0
-    # 4 worker x (history + workouts) = at most ~8 upstream requests.
-    with ThreadPoolExecutor(max_workers=min(4, total)) as executor:
+    # 5 worker x (history + workouts) = at most ~10 upstream requests.
+    with ThreadPoolExecutor(max_workers=min(5, total)) as executor:
         futures = [executor.submit(one, pair) for pair in enumerate(enriched)]
         for future in as_completed(futures):
             idx, item, name = future.result()
