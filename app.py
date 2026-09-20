@@ -946,22 +946,49 @@ def get_horse_age(
     return text
 
 def get_race_condition(race: Dict[str, Any]) -> str:
-    """Koşu başlığında yalnızca yarış şartlarını gösterir."""
-    direct = race.get("condition")
-    text = display_value(direct, "") if direct else ""
-    if not text:
-        meta = race.get("meta")
-        if isinstance(meta, dict):
-            detail = meta.get("detail") or meta.get("raceName") or ""
-            text = display_value(detail, "") if detail else ""
-    if not text:
+    """Koşu başlığında TJK'nın gerçek yarış şartını gösterir.
+
+    'Tüm Koşular' program filtresi bilgisidir; yarış şartı değildir.
+    Bu nedenle gerçek şart alanı varsa onu tercih ederiz.
+    """
+    candidates = []
+
+    def add(value):
+        value = display_value(value, "") if value not in (None, "") else ""
+        if value and value.strip().lower() not in {"tüm koşular", "tum kosular"}:
+            candidates.append(value.strip())
+
+    # Önce doğrudan koşu şartı alanlarını kontrol et.
+    for key in (
+        "condition", "raceCondition", "race_condition",
+        "conditionName", "condition_name",
+        "className", "class", "sinif", "sınıf",
+        "raceName", "race_name", "kosu",
+        "title", "name",
+    ):
+        add(race.get(key))
+
+    meta = race.get("meta")
+    if isinstance(meta, dict):
+        for key in (
+            "condition", "raceCondition", "race_condition",
+            "conditionName", "condition_name",
+            "className", "class", "sinif", "sınıf",
+            "raceName", "race_name", "kosu",
+            "detail", "title", "name",
+        ):
+            add(meta.get(key))
+
+    if not candidates:
         return "-"
+
     # Bazı TJK/Worker cevaplarında koşu şartı ile ikramiye/prim aynı
-    # alanda gelir. Başlık satırından bunları kesin olarak ayır.
+    # alanda gelir. Prim bölümünü ayır.
     text = re.split(
         r"\s+(?=İkramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s+Sahibi\s+Primi\s*:)",
-        text, maxsplit=1, flags=re.I
+        candidates[0], maxsplit=1, flags=re.I
     )[0].strip(" ,;-:")
+
     return text or "-"
 
 def _weight_parts(value: Any) -> tuple[str, str]:
@@ -3347,11 +3374,11 @@ if not _best_for_header:
 _race_first_line = (
     f"<a href='{_html.escape(_race_href, quote=True)}' target='_blank' "
     f"style='color:{_race_fg};text-decoration:none;'>{_html.escape(_race_title)}</a>"
-    f" <span class='race-header-detail'>{_html.escape(condition)}</span>"
-    f"<span class='race-header-detail'>, {_html.escape(distance)} { _html.escape(surface) }</span>"
+    f"<span class='race-header-detail'> | {_html.escape(condition)}</span>"
+    f"<span class='race-header-detail'> | {_html.escape(distance)} {_html.escape(surface)}</span>"
 )
 if _best_for_header:
-    _race_first_line += f"<span class='race-header-detail'>, E.İ.D. : {_html.escape(_best_for_header)}</span>"
+    _race_first_line += f"<span class='race-header-detail'> | EİD: {_html.escape(_best_for_header)}</span>"
 
 def _prize_line(label: str, text: str) -> str:
     return (
