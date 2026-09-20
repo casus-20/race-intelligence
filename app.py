@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tjk_fetch import get_program, get_horse_enrichment
+# BİZİM SKOR: sabit 5 bileşenli model; tarih filtresi model içinde uygulanır.
 from bizim_skor_model import calculate_bizim_ranking
 
 
