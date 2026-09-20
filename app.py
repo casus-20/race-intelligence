@@ -979,17 +979,37 @@ def get_race_condition(race: Dict[str, Any]) -> str:
         ):
             add(meta.get(key))
 
+    # Program verisinde şart ayrı alanda yoksa, yarış başlığını taşıyan
+    # diğer alanlardan gerçek şartı bul.
+    if not candidates:
+        for key in (
+            "detail", "raceDetail", "race_detail", "description",
+            "raceDescription", "race_description", "header",
+            "raceHeader", "race_header",
+        ):
+            add(race.get(key))
+        if isinstance(meta, dict):
+            for key in (
+                "detail", "raceDetail", "race_detail", "description",
+                "raceDescription", "race_description", "header",
+                "raceHeader", "race_header",
+            ):
+                add(meta.get(key))
+
     if not candidates:
         return "-"
 
-    # Bazı TJK/Worker cevaplarında koşu şartı ile ikramiye/prim aynı
-    # alanda gelir. Prim bölümünü ayır.
-    text = re.split(
-        r"\s+(?=İkramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s+Sahibi\s+Primi\s*:)",
-        candidates[0], maxsplit=1, flags=re.I
-    )[0].strip(" ,;-:")
+    # "Tüm Koşular" yalnızca program filtresidir; hiçbir zaman yarış şartı
+    # olarak döndürülmez.
+    for candidate in candidates:
+        cleaned = re.split(
+            r"\s+(?=İkramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s+Sahibi\s+Primi\s*:)",
+            candidate, maxsplit=1, flags=re.I
+        )[0].strip(" ,;-:")
+        if cleaned and cleaned.lower() not in {"tüm koşular", "tum kosular", "-"}:
+            return cleaned
 
-    return text or "-"
+    return "-"
 
 def _weight_parts(value: Any) -> tuple[str, str]:
     text = display_value(value, "")
@@ -3374,11 +3394,11 @@ if not _best_for_header:
 _race_first_line = (
     f"<a href='{_html.escape(_race_href, quote=True)}' target='_blank' "
     f"style='color:{_race_fg};text-decoration:none;'>{_html.escape(_race_title)}</a>"
-    f"<span class='race-header-detail'> | {_html.escape(condition)}</span>"
-    f"<span class='race-header-detail'> | {_html.escape(distance)} {_html.escape(surface)}</span>"
+    f"<span class='race-header-detail'>&nbsp;|&nbsp; {_html.escape(condition)}</span>"
+    f"<span class='race-header-detail'>&nbsp;|&nbsp; {_html.escape(distance)} {_html.escape(surface)}</span>"
 )
 if _best_for_header:
-    _race_first_line += f"<span class='race-header-detail'> | EİD: {_html.escape(_best_for_header)}</span>"
+    _race_first_line += f"<span class='race-header-detail'>&nbsp;|&nbsp; EİD: {_html.escape(_best_for_header)}</span>"
 
 def _prize_line(label: str, text: str) -> str:
     return (
