@@ -3,7 +3,6 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor
-import threading
 
 
 # =========================================================
@@ -32,8 +31,8 @@ CITY_IDS = {
     "İzmir": 2,
     "Adana": 1,
     "Elazığ": 7,
-    "Diyarbakır": 8,
-    "Şanlıurfa": 6,
+    "Diyarbakır": 6,
+    "Şanlıurfa": 8,
     "Antalya": 10,
 }
 
@@ -41,26 +40,6 @@ CITY_IDS = {
 # =========================================================
 # YARDIMCI FONKSİYONLAR
 # =========================================================
-
-# =========================================================
-# HTTP CONNECTION POOL
-# =========================================================
-# Her worker thread kendi requests.Session nesnesini kullanır.
-# Böylece TCP/TLS bağlantıları mümkün olduğunca yeniden kullanılır;
-# veri şeması ve analiz mantığı değişmez.
-_SESSION_LOCAL = threading.local()
-
-def _get_http_session() -> requests.Session:
-    session = getattr(_SESSION_LOCAL, "session", None)
-    if session is None:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Race-Intelligence-Streamlit/34",
-            "Accept": "application/json,text/plain,*/*",
-        })
-        _SESSION_LOCAL.session = session
-    return session
-
 
 def normalize_text(value: Any) -> str:
     if value is None:
@@ -149,7 +128,7 @@ def fetch_worker(
     }
 
     try:
-        response = _get_http_session().get(
+        response = requests.get(
             API_DATA,
             params=params,
             timeout=timeout,
@@ -698,7 +677,7 @@ def worker_health() -> Dict[str, Any]:
 
     try:
 
-        response = _get_http_session().get(
+        response = requests.get(
             API_HEALTH,
             timeout=15,
             headers={
@@ -739,7 +718,7 @@ def _worker_json(
     params: Dict[str, Any],
     timeout: int = 45,
 ) -> Dict[str, Any]:
-    response = _get_http_session().get(
+    response = requests.get(
         url,
         params=params,
         timeout=timeout,
@@ -1014,7 +993,7 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
 
     for url in urls:
         try:
-            response = _get_http_session().get(
+            response = requests.get(
                 url,
                 timeout=timeout,
                 headers={
@@ -1194,7 +1173,6 @@ def get_horse_enrichment(
             return {"ok": False, "workouts": [], "error": str(exc)}
 
     # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
-    # Her istek kendi thread-local HTTP session bağlantı havuzunu kullanır.
     with ThreadPoolExecutor(max_workers=2) as executor:
         history_future = executor.submit(fetch_history)
         workout_future = executor.submit(fetch_workouts)
@@ -1209,10 +1187,36 @@ def get_horse_enrichment(
     if not isinstance(workouts, list):
         workouts = []
 
-    # get_horse_history() zaten /horse -> /horsedata -> doğrudan TJK
-    # fallback zincirini kendi içinde tamamlar. Burada aynı zinciri ikinci
-    # kez çalıştırmıyoruz. Galop endpointi de yalnızca bir kez sorgulanır.
-    # Bu, özellikle çok atlı koşularda gereksiz HTTP çağrılarını ciddi azaltır.
+    # Önce hafif /horse endpointini kullan. Geçmiş boş gelirse yalnızca
+    # o at için /horsedata fallback'i çalıştır; böylece eksik at verisi
+    # sessizce 0 puana düşmez. Fallback yalnızca gerçekten gerektiğinde
+    # çağrıldığı için normal analiz hızını gereksiz yere düşürmez.
+    if not history and at_id not in (None, ""):
+        retry = fetch_history()
+        if isinstance(retry, dict) and isinstance(retry.get("history"), list):
+            history = retry.get("history") or []
+        if not history:
+            try:
+                fallback = _worker_json(
+                    API_HORSEDATA,
+                    {"atId": str(at_id), "horse": horse_name},
+                    timeout=min(timeout, 30),
+                )
+                if isinstance(fallback.get("history"), list):
+                    history = fallback.get("history") or []
+                if not workouts and isinstance(fallback.get("workouts"), list):
+                    workouts = fallback.get("workouts") or []
+            except Exception as exc:
+                errors.append(f"horsedata fallback: {exc}")
+        if not history and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"horse: {retry.get('error')}")
+
+    if not workouts and horse_name:
+        retry = fetch_workouts()
+        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
+            workouts = retry.get("workouts") or []
+        if not workouts and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"workouts: {retry.get('error')}")
 
     if not history and isinstance(history_data, dict) and history_data.get("error"):
         errors.append(f"horse: {history_data.get('error')}")
