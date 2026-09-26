@@ -2066,6 +2066,7 @@ _FORM_COEFFS = (1.00, 0.95, 0.90, 0.85, 0.80, 0.75)
 _FORM_POINTS = {
     1: 100.0, 2: 95.0, 3: 90.0, 4: 85.0, 5: 80.0,
     6: 75.0, 7: 70.0, 8: 65.0, 9: 60.0,
+    10: 55.0,  # 10+ da 55 puan alır; aşağıdaki get() ile uygulanır.
 }
 
 _RATING_SURFACE_KEYS = [
@@ -2178,10 +2179,18 @@ def _rating_matching_history(
     if exact:
         return exact
 
+    # Exact distance yoksa SADECE hedef-100 ve hedef+100 metre kullanılır.
+    # Örn. 1600 hedefinde yalnızca 1500 ve 1700; 1400/1800 gibi
+    # diğer mesafeler kesinlikle devreye girmez. Pist yine zorunlu olarak aynıdır.
+    lower_distance = float(target_distance) - 100.0
+    upper_distance = float(target_distance) + 100.0
     fallback = [
         row for row in same_surface
         if _rating_distance(row) is not None
-        and abs(_rating_distance(row) - float(target_distance)) <= 100.0
+        and (
+            abs(_rating_distance(row) - lower_distance) <= 0.01
+            or abs(_rating_distance(row) - upper_distance) <= 0.01
+        )
     ]
     return fallback
 
