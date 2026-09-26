@@ -2093,9 +2093,9 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 # STANDART 100 PUANLIK REYTİNG MOTORU
 # ============================================================
 # Sabit ağırlıklar:
-#   Son 6 formu                  %30
+#   Son 6 formu                  %35
 #   Seçili mesafe/pist performansı %30
-#   Seçili mesafe/pist hızı      %15
+#   Seçili mesafe/pist hızı      %10
 #   HP / kalite                  %15
 #   Kilo avantajı                %10
 #
@@ -2417,11 +2417,11 @@ def calculate_standard_rating(
     weight = _rating_weight_score(horse, target_distance, target_surface, target_date)
 
     total = (
-        form * 0.30 +
-        perf * 0.40 +
+        form * 0.35 +
+        perf * 0.30 +
         speed * 0.10 +
         hp * 0.15 +
-        weight * 0.05
+        weight * 0.10
     )
     return {
         "score": round(max(0.0, min(100.0, total)), 2),
