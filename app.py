@@ -8,23 +8,7 @@ from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tjk_fetch import get_program, get_horse_enrichment
-
-# BİZİM SKOR: Uygulama ile aynı klasördeki sabit 5 bileşenli motoru
-# zorunlu olarak yükle. Böylece Streamlit ortamında eski/başka bir
-# "bizim_skor_model" modülünün yanlışlıkla import edilmesi engellenir.
-import importlib.util as _importlib_util
-from pathlib import Path as _Path
-
-_BIZIM_MODEL_PATH = _Path(__file__).with_name("bizim_skor_model.py")
-_BIZIM_SPEC = _importlib_util.spec_from_file_location(
-    "race_intelligence_bizim_skor_model",
-    _BIZIM_MODEL_PATH,
-)
-if _BIZIM_SPEC is None or _BIZIM_SPEC.loader is None:
-    raise ImportError(f"BİZİM SKOR motoru bulunamadı: {_BIZIM_MODEL_PATH}")
-_BIZIM_MODULE = _importlib_util.module_from_spec(_BIZIM_SPEC)
-_BIZIM_SPEC.loader.exec_module(_BIZIM_MODULE)
-calculate_bizim_ranking = _BIZIM_MODULE.calculate_bizim_ranking
+from bizim_skor_model import calculate_bizim_ranking
 
 
 # ============================================================
@@ -642,13 +626,17 @@ def load_program(
     city: str,
 ) -> Dict[str, Any]:
 
-    # TJK/Worker şehir kimlikleri artık doğrudan resmi şehir adıyla
-    # eşleşiyor. Elazığ <-> Şanlıurfa ters eşlemesi KULLANILMAMALI.
-    # Özellikle 21/09/2026 gibi dinamik programlarda yanlış hipodrom
-    # gösterilmesini önlemek için seçilen şehir aynen gönderilir.
+    # Uygulamadaki iki Doğu/Güneydoğu hipodromunun Worker tarafındaki
+    # şehir eşlemesi ters olduğu için yalnızca istek yönünü düzelt.
+    # Dönen programın at/koşu verilerine hiçbir müdahale yapılmaz.
+    worker_city = {
+        "Elazığ": "Şanlıurfa",
+        "Şanlıurfa": "Elazığ",
+    }.get(city, city)
+
     data = get_program(
         selected_date,
-        city,
+        worker_city,
     )
 
     if isinstance(data, dict):
@@ -697,7 +685,7 @@ def load_active_cities(selected_date: date) -> List[str]:
         return None
 
     active = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(check_city, city): city for city in ALL_CITIES}
         for future in as_completed(futures):
             try:
@@ -942,140 +930,23 @@ def get_horse_age(
     return text
 
 def get_race_condition(race: Dict[str, Any]) -> str:
-    """TJK'nın gerçek koşu şartını başlıktan çıkarır.
-
-    Önemli: ``Tüm Koşular`` bir filtre değeridir; koşu şartı değildir.
-    TJK program parser'ının koruduğu ``meta.raw`` / ``raw`` başlığı varsa,
-    şartı doğrudan o başlıktan çıkarıyoruz. Böylece örneğin:
-
-        9. Koşu 18:00 Handikap 16/DHÖW /H1, 4 ve Yukarı Araplar 1500 Sentetik ...
-
-    başlığından yalnızca gerçek şart:
-
-        Handikap 16/DHÖW /H1, 4 ve Yukarı Araplar
-
-    alınır.
-    """
-    def clean(value: Any) -> str:
-        text = display_value(value, "") if value not in (None, "") else ""
-        text = re.sub(r"\s+", " ", text).strip(" ,;-:")
-        if text.lower() in {"tüm koşular", "tum kosular", "-"}:
-            return ""
-        return text
-
-    race_no = get_race_number(race, 0)
-    race_time = clean(race.get("race_time") or race.get("time"))
-    distance = clean(race.get("distance"))
-    surface = clean(race.get("surface"))
-
-    # 1) TJK'nın ham koşu başlığından çıkar. Bu, önceki denemede eksik kalan
-    # kritik kısımdır: condition alanı '-' olsa bile meta.raw gerçek başlığı taşır.
-    raw_sources = []
-    meta = race.get("meta")
-    if isinstance(meta, dict):
-        for key in ("raw", "detail", "raceDetail", "race_detail", "header", "raceHeader", "race_header"):
-            value = clean(meta.get(key))
-            if value:
-                raw_sources.append(value)
-    for key in ("raw", "detail", "raceDetail", "race_detail", "header", "raceHeader", "race_header"):
-        value = clean(race.get(key))
-        if value:
-            raw_sources.append(value)
-
-    for raw in raw_sources:
-        # Bir raw metni birden fazla koşuyu içerebiliyorsa seçili koşunun
-        # son "N. Koşu" işaretinden itibaren olan bölümünü kullan.
-        marks = list(re.finditer(r"\b(\d{1,2})\.\s*Koşu\b", raw, flags=re.I))
-        if marks:
-            wanted = [m for m in marks if race_no and int(m.group(1)) == int(race_no)]
-            raw = raw[(wanted[-1] if wanted else marks[-1]).start():]
-
-        # Başlangıç: "9. Koşu 18:00". Saat yoksa sadece "9. Koşu".
-        if race_no:
-            prefix = rf"\b{int(race_no)}\.\s*Koşu\b"
-        else:
-            prefix = r"\b\d{1,2}\.\s*Koşu\b"
-        m = re.search(prefix, raw, flags=re.I)
-        if not m:
-            continue
-        tail = raw[m.end():].strip()
-
-        if race_time and race_time != "-":
-            # Saat formatı 18:00 / 18.00 vb. olabilir.
-            tm = re.search(r"^\s*" + re.escape(race_time) + r"\s*", tail)
-            if tm:
-                tail = tail[tm.end():]
-            else:
-                tm = re.search(r"^\s*\d{1,2}[:.]\d{2}\s*", tail)
-                if tm:
-                    tail = tail[tm.end():]
-
-        # İkramiye ve prim bölümlerine gelmeden önce kes.
-        tail = re.split(
-            r"\s+(?=(?:İkramiye|Ikramiye|Yetiştirici(?:lik)? Primi|Yetistirici(?:lik)? Primi|At\s*Sahibi\s*Primi)\s*[:\-]?)",
-            tail,
-            maxsplit=1,
-            flags=re.I,
-        )[0].strip(" ,;-:")
-
-        # Mesafe + pist kısmından hemen önceki metin gerçek koşu şartıdır.
-        if distance and distance != "-":
-            dm = re.search(r"\b" + re.escape(distance) + r"\b", tail, flags=re.I)
-            if dm:
-                candidate = clean(tail[:dm.start()])
-                if candidate:
-                    return candidate
-
-        # Mesafe alanı farklı biçimde geldiyse, pist adı üzerinden kes.
-        if surface and surface != "-":
-            sm = re.search(r"\b" + re.escape(surface) + r"\b", tail, flags=re.I)
-            if sm:
-                before_surface = tail[:sm.start()].strip()
-                # Son sayı grubunu mesafe kabul edip çıkar.
-                candidate = re.sub(r"\s+\d{3,4}\s*$", "", before_surface).strip(" ,;-:")
-                candidate = clean(candidate)
-                if candidate:
-                    return candidate
-
-        # Son çare: ham başlıktaki ilk anlamlı metin; ancak filtre/boş değer dönmesin.
-        candidate = clean(tail)
-        candidate = re.sub(r"\s+\d{3,4}\s+(?:Kum|Çim|Sentetik)\b.*$", "", candidate, flags=re.I)
-        if candidate:
-            return candidate
-
-    # 2) Ham başlık yoksa doğrudan normalize edilmiş alanları kullan.
-    candidates = []
-    for key in (
-        "condition", "raceCondition", "race_condition",
-        "conditionName", "condition_name", "className", "class",
-        "sinif", "sınıf", "raceName", "race_name", "kosu",
-        "title", "name",
-    ):
-        value = clean(race.get(key))
-        if value:
-            candidates.append(value)
-
-    if isinstance(meta, dict):
-        for key in (
-            "condition", "raceCondition", "race_condition",
-            "conditionName", "condition_name", "className", "class",
-            "sinif", "sınıf", "raceName", "race_name", "kosu",
-            "title", "name", "detail",
-        ):
-            value = clean(meta.get(key))
-            if value:
-                candidates.append(value)
-
-    for candidate in candidates:
-        candidate = re.split(
-            r"\s+(?=İkramiye\s*:|Ikramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s*Sahibi\s*Primi\s*:)",
-            candidate, maxsplit=1, flags=re.I,
-        )[0]
-        candidate = clean(candidate)
-        if candidate:
-            return candidate
-
-    return "-"
+    """Koşu başlığında yalnızca yarış şartlarını gösterir."""
+    direct = race.get("condition")
+    text = display_value(direct, "") if direct else ""
+    if not text:
+        meta = race.get("meta")
+        if isinstance(meta, dict):
+            detail = meta.get("detail") or meta.get("raceName") or ""
+            text = display_value(detail, "") if detail else ""
+    if not text:
+        return "-"
+    # Bazı TJK/Worker cevaplarında koşu şartı ile ikramiye/prim aynı
+    # alanda gelir. Başlık satırından bunları kesin olarak ayır.
+    text = re.split(
+        r"\s+(?=İkramiye\s*:|Yetiştirici(?:lik)?\s+Primi\s*:|At\s+Sahibi\s+Primi\s*:)",
+        text, maxsplit=1, flags=re.I
+    )[0].strip(" ,;-:")
+    return text or "-"
 
 def _weight_parts(value: Any) -> tuple[str, str]:
     text = display_value(value, "")
@@ -1192,7 +1063,7 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
-@st.cache_data(ttl=10800, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
@@ -1225,7 +1096,7 @@ def enrich_race_horses(
     Hız optimizasyonu:
     - Atlar tek tek beklenmez; en fazla 4 at aynı anda sorgulanır.
     - Her atın geçmiş + galop sorgusu tjk_fetch içinde zaten paraleldir.
-    - At geçmişi/galop cache'i 180 dakika tutulur.
+    - Cache anahtarı yalnızca at kimliğidir; yarış parametreleri cache'i parçalamaz.
     """
     enriched = [dict(h) for h in horses if isinstance(h, dict)]
     if not enriched:
@@ -1329,66 +1200,19 @@ def enrich_race_horses(
                 if item.get("owner") and item.get("trainer"):
                     break
 
-        # SON KOŞU sütunu analiz edilen koşunun günündeki yarışı göstermez.
-        # Seçili koşu tarihi T ise yalnızca tarih < T olan geçmiş yarışlar
-        # arasından en yeni tarihli yarış gösterilir.
         item["_last_race"] = None
-        try:
-            _target_dt = None
-            if target_date is not None:
-                if isinstance(target_date, datetime):
-                    _target_dt = target_date.date()
-                elif isinstance(target_date, date):
-                    _target_dt = target_date
-                else:
-                    _ts = str(target_date).strip()
-                    for _fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
-                        try:
-                            _target_dt = datetime.strptime(_ts[:10], _fmt).date()
-                            break
-                        except Exception:
-                            pass
-
-            _eligible_last = []
-            for row in item["_history"]:
-                if not isinstance(row, dict):
-                    continue
-                _date_text = row.get("date") or row.get("tarih") or row.get("Tarih")
-                _time_value = row.get("time") or row.get("derece") or row.get("Derece")
-                if not _date_text or not _time_value:
-                    continue
-
-                _row_dt = None
-                _rs = str(_date_text).strip()
-                for _fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
-                    try:
-                        _row_dt = datetime.strptime(_rs[:10], _fmt).date()
-                        break
-                    except Exception:
-                        pass
-
-                # Tarih çözülemiyorsa bugünkü/son yarış olduğu varsayılıp
-                # SON KOŞU sütununa alınmaz.
-                if _row_dt is None:
-                    continue
-
-                # KRİTİK KURAL: aynı gün ve sonrası kesinlikle dışarıda.
-                if _target_dt is not None and _row_dt >= _target_dt:
-                    continue
-
-                _eligible_last.append((_row_dt, row))
-
-            if _eligible_last:
-                _eligible_last.sort(key=lambda x: x[0], reverse=True)
-                item["_last_race"] = _eligible_last[0][1]
-        except Exception:
-            item["_last_race"] = None
+        for row in item["_history"]:
+            if not isinstance(row, dict):
+                continue
+            if (row.get("date") or row.get("tarih")) and (row.get("time") or row.get("derece")):
+                item["_last_race"] = row
+                break
         return idx, item, name
 
     ordered = [None] * total
     done = 0
-    # 5 worker x (history + workouts) = at most ~10 upstream requests.
-    with ThreadPoolExecutor(max_workers=min(5, total)) as executor:
+    # 4 worker x (history + workouts) = at most ~8 upstream requests.
+    with ThreadPoolExecutor(max_workers=min(4, total)) as executor:
         futures = [executor.submit(one, pair) for pair in enumerate(enriched)]
         for future in as_completed(futures):
             idx, item, name = future.result()
@@ -1635,18 +1459,15 @@ def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     return "|".join(values)
 
 
-def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int, target_date: Any = None, target_city_name: str = "") -> str:
-    """Analiz edilen yarışın TJK gerçek sonucunu bulur.
+def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int) -> str:
+    """Sonuçlanmış koşuda atın gerçek bitiriş derecesini ana at isminde gösterir.
 
-    Bu gösterim BİZİM SKOR hesabına dahil değildir. Amaç yalnızca yarış
-    sonuçlandıktan sonra At İsmi'nin sonunda (1.), (2.) gibi sonucu göstermektir.
-    Bir at aynı gün normalde tek yarış koştuğu için, tarih + atın geçmişindeki
-    sonuç kaydı birincil eşleştirmedir; şehir/mesafe gibi alanlar yalnızca
-    destekleyici doğrulama olarak kullanılır.
+    Öncelik: TJK programındaki sonuç alanları -> yerel sonuç arşivi.
+    Sonuç yoksa hiçbir derece uydurulmaz.
     """
     def _position(value: Any) -> int | None:
         if isinstance(value, dict):
-            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition"):
                 if value.get(k) not in (None, "", "-"):
                     return _position(value.get(k))
             return None
@@ -1661,31 +1482,22 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
         except Exception:
             return None
 
-    def _parse_date(value: Any):
-        if value in (None, "", "-"):
-            return None
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, date):
-            return value
-        text = str(value).strip()
-        for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
-            try:
-                return datetime.strptime(text[:10], fmt).date()
-            except Exception:
-                pass
-        return None
-
-    # 1) Program sonucunda doğrudan sonuç varsa kullan.
-    for key in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
-        if horse.get(key) not in (None, "", "-"):
+    # 1) TJK program/result nesnesindeki gerçek sonuç.
+    for key in (
+        "finish", "place", "sira", "S", "result", "sonuc",
+        "position", "finishPosition", "finish_position", "rank",
+    ):
+        if key in horse and horse.get(key) not in (None, "", "-"):
             pos = _position(horse.get(key))
             if pos is not None:
                 return f"({pos}.)"
 
     # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
     no = get_horse_number(horse, horse_index + 1)
-    for container in (race.get("results"), race.get("result"), race.get("resultMap"), race.get("result_map"), race.get("finish")):
+    for container in (
+        race.get("results"), race.get("result"), race.get("resultMap"),
+        race.get("result_map"), race.get("finish"),
+    ):
         if isinstance(container, dict):
             for key in (no, str(no), horse.get("no"), horse.get("numara")):
                 if key in container:
@@ -1693,45 +1505,16 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                     if pos is not None:
                         return f"({pos}.)"
 
-    target_dt = _parse_date(target_date or race.get("date") or race.get("tarih") or race.get("Tarih"))
-    if target_dt is not None:
-        same_day = []
-        for row in horse.get("_history", []):
-            if not isinstance(row, dict):
-                continue
-            row_dt = _parse_date(row.get("date") or row.get("tarih") or row.get("Tarih"))
-            if row_dt != target_dt:
-                continue
-            pos = _position(row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("position") or row.get("finishPosition") or row.get("rank"))
-            if pos is not None:
-                same_day.append((row, pos))
-
-        # En güçlü eşleşme: atın geçmişinde hedef tarihteki sonuç.
-        if same_day:
-            target_city = str(target_city_name or race.get("city") or race.get("hipodrom") or "").strip().lower()
-            target_distance = re.sub(r"\D", "", str(race.get("distance") or race.get("mesafe") or ""))
-            target_surface = str(race.get("surface") or race.get("pist") or "").strip().lower()
-            for row, pos in same_day:
-                row_city = str(row.get("city") or row.get("şehir") or row.get("sehir") or row.get("hipodrom") or "").strip().lower()
-                row_distance = re.sub(r"\D", "", str(row.get("distance") or row.get("mesafe") or row.get("msf") or ""))
-                row_surface = str(row.get("surface") or row.get("pist") or row.get("zemin") or "").strip().lower()
-                city_ok = not target_city or not row_city or target_city in row_city or row_city in target_city
-                distance_ok = not target_distance or not row_distance or target_distance == row_distance
-                surface_ok = not target_surface or not row_surface or target_surface in row_surface or row_surface in target_surface
-                if city_ok and distance_ok and surface_ok:
-                    return f"({pos}.)"
-            # Aynı gün için tek sonuç varsa diğer alanlar eksik olsa bile kabul et.
-            if len(same_day) == 1:
-                return f"({same_day[0][1]}.)"
-
-    # Koşmaz/çekildi bilgisi varsa göster.
+    # Koşmadı/çekildi bilgisi zaten TJK verisinde varsa, derece yerine bunu göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
     try:
-        status_text += " " + str(get_horse_equipment(horse))
+        equipment_text = get_horse_equipment(horse)
     except Exception:
-        pass
+        equipment_text = ""
+    status_text += " " + str(equipment_text)
     if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
         return "(Koşmaz)"
+
     return ""
 
 
@@ -2056,11 +1839,12 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 # Kilo puanı 100 ile sınırlandırılır.
 # ============================================================
 
-_FORM_COEFFS = (1.00, 0.90, 0.80, 0.70, 0.60, 0.50)
+_FORM_COEFFS = (1.00, 0.95, 0.90, 0.85, 0.80, 0.75)
 _FORM_POINTS = {
-    1: 100.0, 2: 90.0, 3: 80.0, 4: 70.0, 5: 60.0,
-    6: 50.0, 7: 40.0, 8: 30.0, 9: 20.0,
+    1: 100.0, 2: 95.0, 3: 90.0, 4: 85.0, 5: 80.0,
+    6: 75.0, 7: 70.0, 8: 65.0, 9: 60.0,
 }
+
 
 def _rating_place_number(value: Any) -> int | None:
     if value is None:
@@ -2084,16 +1868,78 @@ def _rating_distance(row: Dict[str, Any]) -> float | None:
     ]))
 
 
+def _rating_date_value(row: Dict[str, Any]) -> date | None:
+    """REYTİNG için TJK geçmiş tarihini güvenilir biçimde tarihe çevirir."""
+    raw = _first_value(row, [
+        "date", "tarih", "Tarih", "raceDate", "race_date",
+        "kosuTarihi", "kosu_tarihi", "runDate", "run_date",
+    ])
+    if raw is None or str(raw).strip() in ("", "-"):
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    text = str(raw).strip()
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except Exception:
+            pass
+    m = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](20\d{2})", text)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except Exception:
+            return None
+    m = re.search(r"(20\d{2})[./-](\d{1,2})[./-](\d{1,2})", text)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+    return None
+
+
+def _rating_history_before_target(
+    horse: Dict[str, Any],
+    target_date: date | datetime | None,
+) -> List[Dict[str, Any]]:
+    """Yalnızca hedef yarıştan ÖNCEKİ yarışları döndürür.
+
+    Aynı gün (target_date == geçmiş yarış tarihi) ve gelecek kayıtlar
+    REYTİNG hesabına kesinlikle girmez. Sonuçlar en yeniden eskiye sıralanır.
+    """
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return []
+    if isinstance(target_date, datetime):
+        target = target_date.date()
+    elif isinstance(target_date, date):
+        target = target_date
+    else:
+        return []
+
+    rows = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        rd = _rating_date_value(row)
+        if rd is not None and rd < target:
+            rows.append((rd, row))
+    rows.sort(key=lambda x: x[0], reverse=True)
+    return [row for _, row in rows]
+
+
 def _rating_is_target_distance(
     row: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
 ) -> bool:
-    """REYTİNG için seçili koşunun gerçek mesafesini ve pistini eşleştirir.
+    """Seçilen yarışın gerçek mesafesi + aynı pist eşleşmesi.
 
-    Sabit 1700 m KULLANILMAZ. target_distance, ekranda seçili olan
-    koşunun mesafesinden gelir. Geçmiş kaydın mesafesi bu değere
-    eşit değilse kayıt REYTİNG mesafe hesabına girmez.
+    Sabit 1700 KULLANILMAZ. ±100 m fallback bu fonksiyonda değil,
+    _rating_matching_history içinde uygulanır.
     """
     d = _rating_distance(row)
     if d is None or target_distance is None:
@@ -2115,28 +1961,73 @@ def _rating_is_target_distance(
     return True
 
 
-def _rating_last_six_form(horse: Dict[str, Any]) -> float:
-    """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        history = []
+def _rating_matching_history(
+    horse: Dict[str, Any],
+    target_distance: float | None,
+    target_surface: str,
+    target_date: date | datetime | None,
+) -> List[Dict[str, Any]]:
+    """REYTİNG mesafe geçmişi: önce tam mesafe, yoksa yalnızca ±100 m.
 
+    Pist her iki durumda da kesinlikle eşleşir. Tarih filtresi önceden uygulanır.
+    Tam mesafe varsa ±100 m kayıtları HİÇBİR ZAMAN kullanılmaz.
+    """
+    history = _rating_history_before_target(horse, target_date)
+    if target_distance is None:
+        return []
+
+    exact = [
+        row for row in history
+        if _rating_is_target_distance(row, target_distance, target_surface)
+    ]
+    if exact:
+        return exact
+
+    try:
+        td = float(target_distance)
+    except Exception:
+        return []
+
+    fallback = []
+    for row in history:
+        if target_surface:
+            surface_ok = _rating_surface(_first_value(row, [
+                "surface", "pist", "Pist", "Surface",
+                "trackSurface", "track_surface", "surfaceType", "surface_type",
+                "track", "trackType", "track_type", "zemin", "Zemin",
+                "pistTuru", "pist_turu", "PistTuru",
+            ])) == _rating_surface(target_surface)
+            if not surface_ok:
+                continue
+        d = _rating_distance(row)
+        if d is None:
+            continue
+        diff = abs(d - td)
+        if diff <= 100.01 and diff > 0.01:
+            fallback.append((diff, row))
+
+    # Önce mesafesi hedefe en yakın kayıtlar; eşit mesafede en yeni kayıtlar.
+    fallback.sort(key=lambda x: (x[0], -(_rating_date_value(x[1]).toordinal() if _rating_date_value(x[1]) else 0)))
+    return [row for _, row in fallback]
+
+
+def _rating_last_six_form(
+    horse: Dict[str, Any],
+    target_date: date | datetime | None = None,
+) -> float:
+    """Hedef tarihten önceki son 6 gerçek koşuyu 1.00..0.75 katsayılarıyla puanlar."""
+    history = _rating_history_before_target(horse, target_date)
     vals = []
     for row in history[:6]:
-        if not isinstance(row, dict):
-            continue
         place = _rating_place_number(_first_value(
             row, ["place", "sira", "Sıra", "S"]
         ))
         if place is None or place <= 0:
-            # Koşulmuş ama 10+ / okunamayan derece: 10 puan.
-            point = 10.0
+            point = 55.0
         else:
-            point = _FORM_POINTS.get(place, 10.0)
+            point = _FORM_POINTS.get(place, 55.0)
         vals.append(point)
 
-    # Eksik geçmişi varsayımsal dereceyle doldurmaz.
-    # Mevcut gerçek yarışların ağırlıklı ortalaması alınır.
     if not vals:
         return 0.0
 
@@ -2150,18 +2041,14 @@ def _rating_distance_performance(
     horse: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | datetime | None = None,
 ) -> float:
-    """Seçili koşunun mesafesi: %60 kazanma + %40 ilk dört oranı."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return 0.0
-
-    matching = [
-        row for row in history
-        if isinstance(row, dict) and _rating_is_target_distance(
-            row, target_distance, target_surface
-        )
-    ]
+    """Mesafe/pist: tam mesafe varsa onu, yoksa ±100 m aynı pisti kullanır.
+    Skor = %60 kazanma + %40 ilk dört oranı.
+    """
+    matching = _rating_matching_history(
+        horse, target_distance, target_surface, target_date
+    )
     if not matching:
         return 0.0
 
@@ -2190,7 +2077,6 @@ def _rating_time_seconds(value: Any) -> float | None:
     if not s or s == "-":
         return None
 
-    # 1.45.32 / 1:45.32 / 1'45"32
     m = re.search(r"^(\d+)[\.:'](\d{1,2})[\.:](\d{1,2})$", s)
     if m:
         a, b, c = map(int, m.groups())
@@ -2202,7 +2088,6 @@ def _rating_time_seconds(value: Any) -> float | None:
         frac = float("0." + (m.group(3) or "0"))
         return a * 60.0 + b + frac
 
-    # 1.45.32 gibi noktalar yukarıda yakalanmadıysa sayısal parçaları dene.
     parts = re.findall(r"\d+(?:\.\d+)?", s)
     if len(parts) == 3:
         try:
@@ -2211,7 +2096,6 @@ def _rating_time_seconds(value: Any) -> float | None:
         except Exception:
             pass
 
-    # Tek sayısal değer: saniye kabul edilir.
     m = re.search(r"\d+(?:\.\d+)?", s)
     if m:
         try:
@@ -2226,18 +2110,14 @@ def _rating_distance_speed_raw(
     horse: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | datetime | None = None,
 ) -> float | None:
-    """Seçili mesafedeki gerçek geçmiş derecelerinden en yüksek m/s hızı üretir."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return None
-
+    """Uygun mesafe/pist geçmişindeki en yüksek gerçek hız (m/s)."""
+    matching = _rating_matching_history(
+        horse, target_distance, target_surface, target_date
+    )
     speeds = []
-    for row in history:
-        if not isinstance(row, dict) or not _rating_is_target_distance(
-            row, target_distance, target_surface
-        ):
-            continue
+    for row in matching:
         sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
         if sec and sec > 0:
             d = _rating_distance(row)
@@ -2251,13 +2131,14 @@ def _rating_speed_score(
     horses: List[Dict[str, Any]],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | datetime | None = None,
 ) -> float:
     raws = [
-        _rating_distance_speed_raw(h, target_distance, target_surface)
+        _rating_distance_speed_raw(h, target_distance, target_surface, target_date)
         for h in horses if isinstance(h, dict)
     ]
     raws = [x for x in raws if x is not None and x > 0]
-    own = _rating_distance_speed_raw(horse, target_distance, target_surface)
+    own = _rating_distance_speed_raw(horse, target_distance, target_surface, target_date)
     if own is None or not raws:
         return 0.0
     return max(0.0, min(100.0, own / max(raws) * 100.0))
@@ -2275,13 +2156,49 @@ def _rating_hp_score(horse: Dict[str, Any], horses: List[Dict[str, Any]]) -> flo
     return max(0.0, min(100.0, own / max(vals) * 100.0))
 
 
-def _rating_weight_score(horse: Dict[str, Any]) -> float:
-    """K=(63-kilo)/(63-54)*100, üst sınır 100; negatif değerler 0."""
+def _rating_weight_value(horse: Dict[str, Any]) -> float | None:
     raw = get_horse_weight(horse).split("\n")[0].replace(",", ".")
-    kg = _number(raw)
-    if kg is None:
+    return _number(raw)
+
+
+def _rating_weight_score(
+    horse: Dict[str, Any],
+    target_distance: float | None = None,
+    target_surface: str = "",
+    target_date: date | datetime | None = None,
+) -> float:
+    """Kilo avantajı: mevcut kilo ile uygun geçmiş yarış kilosunu karşılaştırır.
+
+    Önce aynı mesafe + aynı pist; bu yoksa yalnızca ±100 m + aynı pist.
+    Fark = mevcut KG - geçmiş KG.
+      fark <= 0  -> 100 puan
+      fark > 0   -> 100 - fark*9, 0..100 arasında sınırlandırılır.
+    Böylece +10 kg = 10 puan, -10 kg = 100 puandır.
+    """
+    current = _rating_weight_value(horse)
+    if current is None:
         return 0.0
-    return max(0.0, min(100.0, (63.0 - kg) / 9.0 * 100.0))
+
+    matching = _rating_matching_history(
+        horse, target_distance, target_surface, target_date
+    )
+    if not matching:
+        return 0.0
+
+    previous = None
+    for row in matching:
+        raw = _first_value(row, ["weight", "kilo", "Kilo", "siklet", "Sıklet"])
+        kg = _number(str(raw).replace(",", ".")) if raw is not None else None
+        if kg is not None:
+            previous = kg
+            break
+    if previous is None:
+        return 0.0
+
+    diff = current - previous
+    if diff <= 0:
+        return 100.0
+    return max(0.0, min(100.0, 100.0 - diff * 9.0))
 
 
 def calculate_standard_rating(
@@ -2289,13 +2206,14 @@ def calculate_standard_rating(
     horses: List[Dict[str, Any]],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | datetime | None = None,
 ) -> Dict[str, Any]:
-    """100 puanlık REYTİNG; mesafe her zaman seçili koşudan alınır."""
-    form = _rating_last_six_form(horse)
-    perf = _rating_distance_performance(horse, target_distance, target_surface)
-    speed = _rating_speed_score(horse, horses, target_distance, target_surface)
+    """100 puanlık REYTİNG; yalnızca bu motorun kuralları uygulanır."""
+    form = _rating_last_six_form(horse, target_date)
+    perf = _rating_distance_performance(horse, target_distance, target_surface, target_date)
+    speed = _rating_speed_score(horse, horses, target_distance, target_surface, target_date)
     hp = _rating_hp_score(horse, horses)
-    weight = _rating_weight_score(horse)
+    weight = _rating_weight_score(horse, target_distance, target_surface, target_date)
 
     total = (
         form * 0.30 +
@@ -3239,12 +3157,8 @@ _current_race_signature = (
     int(st.session_state.get("selected_race", 1)),
 )
 if st.session_state.get("_last_race_signature") != _current_race_signature:
-    # Koşu değiştiğinde önceki koşunun seçili atı/gerçek veri ayrıntısı
-    # kesinlikle yeni koşuya taşınmayacak.
     st.session_state.selected_horse_no = None
     st.session_state.selected_horse_index = None
-    st.session_state["_selected_detail_fetch_key"] = None
-    st.session_state["_last_eid_click_token"] = ""
     # Kullanıcı aynı rerun içinde GERÇEK VERİ butonuna bastıysa isteği
     # kesinlikle silme. Eski sürümde bu blok butondan sonra çalıştığı için
     # ilk tıklamada real_analysis_requested tekrar False olabiliyordu.
@@ -3501,11 +3415,11 @@ if not _best_for_header:
 _race_first_line = (
     f"<a href='{_html.escape(_race_href, quote=True)}' target='_blank' "
     f"style='color:{_race_fg};text-decoration:none;'>{_html.escape(_race_title)}</a>"
-    f"<span class='race-header-detail'>&nbsp;|&nbsp; {_html.escape(condition)}</span>"
-    f"<span class='race-header-detail'>&nbsp;|&nbsp; {_html.escape(distance)} {_html.escape(surface)}</span>"
+    f" <span class='race-header-detail'>{_html.escape(condition)}</span>"
+    f"<span class='race-header-detail'>, {_html.escape(distance)} { _html.escape(surface) }</span>"
 )
 if _best_for_header:
-    _race_first_line += f"<span class='race-header-detail'>&nbsp;|&nbsp; EİD: {_html.escape(_best_for_header)}</span>"
+    _race_first_line += f"<span class='race-header-detail'>, E.İ.D. : {_html.escape(_best_for_header)}</span>"
 
 def _prize_line(label: str, text: str) -> str:
     return (
@@ -3533,17 +3447,6 @@ st.markdown(
     </div>""",
     unsafe_allow_html=True,
 )
-
-
-# ============================================================
-# 180 DAKİKALIK ANALİZ CACHE
-# ============================================================
-# Aynı tarih + hipodrom + koşu + at geçmişi ile yapılan analiz 180 dakika
-# bellekte tutulur. Cache hit olduğunda TJK geçmişi/galop yeniden çekilmez
-# ve BİZİM SKOR motoru yeniden çalıştırılmaz.
-@st.cache_data(ttl=10800, show_spinner=False)
-def calculate_bizim_ranking_cached(horses: List[Dict[str, Any]], race: Dict[str, Any]):
-    return calculate_bizim_ranking(horses, race)
 
 
 # ============================================================
@@ -3578,6 +3481,13 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
+        # Önceki başarısız/boş TJK cevabının 15 dakikalık Streamlit cache'inde
+        # kalmasını engelle. Gerçek veri analizi her tıklamada yeniden sorgulanır.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -3616,7 +3526,6 @@ else:
                 state="complete",
                 expanded=False,
             )
-            st.caption("🧠 Analiz sonucu 180 dakika bellekte tutulacak; aynı tarih/hipodrom/koşu tekrar açılırsa yeniden hesaplanmayacak.")
             if missing_atid:
                 st.warning(f"{missing_atid} atta TJK AtId bulunamadı; bu at için gerçek geçmiş sorgulanamaz.")
 
@@ -3649,44 +3558,14 @@ else:
             st.session_state.real_analysis_requested = False
 
 
-    # BİZİM SKOR için hedef koşu tarihi açıkça sabitlenir.
-    # Geçmiş hesaplarında yalnızca bu tarihten ÖNCEKİ gün ve daha eski
-    # yarışlar kullanılmalıdır; aynı gün ve sonraki kayıtlar kullanılmaz.
-    selected_race["date"] = selected_date.isoformat()
-    # BİZİM SKOR'a yalnızca gerçek analizde kullanılan güncel horse listesi
-    # gönderilir. Böylece eski state/cache sonucu kullanılmaz.
-    _ranking_input = horses if isinstance(horses, list) else []
-    ranking = calculate_bizim_ranking_cached(_ranking_input, selected_race)
+    ranking = calculate_bizim_ranking(horses, selected_race)
 
     # Gerçek veri analizi sonrası motorun gerçekten yeni veriyi gördüğünü kontrol et.
     if st.session_state.get("real_analysis_done"):
         _hist_total = sum(len(h.get("_history", [])) for h in horses if isinstance(h, dict))
         _work_total = sum(len(h.get("_workouts", [])) for h in horses if isinstance(h, dict))
         if not ranking:
-            st.error(
-                f"BİZİM SKOR sonuç üretmedi. Motor girdisi: {len(_ranking_input)} at. "
-                f"Model: {_BIZIM_MODEL_PATH.name}. "
-                "Bu durumda artık veri çekimi değil, motor girdisinin yapısı kontrol edilmelidir."
-            )
-            # Boş sonuç oluştuğunda sessizce devam etmek yerine gerçek giriş
-            # yapısını göster; böylece hata doğrudan teşhis edilebilir.
-            with st.expander("🔧 BİZİM SKOR GİRİŞ KONTROLÜ", expanded=True):
-                st.write({
-                    "horse_count": len(_ranking_input),
-                    "horse_type": type(_ranking_input).__name__,
-                    "race_type": type(selected_race).__name__,
-                    "race_date": selected_race.get("date"),
-                    "model_file": str(_BIZIM_MODEL_PATH),
-                    "model_function": getattr(calculate_bizim_ranking, "__module__", "-"),
-                })
-                if _ranking_input:
-                    st.write({
-                        "first_horse_type": type(_ranking_input[0]).__name__,
-                        "first_horse_keys": list(_ranking_input[0].keys())[:30]
-                        if isinstance(_ranking_input[0], dict) else [],
-                        "first_history_count": len(_ranking_input[0].get("_history", []))
-                        if isinstance(_ranking_input[0], dict) else 0,
-                    })
+            st.error("Gerçek veri geldi ancak BİZİM SKOR motoru sonuç üretmedi. Bu durum veri çekiminden değil, skor motoru girişinden kaynaklanıyor.")
         elif _hist_total == 0:
             st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
 
@@ -3732,6 +3611,7 @@ else:
             horses,
             target_distance=_number(distance),
             target_surface=surface,
+            target_date=selected_date,
         )
         rating_score = rating_result["score"]
 
@@ -3746,9 +3626,9 @@ else:
                 [x for x in (
                     get_horse_name(horse),
                     get_horse_equipment(horse),
+                    _race_finish_label(horse, selected_race, horse_index),
                 ) if x]
             ),
-            "_race_finish": _race_finish_label(horse, selected_race, horse_index, target_date=selected_date, target_city_name=selected_city),
             "Yaş": get_horse_age(horse),
             "Orijin (Baba-Anne)": "\n".join([x for x in _split_origin(get_horse_origin(horse)) if x]),
             "Kilo": get_horse_weight(horse),
@@ -3804,50 +3684,12 @@ else:
     # TJK veri modeli ve sıralama mantığı Python tarafında aynen korunur.
     # _horse_index ve _last_surface seçim/render işlemleri için gizli alandır.
     df_grid = df_display.copy()
-    df_grid["_race_finish"] = df["_race_finish"].values
     df_grid["_horse_index"] = df["_horse_index"].values
     df_grid["_last_surface"] = [
         str((((horses[int(hidx)].get("_last_race") or {}).get("surface")) or ((horses[int(hidx)].get("_last_race") or {}).get("pist")) or ""))
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
         for hidx in df["_horse_index"].tolist()
     ]
-    # SON KOŞU bilgi balonu için gerçek geçmiş kaydının ayrıntılarını gizli alanlara taşı.
-    def _last_race_meta_for_table(h):
-        row = h.get("_last_race") if isinstance(h, dict) else None
-        if not isinstance(row, dict):
-            return ("", "", "", "", "", "", "", "", "", "", "")
-        return (
-            display_value(_first_value(row, ["date", "tarih", "Tarih"]), ""),
-            display_value(_first_value(row, ["city", "şehir", "Sehir"]), ""),
-            display_value(_first_value(row, ["distance", "msf", "mesafe"]), ""),
-            display_value(_first_value(row, ["surface", "pist", "Pist"]), ""),
-            display_value(_first_value(row, ["place", "sira", "S"]), ""),
-            display_value(_first_value(row, ["weight", "kilo", "siklet"]), ""),
-            display_value(_first_value(row, ["jockey", "jokey"]), ""),
-            display_value(_first_value(row, ["hp", "HP"]), ""),
-            display_value(_first_value(row, ["raceName", "race_name", "kosu"]), ""),
-            display_value(_first_value(row, ["className", "class", "sinif"]), ""),
-            display_value(_first_value(row, ["prize", "ikramiye", "Ikramiye"]), ""),
-        )
-
-    _last_meta = [
-        _last_race_meta_for_table(horses[int(hidx)])
-        if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict)
-        else ("", "", "", "", "", "", "", "", "", "", "")
-        for hidx in df["_horse_index"].tolist()
-    ]
-    df_grid["_last_date"] = [x[0] for x in _last_meta]
-    df_grid["_last_city"] = [x[1] for x in _last_meta]
-    df_grid["_last_distance"] = [x[2] for x in _last_meta]
-    # _last_surface zaten yukarıda kullanılıyor; aynı gerçek değeri burada da koruyoruz.
-    df_grid["_last_place"] = [x[4] for x in _last_meta]
-    df_grid["_last_weight"] = [x[5] for x in _last_meta]
-    df_grid["_last_jockey"] = [x[6] for x in _last_meta]
-    df_grid["_last_hp"] = [x[7] for x in _last_meta]
-    df_grid["_last_race_name"] = [x[8] for x in _last_meta]
-    df_grid["_last_class"] = [x[9] for x in _last_meta]
-    df_grid["_last_prize"] = [x[10] for x in _last_meta]
-
     df_grid["_form_surfaces"] = [
         _last_six_surface_data(horses[int(hidx)])
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
@@ -3881,7 +3723,6 @@ else:
     st.markdown("""
     <style>
     .ag-theme-streamlit .ag-cell.ri-eid-cell { overflow: visible !important; }
-    .ag-theme-streamlit .ag-cell.ri-last-race-cell { overflow: visible !important; }
     .ag-theme-streamlit .ag-root-wrapper,
     .ag-theme-streamlit .ag-root,
     .ag-theme-streamlit .ag-body-viewport,
@@ -3931,62 +3772,35 @@ else:
             root.style.overflow = 'hidden';
             root.style.lineHeight = '1.08';
             root.style.boxSizing = 'border-box';
-
-            const parts = String(params.value ?? '').split(/\r?\n/).filter(x => x !== '');
-            const nameLine = document.createElement('div');
-            nameLine.style.display = 'flex';
-            nameLine.style.alignItems = 'baseline';
-            nameLine.style.width = '100%';
-            nameLine.style.minWidth = '0';
-            nameLine.style.overflow = 'hidden';
-            nameLine.style.whiteSpace = 'nowrap';
-
-            const base = document.createElement('span');
-            base.textContent = parts.length ? parts[0] : '';
-            base.style.color = '#d40000';
-            base.style.fontWeight = '900';
-            base.style.fontSize = '13px';
-            base.style.whiteSpace = 'nowrap';
-            base.style.overflow = 'hidden';
-            base.style.textOverflow = 'clip';
-            nameLine.appendChild(base);
-
-            const result = String((params.data && params.data._race_finish) || '').trim();
-            if (result) {
-                const wrap = document.createElement('span');
-                wrap.style.marginLeft = '4px';
-                wrap.style.fontSize = '12px';
-                wrap.style.fontWeight = '950';
-                wrap.style.whiteSpace = 'nowrap';
-                wrap.style.flex = '0 0 auto';
-                const m = result.match(/^\((.*?)\)$/);
-                if (m) {
-                    const l = document.createElement('span'); l.textContent = '('; l.style.color = '#1565c0';
-                    const v = document.createElement('span'); v.textContent = m[1]; v.style.color = '#126b2f'; v.style.fontWeight = '950';
-                    const rr = document.createElement('span'); rr.textContent = ')'; rr.style.color = '#1565c0';
-                    wrap.appendChild(l); wrap.appendChild(v); wrap.appendChild(rr);
-                } else {
-                    wrap.textContent = result;
-                    wrap.style.color = '#126b2f';
-                }
-                nameLine.appendChild(wrap);
-            }
-            root.appendChild(nameLine);
-
-            for (let i = 1; i < parts.length; i++) {
+            const parts = String(params.value ?? '').split(/\r?\n/);
+            parts.forEach((part, i) => {
+                if (i > 0) root.appendChild(document.createElement('br'));
                 const span = document.createElement('span');
-                span.textContent = parts[i];
-                span.style.color = '#f1c40f';
+                span.textContent = part;
+                const isResult = /^\(\d+\.\)$/.test(part.trim()) || /^\(Koşmaz\)$/i.test(part.trim());
+                span.style.color = isResult ? '#d40000' : ((i === 0) ? '#d40000' : '#f1c40f');
                 span.style.fontWeight = '900';
                 span.style.whiteSpace = 'nowrap';
                 span.style.maxWidth = '100%';
                 span.style.overflow = 'hidden';
                 span.style.textOverflow = 'clip';
                 span.style.display = 'block';
-                span.style.fontSize = '12px';
+                span.style.fontSize = '13px';
                 root.appendChild(span);
-            }
+            });
             this.eGui = root;
+            this.fitText = () => {
+                const spans = root.querySelectorAll('span');
+                spans.forEach(span => {
+                    let size = 13;
+                    span.style.fontSize = size + 'px';
+                    while (size > 8 && span.scrollWidth > root.clientWidth) {
+                        size -= 0.5;
+                        span.style.fontSize = size + 'px';
+                    }
+                });
+            };
+            requestAnimationFrame(this.fitText);
         }
         refresh(params) { return false; }
         getGui() { return this.eGui; }
@@ -4533,22 +4347,9 @@ else:
     class LastRaceRenderer {
         init(params) {
             const span = document.createElement('span');
-            const degree = String(params.value ?? '').trim();
-            const data = params.data || {};
-            const date = String(data._last_date || '').trim();
-            const city = String(data._last_city || '').trim();
-            const distance = String(data._last_distance || '').trim();
-            const surface = String(data._last_surface || '').trim();
-            const place = String(data._last_place || '').trim();
-            const weight = String(data._last_weight || '').trim();
-            const jockey = String(data._last_jockey || '').trim();
-            const hp = String(data._last_hp || '').trim();
-            const raceName = String(data._last_race_name || '').trim();
-            const raceClass = String(data._last_class || '').trim();
-            const prize = String(data._last_prize || '').trim();
-
-            span.textContent = degree || '-';
-            const normalized = surface.toLowerCase()
+            span.textContent = String(params.value ?? '');
+            const rawSurf = String((params.data && params.data._last_surface) || '').trim();
+            const normalized = rawSurf.toLowerCase()
                 .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g')
                 .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
             if (/^(c|cim|grass|turf)(?:[:\s-]|$)/.test(normalized) || normalized.includes('cim') || normalized.includes('grass') || normalized.includes('turf')) {
@@ -4561,66 +4362,6 @@ else:
                 span.style.color = '#000000';
             }
             span.style.fontWeight = '900';
-            span.style.cursor = 'help';
-            span.style.position = 'relative';
-            span.style.display = 'inline-block';
-
-            let message = '';
-            if (degree) message += 'Son Koşu Derecesi: ' + degree;
-            if (city) message += (message ? '\n' : '') + 'Hipodrom: ' + city;
-            if (date) message += (message ? '\n' : '') + 'Tarih: ' + date;
-            if (distance) message += (message ? '\n' : '') + 'Mesafe: ' + distance;
-            if (surface) message += (message ? '\n' : '') + 'Pist: ' + surface;
-            if (place) message += (message ? '\n' : '') + 'Sıra: ' + place;
-            if (weight) message += (message ? '\n' : '') + 'Sıklet: ' + weight;
-            if (jockey) message += (message ? '\n' : '') + 'Jokey: ' + jockey;
-            if (hp) message += (message ? '\n' : '') + 'HP: ' + hp;
-            if (raceName) message += (message ? '\n' : '') + 'Koşu: ' + raceName;
-            if (raceClass) message += (message ? '\n' : '') + 'Sınıf: ' + raceClass;
-            if (prize) message += (message ? '\n' : '') + 'İkramiye: ' + prize;
-
-            span.addEventListener('mouseenter', function() {
-                if (!message) return;
-                if (window.__ri_remove_last_race_tooltip) window.__ri_remove_last_race_tooltip();
-                if (window.__ri_remove_eid_tooltip) window.__ri_remove_eid_tooltip();
-
-                const tooltip = document.createElement('div');
-                tooltip.textContent = message;
-                tooltip.style.position = 'fixed';
-                tooltip.style.zIndex = '2147483647';
-                tooltip.style.width = '270px';
-                tooltip.style.maxWidth = '320px';
-                tooltip.style.padding = '10px 12px';
-                tooltip.style.background = '#ffffff';
-                tooltip.style.color = '#ff0000';
-                tooltip.style.border = '1px solid #ff0000';
-                tooltip.style.borderRadius = '6px';
-                tooltip.style.boxShadow = '0 4px 10px rgba(0,0,0,0.25)';
-                tooltip.style.textAlign = 'left';
-                tooltip.style.whiteSpace = 'pre-line';
-                tooltip.style.fontSize = '13px';
-                tooltip.style.fontWeight = '700';
-                tooltip.style.lineHeight = '1.4';
-                tooltip.style.pointerEvents = 'none';
-
-                document.body.appendChild(tooltip);
-                window.__ri_last_race_tooltip = tooltip;
-
-                const r = span.getBoundingClientRect();
-                const tw = tooltip.offsetWidth;
-                const th = tooltip.offsetHeight;
-                let left = r.left + (r.width / 2) - (tw / 2);
-                let top = r.top - th - 10;
-                left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
-                if (top < 8) top = r.bottom + 10;
-                tooltip.style.left = left + 'px';
-                tooltip.style.top = top + 'px';
-            });
-
-            span.addEventListener('mouseleave', function() {
-                if (window.__ri_remove_last_race_tooltip) window.__ri_remove_last_race_tooltip();
-            });
-
             this.eGui = span;
         }
         getGui() { return this.eGui; }
@@ -4651,12 +4392,6 @@ else:
         "onGridReady": JsCode("""
             function(params) {
                 window.__ri_selected_horse_index = %s;
-                window.__ri_last_race_tooltip = null;
-                window.__ri_remove_last_race_tooltip = function() {
-                    const t = window.__ri_last_race_tooltip;
-                    if (t && t.parentNode) t.parentNode.removeChild(t);
-                    window.__ri_last_race_tooltip = null;
-                };
                 window.__ri_eid_tooltip = null;
                 window.__ri_remove_eid_tooltip = function() {
                     const t = window.__ri_eid_tooltip;
@@ -4771,133 +4506,15 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
-    # Her sütun kendi değerlerine göre sıralanır. İlk 3 yeşil, son 3 kırmızı,
-    # aradaki değerler sarı tonlarıdır. İlk 3'ün yazısı beyaz, son 3'ün yazısı mavidir.
-    _score_circle_renderer = JsCode(r"""
-    class ScoreCircleRenderer {
-        init(params) {
-            const root = document.createElement('div');
-            root.style.width = '100%';
-            root.style.height = '100%';
-            root.style.display = 'flex';
-            root.style.alignItems = 'center';
-            root.style.justifyContent = 'center';
-            root.style.boxSizing = 'border-box';
-            root.style.overflow = 'hidden';
-
-            const value = Number(params.value);
-            if (!isFinite(value) || !params.api) {
-                const plain = document.createElement('span');
-                plain.textContent = params.value == null ? '' : String(params.value);
-                plain.style.fontWeight = '900';
-                plain.style.fontSize = '13px';
-                root.appendChild(plain);
-                this.eGui = root;
-                return;
-            }
-
-            const field = params.colDef.field;
-            const values = [];
-            params.api.forEachNodeAfterFilterAndSort(function(node) {
-                if (!node.data) return;
-                const x = Number(node.data[field]);
-                if (isFinite(x)) values.push(x);
-            });
-
-            values.sort(function(a, b) { return b - a; });
-
-            // Aynı değere aynı sıra verilir.
-            const unique = [];
-            values.forEach(function(x) {
-                if (!unique.length || unique[unique.length - 1] !== x) unique.push(x);
-            });
-
-            const rank = unique.indexOf(value) + 1;
-            const bottomStart = Math.max(1, unique.length - 2);
-
-            let bg = '#f3c84b';
-            let fg = '#222222';
-            let border = '#d6a900';
-
-            // İlk 3: yeşil tonları + beyaz yazı.
-            if (rank <= 3) {
-                const greens = ['#16803c', '#2ca25f', '#55b879'];
-                bg = greens[rank - 1] || greens[2];
-                fg = '#ffffff';
-                border = '#116b31';
-            }
-            // Son 3: kırmızı tonları + mavi yazı.
-            else if (unique.length >= 3 && rank >= bottomStart) {
-                const redIndex = rank - bottomStart;
-                const reds = ['#e76f51', '#d94a3a', '#b91c1c'];
-                bg = reds[Math.max(0, Math.min(2, redIndex))];
-                fg = '#0057b8';
-                border = '#991b1b';
-            }
-            // Ortadakiler: sarı tonları.
-            else {
-                const ratio = unique.length > 1 ? (rank - 1) / (unique.length - 1) : 0.5;
-                if (ratio < 0.5) {
-                    bg = '#f7d774';
-                    border = '#d6ad32';
-                } else {
-                    bg = '#f1bd3a';
-                    border = '#c99618';
-                }
-            }
-
-            const circle = document.createElement('span');
-            circle.textContent = String(params.value);
-            circle.style.display = 'inline-flex';
-            circle.style.alignItems = 'center';
-            circle.style.justifyContent = 'center';
-            circle.style.width = '42px';
-            circle.style.height = '42px';
-            circle.style.minWidth = '42px';
-            circle.style.borderRadius = '50%';
-            circle.style.boxSizing = 'border-box';
-            circle.style.background = bg;
-            circle.style.border = '2px solid ' + border;
-            circle.style.color = fg;
-            circle.style.fontWeight = '900';
-            circle.style.fontSize = '13px';
-            circle.style.lineHeight = '1';
-            circle.style.textAlign = 'center';
-            circle.style.whiteSpace = 'nowrap';
-            circle.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
-
-            root.appendChild(circle);
-            this.eGui = root;
-        }
-        refresh(params) { return false; }
-        getGui() { return this.eGui; }
-    }
-    """)
-
-    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
-                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
-    gb.configure_column("REYTİNG", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
-                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
-    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellRenderer=_score_circle_renderer,
-                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
+    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#1565c0',fontWeight:'900'};}"))
+    gb.configure_column("REYTİNG", width=105, minWidth=90, cellStyle=JsCode("function(params){return {color:'#7b2cbf',fontWeight:'900'};}"))
+    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellStyle=JsCode("function(params){return {color:'#0b3d91',fontWeight:'900'};}"))
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
-    gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer, cellClass="ri-last-race-cell")
+    gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer)
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("TOPLAM KAZANÇ", width=120, minWidth=105, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
     gb.configure_column("_horse_index", hide=True)
     gb.configure_column("_last_surface", hide=True)
-    gb.configure_column("_last_date", hide=True)
-    gb.configure_column("_last_city", hide=True)
-    gb.configure_column("_last_distance", hide=True)
-    gb.configure_column("_last_place", hide=True)
-    gb.configure_column("_last_weight", hide=True)
-    gb.configure_column("_last_jockey", hide=True)
-    gb.configure_column("_last_hp", hide=True)
-    gb.configure_column("_race_finish", hide=True)
-    gb.configure_column("_last_race_name", hide=True)
-    gb.configure_column("_last_class", hide=True)
-    gb.configure_column("_last_prize", hide=True)
     gb.configure_column("_form_surfaces", hide=True)
     gb.configure_column("_best_city", hide=True)
     gb.configure_column("_best_date", hide=True)
@@ -4944,10 +4561,7 @@ else:
         update_mode="SELECTION_CHANGED",
         data_return_mode="AS_INPUT",
         theme="streamlit",
-        # Her koşunun AgGrid state'i ayrı tutulmalı. Aynı key kullanılırsa
-        # önceki koşunun seçili satırı yeni koşuya taşınabilir ve TJK geçmişi
-        # yanlış koşunun tablosunun altında açılabilir.
-        key=f"horse_table_aggrid_{race_number}_{selected_date.isoformat()}_{selected_city}",
+        key="horse_table_aggrid",
     )
 
     raw_selected_rows = None
@@ -5003,18 +4617,9 @@ else:
                 selected_horse_index + 1,
             )
             st.session_state.selected_horse_index = selected_horse_index
-            _detail_fetch_key = (
-                str(race_number),
-                str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""),
-                str(selected_horse_index),
-                str(selected_date),
-                str(selected_city),
-                str(distance),
-                str(surface),
-                str(condition),
-            )
+            _detail_fetch_key = (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition))
 
-            if horse_name_clicked and st.session_state.get("_selected_detail_fetch_key") != _detail_fetch_key:
+            if horse_name_clicked and st.session_state.get("_selected_detail_fetch_key") != (str(selected_horse.get("atId") or selected_horse.get("at_id") or selected_horse.get("id") or ""), str(selected_horse_index), str(selected_date), str(selected_city), str(distance), str(surface), str(condition)):
                 # Ana tablo satırına ilk tıklamada boş cache varsa temizle.
                 # Böylece TJK geçmişi/galop verisi gerçekten yeniden sorgulanır.
                 horse_status = st.status(
@@ -5068,15 +4673,16 @@ else:
             selected_horse = horses[fallback_index]
 
     selected_no = st.session_state.get("selected_horse_no")
-    if selected_no is not None and selected_horse is None:
-        # Yalnızca mevcut koşunun seçili index'i üzerinden geri yükle.
-        # At numarasına göre global arama yapılması farklı koşulardaki
-        # seçimlerin birbirine karışmasına yol açabilir.
-        current_index = st.session_state.get("selected_horse_index")
-        if isinstance(current_index, int) and 0 <= current_index < len(horses):
-            selected_horse = horses[current_index]
+    if selected_no is not None:
+        selected_horse = next(
+            (
+                h for h in horses
+                if str(get_horse_number(h, 0)) == str(selected_no)
+            ),
+            None,
+        )
 
-    if selected_horse:
+        if selected_horse:
             st.markdown("---")
             # V3 — native tablo mimarisini bozmadan EİD ayrıntısını seçilen
             # at için aç/kapatılabilir bilgi alanında göster.
