@@ -1193,22 +1193,65 @@ def get_horse_form(
 # ============================================================
 
 @st.cache_data(ttl=10800, show_spinner=False)
+def _load_horse_enrichment_cached(
+    at_id: str,
+    horse_name: str,
+    cache_version: str = "2026-09-27-history-v2",
+) -> Dict[str, Any]:
+    """Yalnızca geçerli TJK geçmişini 180 dk cache'ler.
+
+    cache_version, eski/bozuk Streamlit cache kayıtlarının bu sürümde
+    kullanılmasını engelleyen sürüm anahtarıdır.
+    """
+    return get_horse_enrichment(at_id, horse_name)
+
+
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
 ) -> Dict[str, Any]:
+    """TJK geçmişini getirir; boş/hatalı cevap kesinlikle kalıcı cache olmaz."""
     try:
-        # Cache anahtarı yalnızca at kimliği + isimdir.
-        # Hız sürümünde gerçek TJK geçmişi doğrudan alınır;
-        # yarış parametreleri burada kullanılmaz.
-        return get_horse_enrichment(at_id, horse_name)
+        data = _load_horse_enrichment_cached(str(at_id), str(horse_name))
     except Exception as exc:
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": str(exc),
-        }
+        data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
+
+    if isinstance(data, dict):
+        history = data.get("history")
+        workouts = data.get("workouts")
+        error = str(data.get("error") or "").strip()
+        if isinstance(history, list) and history and not error:
+            return data
+
+    # Boş/hatalı sonuç eski cache'ten geldiyse cache'i temizle ve aynı at için
+    # bu çalıştırmada doğrudan TJK/Worker sorgusunu bir kez daha yap.
+    try:
+        _load_horse_enrichment_cached.clear()
+    except Exception:
+        pass
+
+    try:
+        fresh = get_horse_enrichment(str(at_id), str(horse_name))
+        if isinstance(fresh, dict):
+            fresh_history = fresh.get("history")
+            fresh_error = str(fresh.get("error") or "").strip()
+            if isinstance(fresh_history, list) and fresh_history and not fresh_error:
+                # Başarılı cevabı bir sonraki koşuda kullanmak üzere cache'e yaz.
+                try:
+                    _load_horse_enrichment_cached(str(at_id), str(horse_name))
+                except Exception:
+                    pass
+                return fresh
+            return {
+                "ok": False,
+                "history": fresh_history if isinstance(fresh_history, list) else [],
+                "workouts": fresh.get("workouts", []) if isinstance(fresh.get("workouts", []), list) else [],
+                "error": fresh_error or "TJK geçmişi boş döndü.",
+            }
+    except Exception as exc:
+        return {"ok": False, "history": [], "workouts": [], "error": str(exc)}
+
+    return {"ok": False, "history": [], "workouts": [], "error": "TJK geçmişi alınamadı."}
 
 
 def enrich_race_horses(
@@ -1355,7 +1398,11 @@ def enrich_race_horses(
                     continue
                 _date_text = row.get("date") or row.get("tarih") or row.get("Tarih")
                 _time_value = row.get("time") or row.get("derece") or row.get("Derece")
-                if not _date_text or not _time_value:
+                _place_value = row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("rank")
+                # Son yarış kaydını sadece derece alanına bağlama.
+                # TJK bazı satırlarda sonucu (Sıra) verirken dereceyi boş bırakabiliyor.
+                # Tarih + sıra varsa bu yine geçerli bir yarış sonucudur.
+                if not _date_text or (_time_value in (None, "", "-") and _place_value in (None, "", "-")):
                     continue
 
                 _row_dt = None
