@@ -1193,15 +1193,52 @@ def get_horse_form(
 # ============================================================
 
 @st.cache_data(ttl=10800, show_spinner=False)
+def _load_horse_enrichment_cached(
+    at_id: str,
+    horse_name: str,
+) -> Dict[str, Any]:
+    """Yalnızca başarılı TJK sonucunu cachelemek için ham sorgu.
+
+    ÖNEMLİ: Bu fonksiyon hata/boş sonuçları cache dışına çıkarmak için
+    load_horse_enrichment() tarafından sarılır.
+    """
+    return get_horse_enrichment(at_id, horse_name)
+
+
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
 ) -> Dict[str, Any]:
+    """TJK geçmişini getirir; başarısız/boş sonuçlar kesinlikle cachelenmez."""
     try:
-        # Cache anahtarı yalnızca at kimliği + isimdir.
-        # Hız sürümünde gerçek TJK geçmişi doğrudan alınır;
-        # yarış parametreleri burada kullanılmaz.
-        return get_horse_enrichment(at_id, horse_name)
+        data = _load_horse_enrichment_cached(str(at_id), str(horse_name))
+        if not isinstance(data, dict):
+            return {
+                "ok": False,
+                "history": [],
+                "workouts": [],
+                "error": "TJK cevabı geçersiz veri döndürdü.",
+            }
+
+        history = data.get("history")
+        workouts = data.get("workouts")
+        error = str(data.get("error") or "").strip()
+
+        # Hata veya tamamen boş cevap cachelenmişse temizle ve bu cevabı
+        # cache'ten kaldır. Bir sonraki analiz gerçek TJK sorgusu yapabilsin.
+        if error or not isinstance(history, list) or not history:
+            try:
+                _load_horse_enrichment_cached.clear()
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "history": history if isinstance(history, list) else [],
+                "workouts": workouts if isinstance(workouts, list) else [],
+                "error": error or "TJK geçmişi boş döndü; sonuç cachelenmedi.",
+            }
+
+        return data
     except Exception as exc:
         return {
             "ok": False,
@@ -2178,18 +2215,10 @@ def _rating_matching_history(
     if exact:
         return exact
 
-    # Hedef mesafede hiç geçmiş yoksa SADECE hedef - 100 m veya hedef + 100 m
-    # ve aynı pist/yüzey kullanılır. Aradaki diğer mesafeler kesinlikle alınmaz.
-    lower_distance = float(target_distance) - 100.0
-    upper_distance = float(target_distance) + 100.0
-
     fallback = [
         row for row in same_surface
         if _rating_distance(row) is not None
-        and (
-            abs(_rating_distance(row) - lower_distance) <= 0.01
-            or abs(_rating_distance(row) - upper_distance) <= 0.01
-        )
+        and abs(_rating_distance(row) - float(target_distance)) <= 100.0
     ]
     return fallback
 
