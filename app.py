@@ -2139,10 +2139,7 @@ def _rating_history_before_target(
         if target_date is None:
             continue
         d = _rating_parse_date(_first_value(row, _RATING_DATE_KEYS))
-
-        # REYTİNG: seçilen koşunun koşulduğu gün ve sonrası
-        # geçmiş performans hesabına kesinlikle dahil edilmez.
-        # Yalnızca yarış tarihi < hedef yarış tarihi olan kayıtlar kullanılır.
+        # Yalnızca tarih kuralı: seçilen koşunun günü ve sonrası REYTİNG'e girmez.
         if d is None or d >= target_date:
             continue
         item = dict(row)
