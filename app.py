@@ -2350,10 +2350,8 @@ def _rating_weight_score(
         return 0.0
 
     diff = current_kg - previous_kg
-    # KG puanlaması: her 1 kg fark = 5 puan.
-    # +10 kg -> 0 puan, +5 kg -> 25 puan, 0 kg -> 50 puan,
-    # -5 kg -> 50 puan, -10 kg -> 50 puan.
-    # Maksimum KG puanı 50'dir; negatif/pozitif fark 50 puanda sınırlandırılır.
+    # KG puanı: +10 kg fark = 5 puan, -10 kg fark = 50 puan.
+    # Doğrusal ara değerler kullanılır; puan 5-50 aralığında sınırlandırılır.
     return max(5.0, min(50.0, 27.5 - (diff * 2.25)))
 
 
@@ -2373,10 +2371,10 @@ def calculate_standard_rating(
 
     total = (
         form * 0.30 +
-        perf * 0.30 +
-        speed * 0.15 +
+        perf * 0.40 +
+        speed * 0.10 +
         hp * 0.15 +
-        weight * 0.10
+        weight * 0.05
     )
     return {
         "score": round(max(0.0, min(100.0, total)), 2),
