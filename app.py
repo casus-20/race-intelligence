@@ -5449,8 +5449,46 @@ else:
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     gb.configure_column("REYTİNG", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
-    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellRenderer=_score_circle_renderer,
-                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
+    # GÜNCEL SINIF sıralaması özel: negatiflerde 0'a en yakın değer önce,
+    # sonra daha düşük negatifler; ardından 0; sonra pozitifler küçükten büyüğe.
+    # Örnek: -1, -5, -7, -8, +1, +3, +20
+    _guncel_sinif_comparator = JsCode(r"""
+    function(a, b) {
+        function num(v) {
+            if (v === null || v === undefined || v === '') return null;
+            var n = Number(String(v).replace(',', '.'));
+            return isFinite(n) ? n : null;
+        }
+        var x = num(a);
+        var y = num(b);
+        if (x === null && y === null) return 0;
+        if (x === null) return 1;
+        if (y === null) return -1;
+        if (x === y) return 0;
+
+        // Negatifler önce: -1, -5, -7, -8
+        if (x < 0 && y < 0) return y - x;
+        if (x < 0 && y >= 0) return -1;
+        if (x >= 0 && y < 0) return 1;
+
+        // 0 ve pozitifler: 0, +1, +3, +20
+        return x - y;
+    }
+    """)
+    gb.configure_column(
+        "GÜNCEL SINIF", width=110, minWidth=95,
+        cellRenderer=_score_circle_renderer,
+        comparator=_guncel_sinif_comparator,
+        filter="agNumberColumnFilter",
+        filterParams=JsCode(r"""{
+            numberParser: function(params) {
+                if (params === null || params === undefined || params === '') return null;
+                var n = Number(String(params).replace(',', '.'));
+                return isFinite(n) ? n : null;
+            }
+        }"""),
+        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}")
+    )
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer, cellClass="ri-last-race-cell")
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
