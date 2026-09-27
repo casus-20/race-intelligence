@@ -2115,74 +2115,68 @@ def _rating_is_target_distance(
     return True
 
 
-def _rating_history_before_target(horse: Dict[str, Any], target_date: Any = None) -> list[Dict[str, Any]]:
-    """REYTİNG geçmişini hedef koşu tarihinden kesin olarak önceki yarışlarla sınırlar."""
+def _rating_history_before_target(horse: Dict[str, Any], target_date: Any = None) -> List[Dict[str, Any]]:
+    """REYTİNG için yalnızca hedef tarihten önceki geçmiş yarışları bırakır."""
     history = horse.get("_history", [])
     if not isinstance(history, list):
         return []
     if target_date is None:
         return [row for row in history if isinstance(row, dict)]
-
     if isinstance(target_date, datetime):
         target_dt = target_date.date()
     elif isinstance(target_date, date):
         target_dt = target_date
     else:
-        text = str(target_date).strip()
         target_dt = None
-        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+        text = str(target_date).strip()
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
             try:
-                target_dt = datetime.strptime(text[:10], fmt).date()
-                break
+                target_dt = datetime.strptime(text[:10], fmt).date(); break
             except Exception:
                 pass
     if target_dt is None:
-        return []
-
-    out = []
+        return [row for row in history if isinstance(row, dict)]
+    eligible = []
     for row in history:
         if not isinstance(row, dict):
             continue
-        raw = _first_value(row, [
-            "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"
-        ])
-        if isinstance(raw, datetime):
-            row_dt = raw.date()
-        elif isinstance(raw, date):
-            row_dt = raw
-        else:
-            row_dt = None
-            text = str(raw or "").strip()
-            for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+        value = row.get("date") or row.get("tarih") or row.get("Tarih")
+        row_dt = None
+        if isinstance(value, datetime): row_dt = value.date()
+        elif isinstance(value, date): row_dt = value
+        elif value not in (None, "", "-"):
+            text = str(value).strip()
+            for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
                 try:
-                    row_dt = datetime.strptime(text[:10], fmt).date()
-                    break
+                    row_dt = datetime.strptime(text[:10], fmt).date(); break
                 except Exception:
                     pass
-        # Sadece geçmiş yarışlar: tarih < hedef tarih.
-        if row_dt is not None and row_dt < target_dt:
-            out.append(row)
-    return out
+        if row_dt is not None and row_dt >= target_dt:
+            continue
+        eligible.append(row)
+    return eligible
 
 
 def _rating_last_six_form(horse: Dict[str, Any], target_date: Any = None) -> float:
-    """Son 6 geçmiş koşuyu 1.00..0.50 katsayılarıyla puanlar.
-
-    Hedef koşunun aynı gün sonucu REYTİNG'e dahil edilmez.
-    """
+    """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
     history = _rating_history_before_target(horse, target_date)
 
     vals = []
     for row in history[:6]:
+        if not isinstance(row, dict):
+            continue
         place = _rating_place_number(_first_value(
             row, ["place", "sira", "Sıra", "S"]
         ))
         if place is None or place <= 0:
+            # Koşulmuş ama 10+ / okunamayan derece: 10 puan.
             point = 10.0
         else:
             point = _FORM_POINTS.get(place, 10.0)
         vals.append(point)
 
+    # Eksik geçmişi varsayımsal dereceyle doldurmaz.
+    # Mevcut gerçek yarışların ağırlıklı ortalaması alınır.
     if not vals:
         return 0.0
 
@@ -2200,9 +2194,12 @@ def _rating_distance_performance(
 ) -> float:
     """Seçili koşunun mesafesi: %60 kazanma + %40 ilk dört oranı."""
     history = _rating_history_before_target(horse, target_date)
+
     matching = [
         row for row in history
-        if _rating_is_target_distance(row, target_distance, target_surface)
+        if isinstance(row, dict) and _rating_is_target_distance(
+            row, target_distance, target_surface
+        )
     ]
     if not matching:
         return 0.0
@@ -2232,6 +2229,7 @@ def _rating_time_seconds(value: Any) -> float | None:
     if not s or s == "-":
         return None
 
+    # 1.45.32 / 1:45.32 / 1'45"32
     m = re.search(r"^(\d+)[\.:'](\d{1,2})[\.:](\d{1,2})$", s)
     if m:
         a, b, c = map(int, m.groups())
@@ -2243,6 +2241,7 @@ def _rating_time_seconds(value: Any) -> float | None:
         frac = float("0." + (m.group(3) or "0"))
         return a * 60.0 + b + frac
 
+    # 1.45.32 gibi noktalar yukarıda yakalanmadıysa sayısal parçaları dene.
     parts = re.findall(r"\d+(?:\.\d+)?", s)
     if len(parts) == 3:
         try:
@@ -2251,6 +2250,7 @@ def _rating_time_seconds(value: Any) -> float | None:
         except Exception:
             pass
 
+    # Tek sayısal değer: saniye kabul edilir.
     m = re.search(r"\d+(?:\.\d+)?", s)
     if m:
         try:
@@ -2269,9 +2269,12 @@ def _rating_distance_speed_raw(
 ) -> float | None:
     """Seçili mesafedeki gerçek geçmiş derecelerinden en yüksek m/s hızı üretir."""
     history = _rating_history_before_target(horse, target_date)
+
     speeds = []
     for row in history:
-        if not _rating_is_target_distance(row, target_distance, target_surface):
+        if not isinstance(row, dict) or not _rating_is_target_distance(
+            row, target_distance, target_surface
+        ):
             continue
         sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
         if sec and sec > 0:
@@ -2299,67 +2302,16 @@ def _rating_speed_score(
     return max(0.0, min(100.0, own / max(raws) * 100.0))
 
 
-# REYTİNG'in eski HP/Kalite bileşeni yerine NET SINIF PUANI kullanılır.
-# Baz puanlar, önceki sabit sınıf motorundaki değerlerdir.
-_RATING_CLASS_BASE = {
-    "G1": 100.0, "A1": 95.0, "G2": 90.0, "A2": 90.0, "G3": 80.0, "A3": 80.0,
-    "H24": 90.0, "H23": 85.0, "H22": 80.0, "H21": 70.0, "H20": 75.0,
-    "H19": 70.0, "H18": 65.0, "H17": 60.0, "H16": 50.0, "H15": 40.0,
-    "H14": 30.0, "H13": 20.0,
-    "KV24": 90.0, "KV18": 80.0, "KV9": 70.0, "KV8": 70.0, "KV7": 60.0, "KV6": 60.0,
-    "S27": 15.0, "S19": 25.0, "S5": 50.0, "S4": 40.0, "S3": 30.0, "S2": 20.0, "S1": 10.0,
-    "MAIDEN": 10.0,
-}
-_RATING_FINISH_FACTOR = {1: 1.00, 2: 0.90, 3: 0.80, 4: 0.70, 5: 0.60}
-
-
-def _rating_class_group(value: Any) -> str:
-    s = str(value or "").strip().lower()
-    s = (s.replace("ı", "i").replace("ş", "s").replace("ğ", "g")
-           .replace("ü", "u").replace("ö", "o").replace("ç", "c"))
-    s = re.sub(r"\s+", " ", s).strip()
-    if not s:
-        return ""
-    m = re.search(r"\b(?:g|grup|group)\s*[- ]?([123])\b", s)
-    if m: return f"G{m.group(1)}"
-    m = re.search(r"\b(?:acik|açik|açık|a)\s*[- ]?([123])\b", s)
-    if m: return f"A{m.group(1)}"
-    m = re.search(r"\bkv\s*[- ]?(\d+)\b", s)
-    if m: return f"KV{m.group(1)}"
-    m = re.search(r"\b(?:h|handikap)\s*[- ]?(\d+)\b", s)
-    if m: return f"H{m.group(1)}"
-    m = re.search(r"\b(?:s|sartli|sartlı)\s*[- ]?(\d+)\b", s)
-    if m: return f"S{m.group(1)}"
-    if "maiden" in s:
-        return "MAIDEN"
-    return ""
-
-
-def _rating_net_class_score(horse: Dict[str, Any], target_date: Any = None) -> float:
-    """Geçmiş yarışların net sınıf puanı ortalaması.
-
-    Net sınıf puanı = Baz puan × sonuç katsayısı.
-    Aynı gün/future yarışlar REYTİNG'e girmez.
-    """
-    history = _rating_history_before_target(horse, target_date)
-    values = []
-    for row in history:
-        group = _rating_class_group(_first_value(row, [
-            "className", "class", "sinif", "Sınıf",
-            "raceName", "race_name", "kosu", "Koşu", "condition"
-        ]))
-        base = _RATING_CLASS_BASE.get(group)
-        place = _rating_place_number(_first_value(
-            row, ["place", "sira", "Sıra", "S"]
-        ))
-        if base is None or place is None or place <= 0:
-            continue
-        factor = _RATING_FINISH_FACTOR.get(place, 0.60 if place >= 6 else None)
-        if factor is not None:
-            values.append(base * factor)
-    if not values:
+def _rating_hp_score(horse: Dict[str, Any], horses: List[Dict[str, Any]]) -> float:
+    own = _number(get_horse_hp(horse))
+    vals = [
+        _number(get_horse_hp(h))
+        for h in horses if isinstance(h, dict)
+    ]
+    vals = [x for x in vals if x is not None and x >= 0]
+    if own is None or not vals or max(vals) <= 0:
         return 0.0
-    return max(0.0, min(100.0, sum(values) / len(values)))
+    return max(0.0, min(100.0, own / max(vals) * 100.0))
 
 
 def _rating_weight_score(horse: Dict[str, Any]) -> float:
@@ -2378,18 +2330,18 @@ def calculate_standard_rating(
     target_surface: str = "",
     target_date: Any = None,
 ) -> Dict[str, Any]:
-    """100 puanlık REYTİNG; mesafe/pist ve hedef tarih esas alınır."""
+    """100 puanlık REYTİNG; mesafe her zaman seçili koşudan alınır."""
     form = _rating_last_six_form(horse, target_date)
     perf = _rating_distance_performance(horse, target_distance, target_surface, target_date)
     speed = _rating_speed_score(horse, horses, target_distance, target_surface, target_date)
-    net_class = _rating_net_class_score(horse, target_date)
+    hp = _rating_hp_score(horse, horses)
     weight = _rating_weight_score(horse)
 
     total = (
         form * 0.30 +
         perf * 0.30 +
         speed * 0.15 +
-        net_class * 0.15 +
+        hp * 0.15 +
         weight * 0.10
     )
     return {
@@ -2398,7 +2350,7 @@ def calculate_standard_rating(
             "Son 6 Form": round(form, 2),
             "Hedef Mesafe Performans": round(perf, 2),
             "Hedef Mesafe Hız": round(speed, 2),
-            "Net Sınıf Puanı": round(net_class, 2),
+            "HP / Kalite": round(hp, 2),
             "Kilo Avantajı": round(weight, 2),
         },
     }
@@ -3666,6 +3618,14 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
+        # GERÇEK VERİ ile analiz istendiğinde at geçmişi cache'i temizlenir.
+        # Böylece yarış sonuçlandıktan sonra TJK'dan gelen aynı gün sonucu
+        # yeniden alınır; REYTİNG tarih filtresi bu sonucu yine hesaba katmaz.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
