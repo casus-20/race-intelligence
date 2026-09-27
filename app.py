@@ -2084,6 +2084,58 @@ def _rating_distance(row: Dict[str, Any]) -> float | None:
     ]))
 
 
+_RATING_DATE_KEYS = [
+    "date", "tarih", "Tarih", "raceDate", "race_date",
+    "kosuTarihi", "kosu_tarihi", "runDate", "run_date",
+]
+
+
+def _rating_parse_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s[:10], fmt).date()
+        except Exception:
+            pass
+    m = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", s)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except Exception:
+            return None
+    return None
+
+
+def _rating_history_before_target(
+    horse: Dict[str, Any],
+    target_date: date | None,
+) -> List[Dict[str, Any]]:
+    """Yalnızca hedef yarış tarihinden önceki geçmiş koşuları kullanır."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return []
+    if target_date is None:
+        return list(history)
+
+    rows = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        d = _rating_parse_date(_first_value(row, _RATING_DATE_KEYS))
+        if d is None or d >= target_date:
+            continue
+        rows.append(row)
+    return rows
+
+
 def _rating_is_target_distance(
     row: Dict[str, Any],
     target_distance: float | None = None,
@@ -2115,11 +2167,12 @@ def _rating_is_target_distance(
     return True
 
 
-def _rating_last_six_form(horse: Dict[str, Any]) -> float:
+def _rating_last_six_form(
+    horse: Dict[str, Any],
+    target_date: date | None = None,
+) -> float:
     """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        history = []
+    history = _rating_history_before_target(horse, target_date)
 
     vals = []
     for row in history[:6]:
@@ -2150,10 +2203,11 @@ def _rating_distance_performance(
     horse: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | None = None,
 ) -> float:
     """Seçili koşunun mesafesi: %60 kazanma + %40 ilk dört oranı."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
+    history = _rating_history_before_target(horse, target_date)
+    if not history:
         return 0.0
 
     matching = [
@@ -2226,10 +2280,11 @@ def _rating_distance_speed_raw(
     horse: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | None = None,
 ) -> float | None:
     """Seçili mesafedeki gerçek geçmiş derecelerinden en yüksek m/s hızı üretir."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
+    history = _rating_history_before_target(horse, target_date)
+    if not history:
         return None
 
     speeds = []
@@ -2251,9 +2306,10 @@ def _rating_speed_score(
     horses: List[Dict[str, Any]],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | None = None,
 ) -> float:
     raws = [
-        _rating_distance_speed_raw(h, target_distance, target_surface)
+        _rating_distance_speed_raw(h, target_distance, target_surface, target_date)
         for h in horses if isinstance(h, dict)
     ]
     raws = [x for x in raws if x is not None and x > 0]
@@ -2289,11 +2345,12 @@ def calculate_standard_rating(
     horses: List[Dict[str, Any]],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: date | None = None,
 ) -> Dict[str, Any]:
     """100 puanlık REYTİNG; mesafe her zaman seçili koşudan alınır."""
-    form = _rating_last_six_form(horse)
-    perf = _rating_distance_performance(horse, target_distance, target_surface)
-    speed = _rating_speed_score(horse, horses, target_distance, target_surface)
+    form = _rating_last_six_form(horse, target_date)
+    perf = _rating_distance_performance(horse, target_distance, target_surface, target_date)
+    speed = _rating_speed_score(horse, horses, target_distance, target_surface, target_date)
     hp = _rating_hp_score(horse, horses)
     weight = _rating_weight_score(horse)
 
@@ -3732,6 +3789,7 @@ else:
             horses,
             target_distance=_number(distance),
             target_surface=surface,
+            target_date=selected_date,
         )
         rating_score = rating_result["score"]
 
