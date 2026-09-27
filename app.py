@@ -5421,9 +5421,16 @@ else:
                     const rankNearZero = neg.indexOf(value) + 1;
                     const rankMostNegative = neg.slice().sort(function(a,b){ return a-b; }).indexOf(value) + 1;
 
-                    if (rankNearZero <= Math.min(4, neg.length)) {
-                        const reds = ['#8b0000','#a91515','#c92a2a','#e34b4b'];
-                        bg = reds[rankNearZero - 1] || reds[3];
+                    // NEGATİF GÜNCEL SINIF: 0'a en yakın ilk 3 değer yeşil tonları.
+                    // Diğer mevcut renk kuralları aynen korunur.
+                    if (rankNearZero <= Math.min(3, neg.length)) {
+                        const greens = ['#0b5d2a','#2f8f4e','#6fbd7f'];
+                        bg = greens[rankNearZero - 1] || greens[2];
+                        border = '#08451f';
+                        fg = '#ffffff';
+                    } else if (rankNearZero === 4) {
+                        const red = '#e34b4b';
+                        bg = red;
                         border = '#720000';
                         fg = '#ffffff';
                     } else if (rankMostNegative <= Math.min(3, neg.length)) {
