@@ -1196,7 +1196,6 @@ def get_horse_form(
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
-    refresh_key: str = "",
 ) -> Dict[str, Any]:
     try:
         # Cache anahtarı yalnızca at kimliği + isimdir.
@@ -1250,26 +1249,7 @@ def enrich_race_horses(
             return idx, item, name
 
         try:
-            # Bugünkü yarışlar için sonuçlar yarış bittikten sonra TJK geçmişine
-            # aynı gün eklenebilir. 180 dakikalık geçmiş cache'i bu yeni sonucu
-            # göstermesin diye yalnızca BUGÜN için 5 dakikalık yenileme anahtarı
-            # kullanılır. Geçmiş tarihlerdeki 180 dakikalık cache korunur.
-            _refresh_key = ""
-            try:
-                _target_date = target_date.date() if isinstance(target_date, datetime) else target_date
-                if isinstance(_target_date, str):
-                    for _fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
-                        try:
-                            _target_date = datetime.strptime(_target_date[:10], _fmt).date()
-                            break
-                        except Exception:
-                            pass
-                if _target_date == date.today():
-                    _now = datetime.now()
-                    _refresh_key = _now.strftime("%Y%m%d-%H%M")[:-1] + "0"
-            except Exception:
-                _refresh_key = ""
-            data = load_horse_enrichment(str(at_id), name, _refresh_key)
+            data = load_horse_enrichment(str(at_id), name)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
@@ -2135,11 +2115,51 @@ def _rating_is_target_distance(
     return True
 
 
-def _rating_last_six_form(horse: Dict[str, Any]) -> float:
-    """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
+def _rating_history_before_target(horse: Dict[str, Any], target_date: Any = None) -> List[Dict[str, Any]]:
+    """REYTİNG için yalnızca hedef tarihten önceki geçmiş yarışları bırakır."""
     history = horse.get("_history", [])
     if not isinstance(history, list):
-        history = []
+        return []
+    if target_date is None:
+        return [row for row in history if isinstance(row, dict)]
+    if isinstance(target_date, datetime):
+        target_dt = target_date.date()
+    elif isinstance(target_date, date):
+        target_dt = target_date
+    else:
+        target_dt = None
+        text = str(target_date).strip()
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                target_dt = datetime.strptime(text[:10], fmt).date(); break
+            except Exception:
+                pass
+    if target_dt is None:
+        return [row for row in history if isinstance(row, dict)]
+    eligible = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("date") or row.get("tarih") or row.get("Tarih")
+        row_dt = None
+        if isinstance(value, datetime): row_dt = value.date()
+        elif isinstance(value, date): row_dt = value
+        elif value not in (None, "", "-"):
+            text = str(value).strip()
+            for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                try:
+                    row_dt = datetime.strptime(text[:10], fmt).date(); break
+                except Exception:
+                    pass
+        if row_dt is not None and row_dt >= target_dt:
+            continue
+        eligible.append(row)
+    return eligible
+
+
+def _rating_last_six_form(horse: Dict[str, Any], target_date: Any = None) -> float:
+    """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
+    history = _rating_history_before_target(horse, target_date)
 
     vals = []
     for row in history[:6]:
@@ -2170,11 +2190,10 @@ def _rating_distance_performance(
     horse: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: Any = None,
 ) -> float:
     """Seçili koşunun mesafesi: %60 kazanma + %40 ilk dört oranı."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return 0.0
+    history = _rating_history_before_target(horse, target_date)
 
     matching = [
         row for row in history
@@ -2246,11 +2265,10 @@ def _rating_distance_speed_raw(
     horse: Dict[str, Any],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: Any = None,
 ) -> float | None:
     """Seçili mesafedeki gerçek geçmiş derecelerinden en yüksek m/s hızı üretir."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return None
+    history = _rating_history_before_target(horse, target_date)
 
     speeds = []
     for row in history:
@@ -2271,13 +2289,14 @@ def _rating_speed_score(
     horses: List[Dict[str, Any]],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: Any = None,
 ) -> float:
     raws = [
-        _rating_distance_speed_raw(h, target_distance, target_surface)
+        _rating_distance_speed_raw(h, target_distance, target_surface, target_date)
         for h in horses if isinstance(h, dict)
     ]
     raws = [x for x in raws if x is not None and x > 0]
-    own = _rating_distance_speed_raw(horse, target_distance, target_surface)
+    own = _rating_distance_speed_raw(horse, target_distance, target_surface, target_date)
     if own is None or not raws:
         return 0.0
     return max(0.0, min(100.0, own / max(raws) * 100.0))
@@ -2309,11 +2328,12 @@ def calculate_standard_rating(
     horses: List[Dict[str, Any]],
     target_distance: float | None = None,
     target_surface: str = "",
+    target_date: Any = None,
 ) -> Dict[str, Any]:
     """100 puanlık REYTİNG; mesafe her zaman seçili koşudan alınır."""
-    form = _rating_last_six_form(horse)
-    perf = _rating_distance_performance(horse, target_distance, target_surface)
-    speed = _rating_speed_score(horse, horses, target_distance, target_surface)
+    form = _rating_last_six_form(horse, target_date)
+    perf = _rating_distance_performance(horse, target_distance, target_surface, target_date)
+    speed = _rating_speed_score(horse, horses, target_distance, target_surface, target_date)
     hp = _rating_hp_score(horse, horses)
     weight = _rating_weight_score(horse)
 
@@ -3752,6 +3772,7 @@ else:
             horses,
             target_distance=_number(distance),
             target_surface=surface,
+            target_date=selected_date,
         )
         rating_score = rating_result["score"]
 
