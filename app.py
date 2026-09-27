@@ -3357,39 +3357,73 @@ def calculate_sart_uyumu(
     }
 
 
-def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
-    """Atın son gerçek TJK yarışlarından güncel sınıf seviyesini hesaplar.
+def calculate_guncel_sinif(
+    horse: Dict[str, Any],
+    target_date: Any,
+    target_race: Dict[str, Any],
+    max_races: int = 5,
+) -> Dict[str, Any]:
+    """GÜNCEL SINIF farkını hedef koşu tarihinden önceki yarışlardan hesaplar.
 
-    - Galop, AGF, jokey, bugünkü kilo ve bugünkü HP kullanılmaz.
-    - Yalnızca atın gerçek geçmiş yarışlarındaki sınıf/koşu bilgisi kullanılır.
-    - En yeni yarış daha yüksek ağırlıklıdır.
-    - Sınıf bilgisi olmayan kayıtlar puana dahil edilmez.
+    1) Yalnızca row_date < target_date olan geçmiş yarışlar kullanılır.
+    2) Bu geçmiş yarışlardan ağırlıklı GÜNCEL SINIF puanı hesaplanır.
+    3) Hedef koşunun sınıf puanı ayrıca hesaplanır.
+    4) Sonuç = GÜNCEL SINIF PUANI - HEDEF KOŞU SINIF PUANI.
+
+    Sonuç pozitifse "+5", negatifse "-5" biçiminde gösterilir.
+    Tarihi doğrulanamayan geçmiş kayıtları güvenli tarafta kalmak için
+    hesaba dahil edilmez; böylece hedef koşunun sonucu geçmişe sızmaz.
     """
     history = horse.get("_history", [])
     if not isinstance(history, list):
-        return 50.0
+        history = []
 
+    target_dt = _rating_parse_date(target_date)
     parsed = []
+
     for row in history:
         if not isinstance(row, dict):
             continue
+        row_dt = _rating_parse_date(_first_value(row, ["date", "tarih", "Tarih"]))
+        if target_dt is None or row_dt is None or row_dt >= target_dt:
+            continue
+
         class_text = _history_class_text(row)
         level = _class_level_from_text(class_text)
         if level is None:
             continue
-        parsed.append((row, level))
-        if len(parsed) >= max_races:
-            break
+        parsed.append((row_dt, row, level))
 
-    if not parsed:
-        return 50.0
+    # En yeni geçmiş yarıştan eskiye doğru sırala.
+    parsed.sort(key=lambda x: x[0], reverse=True)
+    parsed = parsed[:max_races]
 
-    # TJK geçmişi yeni -> eski sıralı geliyor. Değilse tarih üzerinden sıralamayı
-    # zorlamıyoruz; Worker'ın verdiği gerçek sıra korunuyor.
-    weights = [1.00, 0.85, 0.70, 0.55, 0.40]
-    used = weights[:len(parsed)]
-    weighted = sum(level * w for (_, level), w in zip(parsed, used)) / sum(used)
-    return round(max(0.0, min(100.0, weighted)), 1)
+    if parsed:
+        weights = [1.00, 0.85, 0.70, 0.55, 0.40]
+        used = weights[:len(parsed)]
+        current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
+        current_class = round(max(0.0, min(100.0, current_class)), 1)
+    else:
+        current_class = 50.0
+
+    # Hedef koşunun sınıf puanı: aynı sınıf eşleştirme sistemi kullanılır.
+    race_class_text = get_race_condition(target_race)
+    race_class_score = _rating_target_class_value(target_race)
+
+    # Veri bulunamazsa mevcut nötr değer korunur.
+    if race_class_score is None:
+        race_class_score = 50.0
+
+    difference = round(current_class - float(race_class_score), 1)
+
+    return {
+        "score": current_class,
+        "race_class_score": round(float(race_class_score), 1),
+        "difference": difference,
+        "display": f"{difference:+g}",
+        "race_class": race_class_text,
+        "history_count": len(parsed),
+    }
 
 
 # ============================================================
@@ -4264,7 +4298,8 @@ else:
 
         comps = r.get("components", {})
         # GÜNCEL SINIF gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
-        current_class = calculate_guncel_sinif(horse)
+        current_class_result = calculate_guncel_sinif(horse, selected_date, selected_race)
+        current_class = current_class_result["display"]
         # REYTİNG ayrı 9 faktörlü motorun sonucudur.
         rating_result = rating_by_index.get(horse_index, {})
         rating_score = rating_result.get("score", "—")
@@ -5306,8 +5341,8 @@ else:
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
     # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
-    # Her sütun kendi değerlerine göre sıralanır. İlk 3 yeşil, son 3 kırmızı,
-    # aradaki değerler sarı tonlarıdır. İlk 3'ün yazısı beyaz, son 3'ün yazısı mavidir.
+    # Her sütunda ilk 5 değer koyu yeşilden açık yeşile renklendirilir.
+    # GÜNCEL SINIF farkında negatif değer kırmızı, pozitif değer mavi yazılır.
     _score_circle_renderer = JsCode(r"""
     class ScoreCircleRenderer {
         init(params) {
@@ -5348,36 +5383,37 @@ else:
             });
 
             const rank = unique.indexOf(value) + 1;
-            const bottomStart = Math.max(1, unique.length - 2);
 
             let bg = '#f3c84b';
             let fg = '#222222';
             let border = '#d6a900';
 
-            // İlk 3: yeşil tonları + beyaz yazı.
-            if (rank <= 3) {
-                const greens = ['#16803c', '#2ca25f', '#55b879'];
-                bg = greens[rank - 1] || greens[2];
+            // İlk 5: koyu yeşilden açık yeşile.
+            // Aynı değer aynı sırayı paylaşır.
+            if (rank <= 5) {
+                const greens = ['#0b5d2a', '#167a3d', '#299653', '#4caf6b', '#79c98b'];
+                bg = greens[rank - 1] || greens[4];
                 fg = '#ffffff';
-                border = '#116b31';
+                border = '#0a4d24';
             }
-            // Son 3: kırmızı tonları + mavi yazı.
-            else if (unique.length >= 3 && rank >= bottomStart) {
-                const redIndex = rank - bottomStart;
-                const reds = ['#e76f51', '#d94a3a', '#b91c1c'];
-                bg = reds[Math.max(0, Math.min(2, redIndex))];
-                fg = '#0057b8';
-                border = '#991b1b';
-            }
-            // Ortadakiler: sarı tonları.
+            // Diğerleri mevcut nötr/sarı görünümde kalır.
             else {
-                const ratio = unique.length > 1 ? (rank - 1) / (unique.length - 1) : 0.5;
+                const ratio = unique.length > 5 ? (rank - 6) / Math.max(1, unique.length - 6) : 0.5;
                 if (ratio < 0.5) {
                     bg = '#f7d774';
                     border = '#d6ad32';
                 } else {
                     bg = '#f1bd3a';
                     border = '#c99618';
+                }
+            }
+
+            // GÜNCEL SINIF farkı: negatif kırmızı, pozitif mavi yazı.
+            if (field === 'GÜNCEL SINIF') {
+                const rawText = String(params.value);
+                const numeric = Number(rawText.replace('+', ''));
+                if (isFinite(numeric)) {
+                    fg = numeric < 0 ? '#d00000' : (numeric > 0 ? '#0057b8' : '#222222');
                 }
             }
 
