@@ -2310,7 +2310,7 @@ _RATING_CLASS_BASE = {
     "S27": 15.0, "S19": 25.0, "S5": 50.0, "S4": 40.0, "S3": 30.0, "S2": 20.0, "S1": 10.0,
     "MAIDEN": 10.0,
 }
-_RATING_FINISH_FACTOR = {1: 1.00, 2: 0.80, 3: 0.65, 4: 0.50, 5: 0.35}
+_RATING_FINISH_FACTOR = {1: 1.00, 2: 0.90, 3: 0.80, 4: 0.70, 5: 0.60}
 
 
 def _rating_class_group(value: Any) -> str:
@@ -2354,7 +2354,7 @@ def _rating_net_class_score(horse: Dict[str, Any], target_date: Any = None) -> f
         ))
         if base is None or place is None or place <= 0:
             continue
-        factor = _RATING_FINISH_FACTOR.get(place, 0.20 if place >= 6 else None)
+        factor = _RATING_FINISH_FACTOR.get(place, 0.60 if place >= 6 else None)
         if factor is not None:
             values.append(base * factor)
     if not values:
