@@ -5355,7 +5355,7 @@ else:
             root.style.boxSizing = 'border-box';
             root.style.overflow = 'hidden';
 
-            const value = Number(params.value);
+            const value = Number(String(params.value == null ? '' : params.value).replace('+',''));
             if (!isFinite(value) || !params.api) {
                 const plain = document.createElement('span');
                 plain.textContent = params.value == null ? '' : String(params.value);
@@ -5370,50 +5370,111 @@ else:
             const values = [];
             params.api.forEachNodeAfterFilterAndSort(function(node) {
                 if (!node.data) return;
-                const x = Number(node.data[field]);
+                const x = Number(String(node.data[field] == null ? '' : node.data[field]).replace('+',''));
                 if (isFinite(x)) values.push(x);
             });
 
-            values.sort(function(a, b) { return b - a; });
-
-            // Aynı değere aynı sıra verilir.
-            const unique = [];
-            values.forEach(function(x) {
-                if (!unique.length || unique[unique.length - 1] !== x) unique.push(x);
-            });
-
-            const rank = unique.indexOf(value) + 1;
-
             let bg = '#f3c84b';
-            let fg = '#222222';
+            let fg = '#111111';
             let border = '#d6a900';
 
-            // İlk 5: koyu yeşilden açık yeşile.
-            // Aynı değer aynı sırayı paylaşır.
-            if (rank <= 5) {
-                const greens = ['#0b5d2a', '#167a3d', '#299653', '#4caf6b', '#79c98b'];
-                bg = greens[rank - 1] || greens[4];
-                fg = '#ffffff';
-                border = '#0a4d24';
-            }
-            // Diğerleri mevcut nötr/sarı görünümde kalır.
-            else {
-                const ratio = unique.length > 5 ? (rank - 6) / Math.max(1, unique.length - 6) : 0.5;
-                if (ratio < 0.5) {
-                    bg = '#f7d774';
-                    border = '#d6ad32';
+            // ------------------------------------------------------------
+            // BİZİM SKOR: en yüksek 4 mavi tonları, en düşük 3 kırmızı tonları,
+            // ortadakiler sarı tonları. Mavi/kırmızı yazı beyaz, sarı siyah.
+            // ------------------------------------------------------------
+            if (field === 'BİZİM SKOR') {
+                const sorted = values.slice().sort(function(a,b){ return b-a; });
+                const idx = sorted.indexOf(value);
+                const rankHigh = idx + 1;
+                const sortedAsc = values.slice().sort(function(a,b){ return a-b; });
+                const rankLow = sortedAsc.indexOf(value) + 1;
+
+                if (rankHigh <= Math.min(4, sorted.length)) {
+                    const blues = ['#063b73','#0a4f96','#1769aa','#4b8fc9'];
+                    bg = blues[rankHigh - 1] || blues[3];
+                    border = '#052f5f';
+                    fg = '#ffffff';
+                } else if (rankLow <= Math.min(3, sorted.length)) {
+                    const reds = ['#8b0000','#b22222','#dc4b4b'];
+                    bg = reds[rankLow - 1] || reds[2];
+                    border = '#6f0000';
+                    fg = '#ffffff';
                 } else {
-                    bg = '#f1bd3a';
+                    const ratio = sorted.length > 1 ? idx / (sorted.length - 1) : 0.5;
+                    bg = ratio < 0.5 ? '#f7d774' : '#f1bd3a';
                     border = '#c99618';
+                    fg = '#111111';
                 }
             }
 
-            // GÜNCEL SINIF farkı: negatif kırmızı, pozitif mavi yazı.
-            if (field === 'GÜNCEL SINIF') {
-                const rawText = String(params.value);
-                const numeric = Number(rawText.replace('+', ''));
-                if (isFinite(numeric)) {
-                    fg = numeric < 0 ? '#d00000' : (numeric > 0 ? '#0057b8' : '#222222');
+            // ------------------------------------------------------------
+            // GÜNCEL SINIF:
+            // Negatiflerde 0'a en yakın ilk 4 kırmızı tonları,
+            // en düşük/uzak 3 negatif mor tonları, ortadakiler sarı.
+            // Pozitiflerde en düşük 4 kırmızı, en yüksek 3 mor,
+            // ortadakiler sarı. Kırmızı/mor yazı beyaz.
+            // ------------------------------------------------------------
+            else if (field === 'GÜNCEL SINIF') {
+                if (value < 0) {
+                    const neg = values.filter(function(x){ return x < 0; }).sort(function(a,b){ return b-a; });
+                    const pos = values.filter(function(x){ return x > 0; }).sort(function(a,b){ return a-b; });
+                    const rankNearZero = neg.indexOf(value) + 1;
+                    const rankMostNegative = neg.slice().sort(function(a,b){ return a-b; }).indexOf(value) + 1;
+
+                    if (rankNearZero <= Math.min(4, neg.length)) {
+                        const reds = ['#8b0000','#a91515','#c92a2a','#e34b4b'];
+                        bg = reds[rankNearZero - 1] || reds[3];
+                        border = '#720000';
+                        fg = '#ffffff';
+                    } else if (rankMostNegative <= Math.min(3, neg.length)) {
+                        const purples = ['#3b0a57','#5a1875','#7b3f98'];
+                        bg = purples[rankMostNegative - 1] || purples[2];
+                        border = '#2d0642';
+                        fg = '#ffffff';
+                    } else {
+                        bg = '#f3c84b';
+                        border = '#d6a900';
+                        fg = '#111111';
+                    }
+                } else if (value > 0) {
+                    const pos = values.filter(function(x){ return x > 0; }).sort(function(a,b){ return a-b; });
+                    const rankLow = pos.indexOf(value) + 1;
+                    const rankHigh = pos.slice().sort(function(a,b){ return b-a; }).indexOf(value) + 1;
+                    if (rankLow <= Math.min(4, pos.length)) {
+                        const reds = ['#8b0000','#a91515','#c92a2a','#e34b4b'];
+                        bg = reds[rankLow - 1] || reds[3];
+                        border = '#720000';
+                        fg = '#ffffff';
+                    } else if (rankHigh <= Math.min(3, pos.length)) {
+                        const purples = ['#3b0a57','#5a1875','#7b3f98'];
+                        bg = purples[rankHigh - 1] || purples[2];
+                        border = '#2d0642';
+                        fg = '#ffffff';
+                    } else {
+                        bg = '#f3c84b';
+                        border = '#d6a900';
+                        fg = '#111111';
+                    }
+                } else {
+                    bg = '#f3c84b';
+                    border = '#d6a900';
+                    fg = '#111111';
+                }
+            }
+
+            // REYTİNG: mevcut yeşil ilk 5 görünümü korunur.
+            else if (field === 'REYTİNG') {
+                const sorted = values.slice().sort(function(a,b){ return b-a; });
+                const rank = sorted.indexOf(value) + 1;
+                if (rank <= 5) {
+                    const greens = ['#0b5d2a','#167a3d','#299653','#4caf6b','#79c98b'];
+                    bg = greens[rank - 1] || greens[4];
+                    border = '#0a4d24';
+                    fg = '#ffffff';
+                } else {
+                    bg = '#f3c84b';
+                    border = '#d6a900';
+                    fg = '#111111';
                 }
             }
 
@@ -5449,29 +5510,24 @@ else:
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     gb.configure_column("REYTİNG", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
-    # GÜNCEL SINIF sıralaması özel: negatiflerde 0'a en yakın değer önce,
-    # sonra daha düşük negatifler; ardından 0; sonra pozitifler küçükten büyüğe.
+    # GÜNCEL SINIF sıralaması: negatiflerde 0'a en yakın negatiften başlayarak,
+    # ardından daha düşük negatifler; sonra 0 ve pozitifler küçükten büyüğe.
     # Örnek: -1, -5, -7, -8, +1, +3, +20
     _guncel_sinif_comparator = JsCode(r"""
     function(a, b) {
         function num(v) {
             if (v === null || v === undefined || v === '') return null;
-            var n = Number(String(v).replace(',', '.'));
+            var n = Number(String(v).replace('+','').replace(',', '.'));
             return isFinite(n) ? n : null;
         }
-        var x = num(a);
-        var y = num(b);
+        var x = num(a), y = num(b);
         if (x === null && y === null) return 0;
         if (x === null) return 1;
         if (y === null) return -1;
         if (x === y) return 0;
-
-        // Negatifler önce: -1, -5, -7, -8
         if (x < 0 && y < 0) return y - x;
         if (x < 0 && y >= 0) return -1;
         if (x >= 0 && y < 0) return 1;
-
-        // 0 ve pozitifler: 0, +1, +3, +20
         return x - y;
     }
     """)
@@ -5483,7 +5539,7 @@ else:
         filterParams=JsCode(r"""{
             numberParser: function(params) {
                 if (params === null || params === undefined || params === '') return null;
-                var n = Number(String(params).replace(',', '.'));
+                var n = Number(String(params).replace('+','').replace(',', '.'));
                 return isFinite(n) ? n : null;
             }
         }"""),
