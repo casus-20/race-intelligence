@@ -3618,6 +3618,14 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
+        # GERÇEK VERİ ile analiz istendiğinde at geçmişi cache'i temizlenir.
+        # Böylece yarış sonuçlandıktan sonra TJK'dan gelen aynı gün sonucu
+        # yeniden alınır; REYTİNG tarih filtresi bu sonucu yine hesaba katmaz.
+        try:
+            load_horse_enrichment.clear()
+        except Exception:
+            pass
+
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
