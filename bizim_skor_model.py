@@ -109,7 +109,74 @@ def _class(r):return _norm(_first(r,["className","class","sinif","Sınıf","race
 def _city(r):return _norm(_first(r,["city","şehir","sehir","hipodrom"],""))
 def _name(r,keys):return _norm(_first(r,keys,""))
 def _history(h):return [r for r in h.get("_history",[]) if isinstance(r,dict)] if isinstance(h.get("_history",[]),list) else []
+
+def _history_before_target(rows, target_date):
+    """Return only races strictly before the target race date.
+
+    HARD RULE:
+      target = T
+      eligible history = race_date < T
+
+    Therefore:
+      - same-day race (T) is NEVER used
+      - future race (>T) is NEVER used
+      - previous-day race (T-1) IS used
+      - older races are IS used
+
+    If the target date cannot be parsed, return no history rather than
+    silently using unrestricted history.
+    """
+    td = _dt(target_date)
+    if td is None:
+        return []
+
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+
+        rd = _dt(_first(
+            r,
+            ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"],
+            None,
+        ))
+
+        # A historical record without a valid date cannot be proven to be
+        # older than the target race, so it is excluded.
+        if rd is None:
+            continue
+
+        if rd < td:
+            out.append(r)
+
+    return out
+
 def _workouts(h):return [r for r in h.get("_workouts",[]) if isinstance(r,dict)] if isinstance(h.get("_workouts",[]),list) else []
+
+
+def history_cutoff_diagnostic(horse, target_date):
+    """Return counts proving the strict target-date cutoff used by the model."""
+    all_rows = _history(horse)
+    eligible = _history_before_target(all_rows, target_date)
+    td = _dt(target_date)
+
+    same_or_future = 0
+    undated = 0
+    for r in all_rows:
+        rd = _dt(_first(r, ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"], None))
+        if rd is None:
+            undated += 1
+        elif td is not None and rd >= td:
+            same_or_future += 1
+
+    return {
+        "target_date": td.isoformat() if td else None,
+        "total_history": len(all_rows),
+        "eligible_history": len(eligible),
+        "excluded_same_day_or_future": same_or_future,
+        "excluded_undated": undated,
+        "rule": "race_date < target_date",
+    }
 
 
 def _mean(xs):
@@ -292,22 +359,10 @@ def _current_values(horse,race):
         "condition":race.get("condition") or race.get("raceName") or (race.get("meta") or {}).get("detail",""),
         "date":race.get("date") or race.get("tarih"),
     }
-    # KRİTİK TARİH KİLİDİ:
-    # Hedef koşunun koşulduğu gün ve sonraki kayıtlar BİZİM SKOR hesabına
-    # kesinlikle dahil edilmez. Diğer hiçbir hesaplama/puanlama değiştirilmez.
-    history = _history(horse)
-    target_date = _dt(target.get("date"))
-    if target_date is not None:
-        prior = [
-            r for r in history
-            if _dt(_first(r, ["date", "tarih"], None)) is not None
-            and _dt(_first(r, ["date", "tarih"], None)) < target_date
-        ]
-    else:
-        # Hedef tarih belirlenemiyorsa tarih sızıntısını önlemek için
-        # geçmiş veriyi hesaba katma.
-        prior = []
-
+    # KRİTİK TARİH KURALI:
+    # Hedef koşunun yapıldığı gün kesinlikle kullanılmaz.
+    # Yalnızca bir gün önce ve daha eski yarışlar kullanılır.
+    prior=_history_before_target(_history(horse), target.get("date"))
     condition_total, groups=calculate_condition_score(prior)
     return {
         "kosu_sarti_uyumu": condition_total,
@@ -354,7 +409,7 @@ def calculate_bizim_ranking(horses,race):
                     "pist_mesafe":100,"pist_performansi":100,
                     "guncel_form":100,"start_kulvar":50,
                 },
-                "minimum_prior_races":0,
+                "minimum_prior_races":0, "history_cutoff":"strictly_before_target_date",
             }
         })
     results.sort(key=lambda x:x["score"],reverse=True)
