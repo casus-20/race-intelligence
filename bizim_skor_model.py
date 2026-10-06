@@ -292,7 +292,22 @@ def _current_values(horse,race):
         "condition":race.get("condition") or race.get("raceName") or (race.get("meta") or {}).get("detail",""),
         "date":race.get("date") or race.get("tarih"),
     }
-    prior=_history(horse)
+    # KRİTİK TARİH KİLİDİ:
+    # Hedef koşunun koşulduğu gün ve sonraki kayıtlar BİZİM SKOR hesabına
+    # kesinlikle dahil edilmez. Diğer hiçbir hesaplama/puanlama değiştirilmez.
+    history = _history(horse)
+    target_date = _dt(target.get("date"))
+    if target_date is not None:
+        prior = [
+            r for r in history
+            if _dt(_first(r, ["date", "tarih"], None)) is not None
+            and _dt(_first(r, ["date", "tarih"], None)) < target_date
+        ]
+    else:
+        # Hedef tarih belirlenemiyorsa tarih sızıntısını önlemek için
+        # geçmiş veriyi hesaba katma.
+        prior = []
+
     condition_total, groups=calculate_condition_score(prior)
     return {
         "kosu_sarti_uyumu": condition_total,
