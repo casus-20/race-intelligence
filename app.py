@@ -1594,17 +1594,11 @@ def _normalize_surface_for_table(value: Any) -> str:
     return ""
 
 
-def _last_six_surface_data(horse: Dict[str, Any], target_date: Any = None) -> str:
+def _last_six_surface_data(horse: Dict[str, Any]) -> str:
     """Ana tabloda Son 6 Y. rakamlarının pist türünü taşıyan gizli veri."""
     history = horse.get("_history", [])
     if not isinstance(history, list):
         return ""
-
-    # Son 6 Y. ile renkler aynı yarış kayıtlarından gelmeli.
-    # Seçili yarış tarihi verilmişse aynı gün/gelecek kayıtları çıkarıyoruz;
-    # böylece sonuç sonrası eklenen güncel yarış renkleri bir pozisyon kaydırmıyor.
-    if target_date is not None:
-        history = _rating_history_before_target(horse, target_date)
 
     values = []
     for row in history[:6]:
@@ -2049,45 +2043,23 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# REYTİNG — YENİ 9 FAKTÖRLÜ, TARİH-SIZDIRMALI MOTOR
+# STANDART 100 PUANLIK REYTİNG MOTORU
 # ============================================================
-# REYTİNG yalnızca hedef koşunun tarihinden ÖNCEKİ gerçek TJK geçmişini
-# kullanır. Hedef koşunun kendisi, aynı günkü sonuçlar veya gelecekteki
-# kayıtlar hiçbir faktöre giremez.
+# Sabit formül:
+#   Son 6 formu                 %30
+#   Hedef mesafe pist-performans %30
+#   Hedef mesafe hız            %15
+#   HP / kalite                 %15
+#   Kilo avantajı               %10
 #
-# Ana ağırlıklar:
-#   Ortak rakip + kilo farkı  %23
-#   Kilo uyumu               %17
-#   Güncel form              %15
-#   Normalize derece         %10
-#   Pist / mesafe            %12
-#   Sınıf uyumu               %9
-#   Tempo                     %6
-#   Galop / hazırlık          %6
-#   Ham hız                   %2
-#
-# Her alt puan 0-100 aralığındadır; toplam REYTİNG de 0-100'dür.
+# Her at için aynı formül uygulanır. Manuel/ata özel katsayı yoktur.
+# Kilo puanı 100 ile sınırlandırılır.
 # ============================================================
 
-_RATING_WEIGHTS = {
-    "Ortak Rakip + Kilo": 0.23,
-    "Kilo Uyumu": 0.17,
-    "Güncel Form": 0.15,
-    "Normalize Derece": 0.10,
-    "Pist / Mesafe": 0.12,
-    "Sınıf Uyumu": 0.09,
-    "Tempo": 0.06,
-    "Galop / Hazırlık": 0.06,
-    "Ham Hız": 0.02,
-}
-
-_RATING_FORM_WEIGHTS = (0.30, 0.22, 0.17, 0.13, 0.10, 0.08)
-_RATING_FORM_POINTS = {
+_FORM_COEFFS = (1.00, 0.90, 0.80, 0.70, 0.60, 0.50)
+_FORM_POINTS = {
     1: 100.0, 2: 90.0, 3: 80.0, 4: 70.0, 5: 60.0,
     6: 50.0, 7: 40.0, 8: 30.0, 9: 20.0,
-}
-_RATING_FINISH_FACTOR = {
-    1: 1.00, 2: 0.90, 3: 0.80, 4: 0.70, 5: 0.60,
 }
 
 def _rating_place_number(value: Any) -> int | None:
@@ -2101,412 +2073,124 @@ def _rating_place_number(value: Any) -> int | None:
     except Exception:
         return None
 
-def _rating_finish_points(place: Any) -> float:
-    p = _rating_place_number(place)
-    if p is None or p <= 0:
-        return 10.0
-    return _RATING_FORM_POINTS.get(p, 10.0)
-
-def _rating_parse_date(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return None
-    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(text[:10], fmt).date()
-        except Exception:
-            pass
-    return None
-
-def _rating_history_before_target(
-    horse: Dict[str, Any],
-    target_date: Any = None,
-) -> list[Dict[str, Any]]:
-    """Sadece tarih < hedef tarih kayıtlarını döndürür."""
-    history = horse.get("_history", [])
-    if not isinstance(history, list):
-        return []
-
-    target_dt = _rating_parse_date(target_date) if target_date is not None else None
-    out = []
-    for row in history:
-        if not isinstance(row, dict):
-            continue
-        if target_dt is None:
-            out.append(row)
-            continue
-        row_dt = _rating_parse_date(_first_value(row, [
-            "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"
-        ]))
-        # Tarih çözülemeyen kayıt, veri sızıntısını önlemek için kullanılmaz.
-        if row_dt is not None and row_dt < target_dt:
-            out.append(row)
-
-    out.sort(
-        key=lambda r: _rating_parse_date(_first_value(
-            r, ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"]
-        )) or date.min,
-        reverse=True,
-    )
-    return out
 
 def _rating_surface(value: Any) -> str:
-    try:
-        return str(_normalize_surface_for_table(value) or "").strip().lower()
-    except Exception:
-        s = str(value or "").strip().lower()
-        s = s.replace("sentetik", "sentetik").replace("synthetic", "sentetik")
-        s = s.replace("çim", "çim").replace("grass", "çim")
-        s = s.replace("kum", "kum").replace("dirt", "kum")
-        return s
+    return _normalize_surface_for_table(value)
+
 
 def _rating_distance(row: Dict[str, Any]) -> float | None:
     return _number(_first_value(row, [
         "distance", "msf", "mesafe", "Msf"
     ]))
 
-def _rating_weight_value(value: Any) -> float | None:
-    if value is None:
-        return None
-    text = str(value).replace(",", ".")
-    m = re.search(r"(\d+(?:\.\d+)?)", text)
-    if not m:
-        return None
+
+def _rating_is_target_distance(
+    row: Dict[str, Any],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> bool:
+    """REYTİNG için seçili koşunun gerçek mesafesini ve pistini eşleştirir.
+
+    Sabit 1700 m KULLANILMAZ. target_distance, ekranda seçili olan
+    koşunun mesafesinden gelir. Geçmiş kaydın mesafesi bu değere
+    eşit değilse kayıt REYTİNG mesafe hesabına girmez.
+    """
+    d = _rating_distance(row)
+    if d is None or target_distance is None:
+        return False
     try:
-        return float(m.group(1))
+        if abs(d - float(target_distance)) > 0.01:
+            return False
     except Exception:
-        return None
+        return False
+    if target_surface:
+        return _rating_surface(
+            _first_value(row, [
+                "surface", "pist", "Pist", "Surface",
+                "trackSurface", "track_surface", "surfaceType", "surface_type",
+                "track", "trackType", "track_type", "zemin", "Zemin",
+                "pistTuru", "pist_turu", "PistTuru",
+            ])
+        ) == _rating_surface(target_surface)
+    return True
 
-def _rating_row_weight(row: Dict[str, Any]) -> float | None:
-    return _rating_weight_value(_first_value(row, [
-        "weight", "kilo", "siklet", "Sıklet"
-    ]))
 
-def _rating_target_weight(horse: Dict[str, Any]) -> float | None:
-    try:
-        return _rating_weight_value(get_horse_weight(horse).split("\n")[0])
-    except Exception:
-        return _rating_weight_value(_first_value(horse, [
-            "siklet", "Sıklet", "weight", "kilo"
-        ]))
-
-def _rating_recency_factor(row: Dict[str, Any], target_date: Any) -> float:
-    target_dt = _rating_parse_date(target_date)
-    row_dt = _rating_parse_date(_first_value(row, [
-        "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"
-    ]))
-    if target_dt is None or row_dt is None:
-        return 0.50
-    days = max(0, (target_dt - row_dt).days)
-    if days <= 30: return 1.00
-    if days <= 60: return 0.90
-    if days <= 90: return 0.80
-    if days <= 180: return 0.65
-    if days <= 365: return 0.50
-    return 0.30
-
-def _rating_distance_proximity(history_distance: float | None, target_distance: float | None) -> float:
-    if history_distance is None or target_distance is None:
-        return 50.0
-    diff = abs(float(history_distance) - float(target_distance))
-    if diff <= 0.01: return 100.0
-    if diff <= 100: return 95.0
-    if diff <= 200: return 85.0
-    if diff <= 300: return 70.0
-    if diff <= 400: return 55.0
-    return 35.0
-
-def _rating_weight_similarity(history_weight: float | None, target_weight: float | None) -> float:
-    if history_weight is None or target_weight is None:
-        return 50.0
-    diff = abs(history_weight - target_weight)
-    if diff <= 0.01: return 100.0
-    if diff <= 1: return 95.0
-    if diff <= 2: return 90.0
-    if diff <= 3: return 80.0
-    if diff <= 4: return 70.0
-    if diff <= 5: return 60.0
-    if diff <= 6: return 50.0
-    return 35.0
-
-def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
-    """Aynı yarışta koşmuş atları geçmiş kayıtlarından eşleştirir."""
-    dt = _rating_parse_date(_first_value(row, [
-        "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"
-    ]))
-    city = str(_first_value(row, [
-        "city", "şehir", "Sehir", "hipodrom", "track"
-    ]) or "").strip().lower()
-    dist = _rating_distance(row)
-    surface = _rating_surface(_first_value(row, [
-        "surface", "pist", "Pist", "trackSurface", "track_surface",
-        "surfaceType", "surface_type", "track", "trackType", "track_type"
-    ]))
-    race_name = str(_first_value(row, [
-        "raceName", "race_name", "kosu", "Koşu", "className", "class", "condition"
-    ]) or "").strip().lower()
-    # Tarih + hipodrom + mesafe + pist temel anahtar.
-    # Yarış adı varsa anahtarı güçlendirir, ancak boşsa eşleştirme yine yapılabilir.
-    return (
-        dt.isoformat() if dt else "",
-        re.sub(r"\s+", " ", city),
-        round(dist, 1) if dist is not None else "",
-        surface,
-        re.sub(r"\s+", " ", race_name),
-    )
-
-def _rating_shared_race_keys(
-    h1: Dict[str, Any],
-    h2: Dict[str, Any],
-    target_date: Any,
-) -> list[tuple[Dict[str, Any], Dict[str, Any]]]:
-    a = _rating_history_before_target(h1, target_date)
-    b = _rating_history_before_target(h2, target_date)
-    # Aynı yarış adı boş olduğunda daha gevşek anahtar da denenir.
-    idx = {}
-    for row in b:
-        k = _rating_row_race_key(row)
-        idx.setdefault(k, []).append(row)
-
-    pairs = []
-    used = set()
-    for row_a in a:
-        k = _rating_row_race_key(row_a)
-        candidates = idx.get(k, [])
-        if not candidates:
-            base = k[:4]
-            candidates = []
-            for kb, rows in idx.items():
-                if kb[:4] == base:
-                    candidates.extend(rows)
-        for row_b in candidates:
-            pair_key = (id(row_a), id(row_b))
-            if pair_key in used:
-                continue
-            used.add(pair_key)
-            pairs.append((row_a, row_b))
-            break
-    return pairs
-
-def _rating_common_opponent_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_date: Any,
-) -> float:
-    """Bugünkü alandaki rakiplerle geçmişteki ortak yarışları karşılaştırır."""
-    target_no = str(horse.get("_at_id") or horse.get("atId") or id(horse))
-    values = []
-
-    for other in horses:
-        if not isinstance(other, dict):
-            continue
-        other_no = str(other.get("_at_id") or other.get("atId") or id(other))
-        if other_no == target_no:
-            continue
-
-        for own_row, other_row in _rating_shared_race_keys(horse, other, target_date):
-            own_p = _rating_finish_points(_first_value(own_row, ["place", "sira", "Sıra", "S"]))
-            oth_p = _rating_finish_points(_first_value(other_row, ["place", "sira", "Sıra", "S"]))
-            own_w = _rating_row_weight(own_row)
-            oth_w = _rating_row_weight(other_row)
-
-            # Daha iyi sıra = pozitif; rakibe göre kilo avantajı = pozitif.
-            score = 50.0 + 0.50 * (own_p - oth_p)
-            if own_w is not None and oth_w is not None:
-                score += 2.5 * (oth_w - own_w)
-
-            score = max(0.0, min(100.0, score))
-            values.append((score, _rating_recency_factor(own_row, target_date)))
-
-    if not values:
-        return 50.0
-
-    return max(0.0, min(100.0,
-        sum(v * w for v, w in values) / sum(w for _, w in values)
-    ))
-
-def _rating_field_weight_advantage(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-) -> float:
-    own = _rating_target_weight(horse)
-    if own is None:
-        return 50.0
-    others = [
-        _rating_target_weight(h)
-        for h in horses
-        if isinstance(h, dict) and h is not horse
-    ]
-    others = [x for x in others if x is not None]
-    if not others:
-        return 50.0
-    avg = sum(others) / len(others)
-    return max(0.0, min(100.0, 50.0 + (avg - own) * 8.0))
-
-def _rating_historical_weight_fit(
-    horse: Dict[str, Any],
-    target_date: Any,
-) -> float:
-    target_weight = _rating_target_weight(horse)
-    history = _rating_history_before_target(horse, target_date)
-    if target_weight is None or not history:
-        return 50.0
+def _rating_last_six_form(horse: Dict[str, Any]) -> float:
+    """Son 6 gerçek koşuyu 1.00..0.50 zaman katsayılarıyla puanlar."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        history = []
 
     vals = []
-    for row in history:
-        rw = _rating_row_weight(row)
-        if rw is None:
+    for row in history[:6]:
+        if not isinstance(row, dict):
             continue
-        sim = _rating_weight_similarity(rw, target_weight) / 100.0
-        rec = _rating_recency_factor(row, target_date)
-        vals.append((_rating_finish_points(_first_value(
+        place = _rating_place_number(_first_value(
             row, ["place", "sira", "Sıra", "S"]
-        )), sim * rec))
+        ))
+        if place is None or place <= 0:
+            # Koşulmuş ama 10+ / okunamayan derece: 10 puan.
+            point = 10.0
+        else:
+            point = _FORM_POINTS.get(place, 10.0)
+        vals.append(point)
 
+    # Eksik geçmişi varsayımsal dereceyle doldurmaz.
+    # Mevcut gerçek yarışların ağırlıklı ortalaması alınır.
     if not vals:
-        return 50.0
-    return max(0.0, min(100.0, sum(v*w for v,w in vals) / sum(w for _,w in vals)))
+        return 0.0
 
-def _rating_weight_response(
-    horse: Dict[str, Any],
-    target_date: Any,
-) -> float:
-    """En az 3 geçmiş koşu varsa kilonun performansla ilişkisini ölçer."""
-    history = _rating_history_before_target(horse, target_date)
-    pairs = []
-    for row in history[:30]:
-        w = _rating_row_weight(row)
-        p = _rating_place_number(_first_value(row, ["place", "sira", "Sıra", "S"]))
-        if w is not None and p is not None:
-            pairs.append((w, _rating_finish_points(p)))
-    if len(pairs) < 3:
-        return 50.0
-
-    xbar = sum(x for x,_ in pairs) / len(pairs)
-    ybar = sum(y for _,y in pairs) / len(pairs)
-    den = sum((x-xbar)**2 for x,_ in pairs)
-    if den <= 1e-9:
-        return 50.0
-    slope = sum((x-xbar)*(y-ybar) for x,y in pairs) / den
-    # Negatif slope: kilo arttıkça performans düşüyor -> bugünkü kilo daha riskli.
-    # Pozitif slope: geçmişte ağır kiloda da iyi performans -> avantaj.
-    return max(0.0, min(100.0, 50.0 - slope * 8.0))
-
-def _rating_weight_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_date: Any,
-) -> float:
+    coeffs = _FORM_COEFFS[:len(vals)]
     return max(0.0, min(100.0,
-        0.40 * _rating_field_weight_advantage(horse, horses)
-        + 0.35 * _rating_historical_weight_fit(horse, target_date)
-        + 0.25 * _rating_weight_response(horse, target_date)
+        sum(p * c for p, c in zip(vals, coeffs)) / sum(coeffs)
     ))
 
-def _rating_last_six_form(horse: Dict[str, Any], target_date: Any) -> float:
-    history = _rating_history_before_target(horse, target_date)[:6]
-    if not history:
-        return 50.0
-    vals = []
-    for row in history:
-        p = _rating_place_number(_first_value(row, ["place", "sira", "Sıra", "S"]))
-        vals.append(_rating_finish_points(p))
-    weights = _RATING_FORM_WEIGHTS[:len(vals)]
-    return max(0.0, min(100.0, sum(v*w for v,w in zip(vals, weights)) / sum(weights)))
 
 def _rating_distance_performance(
     horse: Dict[str, Any],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
+    target_distance: float | None = None,
+    target_surface: str = "",
 ) -> float:
-    history = _rating_history_before_target(horse, target_date)
-    if not history:
-        return 50.0
+    """Seçili koşunun mesafesi: %60 kazanma + %40 ilk dört oranı."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
+        return 0.0
 
-    surface_target = _rating_surface(target_surface)
-    vals = []
-    for row in history:
-        surface = _rating_surface(_first_value(row, [
-            "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface"
-        ]))
-        if not surface_target or surface != surface_target:
-            continue
-        dist = _rating_distance(row)
-        prox = _rating_distance_proximity(dist, target_distance) / 100.0
-        rec = _rating_recency_factor(row, target_date)
-        vals.append((_rating_finish_points(_first_value(
+    matching = [
+        row for row in history
+        if isinstance(row, dict) and _rating_is_target_distance(
+            row, target_distance, target_surface
+        )
+    ]
+    if not matching:
+        return 0.0
+
+    starts = len(matching)
+    wins = 0
+    top4 = 0
+    for row in matching:
+        p = _rating_place_number(_first_value(
             row, ["place", "sira", "Sıra", "S"]
-        )), prox * rec))
+        ))
+        if p == 1:
+            wins += 1
+        if p is not None and 1 <= p <= 4:
+            top4 += 1
 
-    # Aynı pist deneyimi yoksa cezalandırma yok: nötr.
-    if not vals:
-        return 50.0
-    return max(0.0, min(100.0, sum(v*w for v,w in vals) / sum(w for _,w in vals)))
+    win_rate = wins / starts * 100.0
+    top4_rate = top4 / starts * 100.0
+    return max(0.0, min(100.0, win_rate * 0.60 + top4_rate * 0.40))
 
-def _rating_distance_component(
-    horse: Dict[str, Any],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> float:
-    """Pist/mesafe = %35 mesafe + %30 pist + %20 benzer kilo + %15 güncellik."""
-    history = _rating_history_before_target(horse, target_date)
-    if not history:
-        return 50.0
-
-    target_weight = _rating_target_weight(horse)
-    surface_target = _rating_surface(target_surface)
-
-    distance_vals = []
-    surface_vals = []
-    weight_vals = []
-    recency_vals = []
-
-    for row in history:
-        rec = _rating_recency_factor(row, target_date)
-        dist = _rating_distance(row)
-        rw = _rating_row_weight(row)
-        row_surface = _rating_surface(_first_value(row, [
-            "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface"
-        ]))
-
-        distance_vals.append((_rating_distance_proximity(dist, target_distance), rec))
-
-        if surface_target and row_surface == surface_target:
-            surface_vals.append((_rating_finish_points(_first_value(
-                row, ["place", "sira", "Sıra", "S"]
-            )), rec))
-
-        weight_vals.append((_rating_weight_similarity(rw, target_weight), rec))
-        recency_vals.append((rec * 100.0, 1.0))
-
-    def weighted(vals, default=50.0):
-        if not vals:
-            return default
-        return sum(v*w for v,w in vals) / sum(w for _,w in vals)
-
-    m = weighted(distance_vals)
-    p = weighted(surface_vals, 50.0)
-    k = weighted(weight_vals)
-    g = weighted(recency_vals)
-
-    return max(0.0, min(100.0,
-        0.35*m + 0.30*p + 0.20*k + 0.15*g
-    ))
 
 def _rating_time_seconds(value: Any) -> float | None:
+    """TJK derece biçimlerini saniyeye çevirir; çözülemeyeni kullanmaz."""
     if value is None:
         return None
     s = str(value).strip().replace(",", ".")
     if not s or s == "-":
         return None
 
-    # 2:18.34 / 2.18.34 / 2'18"34
+    # 1.45.32 / 1:45.32 / 1'45"32
     m = re.search(r"^(\d+)[\.:'](\d{1,2})[\.:](\d{1,2})$", s)
     if m:
         a, b, c = map(int, m.groups())
@@ -2518,336 +2202,119 @@ def _rating_time_seconds(value: Any) -> float | None:
         frac = float("0." + (m.group(3) or "0"))
         return a * 60.0 + b + frac
 
+    # 1.45.32 gibi noktalar yukarıda yakalanmadıysa sayısal parçaları dene.
+    parts = re.findall(r"\d+(?:\.\d+)?", s)
+    if len(parts) == 3:
+        try:
+            a, b, c = parts
+            return float(a) * 60.0 + float(b) + float("0." + str(c).split(".")[-1])
+        except Exception:
+            pass
+
+    # Tek sayısal değer: saniye kabul edilir.
+    m = re.search(r"\d+(?:\.\d+)?", s)
+    if m:
+        try:
+            v = float(m.group(0))
+            return v if v > 20 else None
+        except Exception:
+            return None
     return None
 
-def _rating_normalized_degree_scores(
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> dict[int, float]:
-    """Önceki tüm yarışlardan mesafe/pist eşdeğer hızını çıkarıp 0-100 normalize eder."""
-    surface_target = _rating_surface(target_surface)
-    pool = []
-    own_raw = {}
 
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        hist = _rating_history_before_target(horse, target_date)
-        for row in hist:
-            dist = _rating_distance(row)
-            sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
-            if dist is None or sec is None or sec <= 0:
-                continue
-            # Hedef yüzey varsa aynı yüzey tercih edilir; farklı pistler de
-            # normalize hız havuzuna girer, çünkü bu faktör pistten bağımsız
-            # ham dereceyi değil normalize edilmiş performansı ölçer.
-            prox = _rating_distance_proximity(dist, target_distance) / 100.0
-            if prox < 0.55:
-                continue
-            rec = _rating_recency_factor(row, target_date)
-            speed = dist / sec
-            pool.append(speed)
-            own_raw.setdefault(idx, []).append((speed, prox * rec, dist, sec))
-
-    if not pool:
-        return {i: 50.0 for i in range(len(horses))}
-
-    lo = min(pool)
-    hi = max(pool)
-    if hi <= lo:
-        return {i: 50.0 for i in range(len(horses))}
-
-    out = {}
-    for idx in range(len(horses)):
-        vals = own_raw.get(idx, [])
-        if not vals:
-            out[idx] = 50.0
-            continue
-        scores = []
-        for speed, w, _, _ in vals:
-            score = 100.0 * (speed - lo) / (hi - lo)
-            scores.append((score, w))
-        out[idx] = max(0.0, min(100.0,
-            sum(v*w for v,w in scores) / sum(w for _,w in scores)
-        ))
-    return out
-
-def _rating_class_group(value: Any) -> str:
-    s = str(value or "").strip().lower()
-    s = (s.replace("ı", "i").replace("ş", "s").replace("ğ", "g")
-           .replace("ü", "u").replace("ö", "o").replace("ç", "c"))
-    s = re.sub(r"\s+", " ", s).strip()
-    if not s:
-        return ""
-    m = re.search(r"\b(?:g|grup|group)\s*[- ]?([123])\b", s)
-    if m: return f"G{m.group(1)}"
-    m = re.search(r"\b(?:acik|açik|açık|a)\s*[- ]?([123])\b", s)
-    if m: return f"A{m.group(1)}"
-    m = re.search(r"\bkv\s*[- ]?(\d+)\b", s)
-    if m: return f"KV{m.group(1)}"
-    m = re.search(r"\b(?:h|handikap)\s*[- ]?(\d+)\b", s)
-    if m: return f"H{m.group(1)}"
-    m = re.search(r"\b(?:s|sartli|sartlı)\s*[- ]?(\d+)\b", s)
-    if m: return f"S{m.group(1)}"
-    if "maiden" in s:
-        return "MAIDEN"
-    return ""
-
-_RATING_CLASS_BASE = {
-    "G1": 100.0, "A1": 95.0, "G2": 90.0, "A2": 90.0, "G3": 80.0, "A3": 80.0,
-    "KV24": 90.0, "KV18": 80.0, "KV9": 70.0, "KV8": 70.0, "KV7": 60.0, "KV6": 60.0,
-    "H24": 90.0, "H23": 85.0, "H22": 80.0, "H21": 70.0, "H20": 75.0,
-    "H19": 70.0, "H18": 65.0, "H17": 60.0, "H16": 50.0, "H15": 40.0,
-    "H14": 30.0, "H13": 20.0,
-    "S27": 15.0, "S19": 25.0, "S5": 50.0, "S4": 40.0, "S3": 30.0,
-    "S2": 20.0, "S1": 10.0, "MAIDEN": 10.0,
-}
-
-def _rating_class_value(row: Dict[str, Any]) -> float | None:
-    group = _rating_class_group(_first_value(row, [
-        "className", "class", "sinif", "Sınıf", "raceName", "race_name", "kosu", "Koşu", "condition"
-    ]))
-    base = _RATING_CLASS_BASE.get(group)
-    if base is None:
-        # H ve KV gibi sınıflar tablo dışında kalırsa mevcut sınıf
-        # dönüştürücüsünü kullanmayı dene.
-        raw = _first_value(row, [
-            "className", "class", "sinif", "Sınıf", "raceName", "race_name", "kosu", "Koşu", "condition"
-        ])
-        lv = _class_level_from_text(raw)
-        if lv is not None:
-            base = lv
-    if base is None:
+def _rating_distance_speed_raw(
+    horse: Dict[str, Any],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> float | None:
+    """Seçili mesafedeki gerçek geçmiş derecelerinden en yüksek m/s hızı üretir."""
+    history = horse.get("_history", [])
+    if not isinstance(history, list):
         return None
-    place = _rating_place_number(_first_value(row, ["place", "sira", "Sıra", "S"]))
-    if place is None:
-        return base * 0.50
-    factor = _RATING_FINISH_FACTOR.get(place, 0.50)
-    return base * factor
 
-def _rating_target_class_value(race: Dict[str, Any]) -> float:
-    raw = get_race_condition(race)
-    group = _rating_class_group(raw)
-    if group in _RATING_CLASS_BASE:
-        return _RATING_CLASS_BASE[group]
-    lv = _class_level_from_text(raw)
-    return lv if lv is not None else 50.0
-
-def _rating_class_score(
-    horse: Dict[str, Any],
-    race: Dict[str, Any],
-    target_date: Any,
-) -> float:
-    target = _rating_target_class_value(race)
-    history = _rating_history_before_target(horse, target_date)
-    vals = []
+    speeds = []
     for row in history:
-        v = _rating_class_value(row)
-        if v is None:
+        if not isinstance(row, dict) or not _rating_is_target_distance(
+            row, target_distance, target_surface
+        ):
             continue
-        rec = _rating_recency_factor(row, target_date)
-        # Bugünkü sınıfa yakın geçmiş daha güçlü referans.
-        proximity = max(0.25, 1.0 - abs(v-target)/100.0)
-        vals.append((v, rec * proximity))
-    if not vals:
-        return 50.0
-
-    hist = sum(v*w for v,w in vals) / sum(w for _,w in vals)
-    # Geçmiş sınıf seviyesi bugünkü seviyeye ne kadar yakınsa o kadar yüksek.
-    similarity = max(0.0, 100.0 - abs(hist - target))
-    return max(0.0, min(100.0, 0.55*similarity + 0.45*hist))
-
-def _rating_style_value(row: Dict[str, Any]) -> str:
-    text = str(_first_value(row, [
-        "style", "runningStyle", "running_style", "koşuStili", "kosuStili",
-        "stili", "stil", "position", "pozisyon"
-    ]) or "").lower()
-    if any(x in text for x in ("önde", "onde", "lider", "front")): return "front"
-    if any(x in text for x in ("takip", "lideri takip", "stalker")): return "stalker"
-    if any(x in text for x in ("orta", "middle")): return "middle"
-    if any(x in text for x in ("bekle", "closer", "close", "sprint")): return "closer"
-    return ""
-
-def _rating_infer_style(history: list[Dict[str, Any]]) -> str:
-    for row in history[:6]:
-        s = _rating_style_value(row)
-        if s:
-            return s
-    return ""
-
-def _rating_tempo_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_date: Any,
-) -> float:
-    """Geçmiş koşu stili varsa alanın muhtemel temposuyla uyumunu ölçer."""
-    styles = []
-    own_style = _rating_infer_style(_rating_history_before_target(horse, target_date))
-    for h in horses:
-        if not isinstance(h, dict):
-            continue
-        s = _rating_infer_style(_rating_history_before_target(h, target_date))
-        if s:
-            styles.append(s)
-
-    # TJK geçmişinde stil alanı yoksa nötr; veri uydurulmaz.
-    if not own_style or not styles:
-        return 50.0
-
-    front = styles.count("front")
-    stalker = styles.count("stalker")
-    middle = styles.count("middle")
-    closer = styles.count("closer")
-    fast_pressure = front + stalker
-
-    if fast_pressure >= max(3, len(styles)*0.45):
-        expected = "closer" if closer else "stalker"
-    elif fast_pressure <= max(1, len(styles)*0.20):
-        expected = "front" if front else "stalker"
-    else:
-        expected = "stalker"
-
-    matrix = {
-        ("front","front"):75, ("front","stalker"):90, ("front","middle"):65, ("front","closer"):45,
-        ("stalker","front"):80, ("stalker","stalker"):90, ("stalker","middle"):80, ("stalker","closer"):65,
-        ("middle","front"):55, ("middle","stalker"):80, ("middle","middle"):90, ("middle","closer"):80,
-        ("closer","front"):95, ("closer","stalker"):90, ("closer","middle"):80, ("closer","closer"):70,
-    }
-    return float(matrix.get((own_style, expected), 50))
-
-def _rating_gallop_score(horse: Dict[str, Any], target_date: Any) -> float:
-    workouts = horse.get("_workouts", [])
-    if not isinstance(workouts, list) or not workouts:
-        return 50.0
-
-    target_dt = _rating_parse_date(target_date)
-    vals = []
-    for row in workouts:
-        if not isinstance(row, dict):
-            continue
-        dt = _rating_parse_date(_first_value(row, ["date", "tarih", "Tarih"]))
-        if target_dt is not None and (dt is None or dt >= target_dt):
-            continue
-        # Galopta bulunan en hızlı ölçümü kullan.
-        nums = []
-        for key in ("1200","1000","800","600","400","m1200","m1000","m800","m600","m400","time1200","time1000","time800","time600","time400"):
-            sec = _rating_time_seconds(row.get(key))
-            if sec and sec > 0:
-                nums.append(sec)
-        if not nums:
-            continue
-        # Mesafe bilinmiyorsa zamanın kendisini diğer galoplarla karşılaştırmak
-        # yerine sadece recency + tutarlılık kullanıyoruz.
-        rec = _rating_recency_factor(
-            {"date": dt.isoformat() if dt else ""}, target_date
-        )
-        vals.append((min(nums), rec))
-
-    if not vals:
-        return 50.0
-
-    vals.sort(key=lambda x: x[0])
-    best = vals[0][0]
-    worst = vals[-1][0]
-    if worst <= best:
-        return 75.0
-
-    weighted_avg = sum(v*w for v,w in vals) / sum(w for _,w in vals)
-    # Hızlı galop = daha yüksek; farkı sınırlı tut.
-    relative = 100.0 - ((weighted_avg - best) / max(0.01, worst-best)) * 50.0
-    return max(0.0, min(100.0, relative))
-
-def _rating_raw_speed_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> float:
-    """Ham hız: geçmişteki en iyi normalize edilmiş m/s hızının alan içindeki yeri."""
-    def best_speed(h):
-        vals = []
-        for row in _rating_history_before_target(h, target_date):
+        sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
+        if sec and sec > 0:
             d = _rating_distance(row)
-            sec = _rating_time_seconds(_first_value(row, ["time", "derece", "Derece"]))
-            if d and sec and sec > 0:
-                prox = _rating_distance_proximity(d, target_distance) / 100.0
-                if prox >= 0.70:
-                    vals.append((d/sec, prox * _rating_recency_factor(row, target_date)))
-        if not vals:
-            return None
-        return max(vals, key=lambda x:x[0])[0]
+            if d and d > 0:
+                speeds.append(d / sec)
+    return max(speeds) if speeds else None
 
-    all_speeds = [best_speed(h) for h in horses if isinstance(h, dict)]
-    all_speeds = [x for x in all_speeds if x is not None]
-    own = best_speed(horse)
-    if own is None or not all_speeds:
-        return 50.0
-    lo, hi = min(all_speeds), max(all_speeds)
-    if hi <= lo:
-        return 50.0
-    return max(0.0, min(100.0, 100.0*(own-lo)/(hi-lo)))
 
-def _calculate_rating_for_race(
+def _rating_speed_score(
+    horse: Dict[str, Any],
     horses: List[Dict[str, Any]],
-    race: Dict[str, Any],
-) -> list[Dict[str, Any]]:
-    target_date = race.get("date")
-    target_distance = _number(race.get("distance"))
-    target_surface = display_value(race.get("surface"), "")
-    norm_degree = _rating_normalized_degree_scores(
-        horses, target_distance, target_surface, target_date
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> float:
+    raws = [
+        _rating_distance_speed_raw(h, target_distance, target_surface)
+        for h in horses if isinstance(h, dict)
+    ]
+    raws = [x for x in raws if x is not None and x > 0]
+    own = _rating_distance_speed_raw(horse, target_distance, target_surface)
+    if own is None or not raws:
+        return 0.0
+    return max(0.0, min(100.0, own / max(raws) * 100.0))
+
+
+def _rating_hp_score(horse: Dict[str, Any], horses: List[Dict[str, Any]]) -> float:
+    own = _number(get_horse_hp(horse))
+    vals = [
+        _number(get_horse_hp(h))
+        for h in horses if isinstance(h, dict)
+    ]
+    vals = [x for x in vals if x is not None and x >= 0]
+    if own is None or not vals or max(vals) <= 0:
+        return 0.0
+    return max(0.0, min(100.0, own / max(vals) * 100.0))
+
+
+def _rating_weight_score(horse: Dict[str, Any]) -> float:
+    """K=(63-kilo)/(63-54)*100, üst sınır 100; negatif değerler 0."""
+    raw = get_horse_weight(horse).split("\n")[0].replace(",", ".")
+    kg = _number(raw)
+    if kg is None:
+        return 0.0
+    return max(0.0, min(100.0, (63.0 - kg) / 9.0 * 100.0))
+
+
+def calculate_standard_rating(
+    horse: Dict[str, Any],
+    horses: List[Dict[str, Any]],
+    target_distance: float | None = None,
+    target_surface: str = "",
+) -> Dict[str, Any]:
+    """100 puanlık REYTİNG; mesafe her zaman seçili koşudan alınır."""
+    form = _rating_last_six_form(horse)
+    perf = _rating_distance_performance(horse, target_distance, target_surface)
+    speed = _rating_speed_score(horse, horses, target_distance, target_surface)
+    hp = _rating_hp_score(horse, horses)
+    weight = _rating_weight_score(horse)
+
+    total = (
+        form * 0.30 +
+        perf * 0.30 +
+        speed * 0.15 +
+        hp * 0.15 +
+        weight * 0.10
     )
+    return {
+        "score": round(max(0.0, min(100.0, total)), 2),
+        "components": {
+            "Son 6 Form": round(form, 2),
+            "Hedef Mesafe Performans": round(perf, 2),
+            "Hedef Mesafe Hız": round(speed, 2),
+            "HP / Kalite": round(hp, 2),
+            "Kilo Avantajı": round(weight, 2),
+        },
+    }
 
-    results = []
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-
-        components = {
-            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
-            "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
-            "Güncel Form": _rating_last_six_form(horse, target_date),
-            "Normalize Derece": norm_degree.get(idx, 50.0),
-            "Pist / Mesafe": _rating_distance_component(
-                horse, target_distance, target_surface, target_date
-            ),
-            "Sınıf Uyumu": _rating_class_score(horse, race, target_date),
-            "Tempo": _rating_tempo_score(horse, horses, target_date),
-            "Galop / Hazırlık": _rating_gallop_score(horse, target_date),
-            "Ham Hız": _rating_raw_speed_score(
-                horse, horses, target_distance, target_surface, target_date
-            ),
-        }
-
-        score = sum(
-            components[key] * _RATING_WEIGHTS[key]
-            for key in _RATING_WEIGHTS
-        )
-
-        results.append({
-            "horse_index": idx,
-            "score": round(max(0.0, min(100.0, score)), 2),
-            "components": {k: round(v, 2) for k,v in components.items()},
-        })
-
-    results.sort(key=lambda x: (-x["score"], x["horse_index"]))
-    for rank, item in enumerate(results, 1):
-        item["rank"] = rank
-        item["label"] = (
-            "ÇOK GÜÇLÜ" if item["score"] >= 80 else
-            "GÜÇLÜ" if item["score"] >= 70 else
-            "ORTA" if item["score"] >= 55 else
-            "ZAYIF"
-        )
-    return results
-
-@st.cache_data(ttl=10800, show_spinner=False)
-def calculate_rating_cached(horses: List[Dict[str, Any]], race: Dict[str, Any]):
-    """REYTİNG için 180 dk cache; anahtar yarış tarihi/koşu ve gerçek geçmişi içerir."""
-    return _calculate_rating_for_race(horses, race)
 # ============================================================
 # TJK-ONLY ŞART UYUMU ENDEKSİ
 # ============================================================
@@ -3357,73 +2824,39 @@ def calculate_sart_uyumu(
     }
 
 
-def calculate_guncel_sinif(
-    horse: Dict[str, Any],
-    target_date: Any,
-    target_race: Dict[str, Any],
-    max_races: int = 5,
-) -> Dict[str, Any]:
-    """GÜNCEL SINIF farkını hedef koşu tarihinden önceki yarışlardan hesaplar.
+def calculate_guncel_sinif(horse: Dict[str, Any], max_races: int = 5) -> float:
+    """Atın son gerçek TJK yarışlarından güncel sınıf seviyesini hesaplar.
 
-    1) Yalnızca row_date < target_date olan geçmiş yarışlar kullanılır.
-    2) Bu geçmiş yarışlardan ağırlıklı GÜNCEL SINIF puanı hesaplanır.
-    3) Hedef koşunun sınıf puanı ayrıca hesaplanır.
-    4) Sonuç = GÜNCEL SINIF PUANI - HEDEF KOŞU SINIF PUANI.
-
-    Sonuç pozitifse "+5", negatifse "-5" biçiminde gösterilir.
-    Tarihi doğrulanamayan geçmiş kayıtları güvenli tarafta kalmak için
-    hesaba dahil edilmez; böylece hedef koşunun sonucu geçmişe sızmaz.
+    - Galop, AGF, jokey, bugünkü kilo ve bugünkü HP kullanılmaz.
+    - Yalnızca atın gerçek geçmiş yarışlarındaki sınıf/koşu bilgisi kullanılır.
+    - En yeni yarış daha yüksek ağırlıklıdır.
+    - Sınıf bilgisi olmayan kayıtlar puana dahil edilmez.
     """
     history = horse.get("_history", [])
     if not isinstance(history, list):
-        history = []
+        return 50.0
 
-    target_dt = _rating_parse_date(target_date)
     parsed = []
-
     for row in history:
         if not isinstance(row, dict):
             continue
-        row_dt = _rating_parse_date(_first_value(row, ["date", "tarih", "Tarih"]))
-        if target_dt is None or row_dt is None or row_dt >= target_dt:
-            continue
-
         class_text = _history_class_text(row)
         level = _class_level_from_text(class_text)
         if level is None:
             continue
-        parsed.append((row_dt, row, level))
+        parsed.append((row, level))
+        if len(parsed) >= max_races:
+            break
 
-    # En yeni geçmiş yarıştan eskiye doğru sırala.
-    parsed.sort(key=lambda x: x[0], reverse=True)
-    parsed = parsed[:max_races]
+    if not parsed:
+        return 50.0
 
-    if parsed:
-        weights = [1.00, 0.85, 0.70, 0.55, 0.40]
-        used = weights[:len(parsed)]
-        current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
-        current_class = round(max(0.0, min(100.0, current_class)), 1)
-    else:
-        current_class = 50.0
-
-    # Hedef koşunun sınıf puanı: aynı sınıf eşleştirme sistemi kullanılır.
-    race_class_text = get_race_condition(target_race)
-    race_class_score = _rating_target_class_value(target_race)
-
-    # Veri bulunamazsa mevcut nötr değer korunur.
-    if race_class_score is None:
-        race_class_score = 50.0
-
-    difference = round(current_class - float(race_class_score), 1)
-
-    return {
-        "score": current_class,
-        "race_class_score": round(float(race_class_score), 1),
-        "difference": difference,
-        "display": f"{difference:+g}",
-        "race_class": race_class_text,
-        "history_count": len(parsed),
-    }
+    # TJK geçmişi yeni -> eski sıralı geliyor. Değilse tarih üzerinden sıralamayı
+    # zorlamıyoruz; Worker'ın verdiği gerçek sıra korunuyor.
+    weights = [1.00, 0.85, 0.70, 0.55, 0.40]
+    used = weights[:len(parsed)]
+    weighted = sum(level * w for (_, level), w in zip(parsed, used)) / sum(used)
+    return round(max(0.0, min(100.0, weighted)), 1)
 
 
 # ============================================================
@@ -4257,12 +3690,6 @@ else:
         elif _hist_total == 0:
             st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
 
-    # BİZİM SKOR ile REYTİNG birbirinden tamamen ayrıdır.
-    # REYTİNG kendi 9 faktörlü motoruyla, yalnızca hedef tarihten önceki
-    # gerçek geçmişi kullanarak hesaplanır.
-    rating_results = calculate_rating_cached(_ranking_input, selected_race)
-    rating_by_index = {item["horse_index"]: item for item in rating_results}
-
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
@@ -4298,11 +3725,15 @@ else:
 
         comps = r.get("components", {})
         # GÜNCEL SINIF gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
-        current_class_result = calculate_guncel_sinif(horse, selected_date, selected_race)
-        current_class = current_class_result["display"]
-        # REYTİNG ayrı 9 faktörlü motorun sonucudur.
-        rating_result = rating_by_index.get(horse_index, {})
-        rating_score = rating_result.get("score", "—")
+        current_class = calculate_guncel_sinif(horse)
+        # REYTİNG yalnızca standart 100 puanlık formülle hesaplanır.
+        rating_result = calculate_standard_rating(
+            horse,
+            horses,
+            target_distance=_number(distance),
+            target_surface=surface,
+        )
+        rating_score = rating_result["score"]
 
         table_rows.append({
             "_horse_index": horse_index,
@@ -4418,7 +3849,7 @@ else:
     df_grid["_last_prize"] = [x[10] for x in _last_meta]
 
     df_grid["_form_surfaces"] = [
-        _last_six_surface_data(horses[int(hidx)], selected_date)
+        _last_six_surface_data(horses[int(hidx)])
         if str(hidx).strip().lstrip("-").isdigit() and 0 <= int(hidx) < len(horses) and isinstance(horses[int(hidx)], dict) else ""
         for hidx in df["_horse_index"].tolist()
     ]
@@ -5341,8 +4772,8 @@ else:
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
     # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
-    # Her sütunda ilk 5 değer koyu yeşilden açık yeşile renklendirilir.
-    # GÜNCEL SINIF farkında negatif değer kırmızı, pozitif değer mavi yazılır.
+    # Her sütun kendi değerlerine göre sıralanır. İlk 3 yeşil, son 3 kırmızı,
+    # aradaki değerler sarı tonlarıdır. İlk 3'ün yazısı beyaz, son 3'ün yazısı mavidir.
     _score_circle_renderer = JsCode(r"""
     class ScoreCircleRenderer {
         init(params) {
@@ -5355,7 +4786,7 @@ else:
             root.style.boxSizing = 'border-box';
             root.style.overflow = 'hidden';
 
-            const value = Number(String(params.value == null ? '' : params.value).replace('+',''));
+            const value = Number(params.value);
             if (!isFinite(value) || !params.api) {
                 const plain = document.createElement('span');
                 plain.textContent = params.value == null ? '' : String(params.value);
@@ -5370,118 +4801,49 @@ else:
             const values = [];
             params.api.forEachNodeAfterFilterAndSort(function(node) {
                 if (!node.data) return;
-                const x = Number(String(node.data[field] == null ? '' : node.data[field]).replace('+',''));
+                const x = Number(node.data[field]);
                 if (isFinite(x)) values.push(x);
             });
 
+            values.sort(function(a, b) { return b - a; });
+
+            // Aynı değere aynı sıra verilir.
+            const unique = [];
+            values.forEach(function(x) {
+                if (!unique.length || unique[unique.length - 1] !== x) unique.push(x);
+            });
+
+            const rank = unique.indexOf(value) + 1;
+            const bottomStart = Math.max(1, unique.length - 2);
+
             let bg = '#f3c84b';
-            let fg = '#111111';
+            let fg = '#222222';
             let border = '#d6a900';
 
-            // ------------------------------------------------------------
-            // BİZİM SKOR: en yüksek 4 mavi tonları, en düşük 3 kırmızı tonları,
-            // ortadakiler sarı tonları. Mavi/kırmızı yazı beyaz, sarı siyah.
-            // ------------------------------------------------------------
-            if (field === 'BİZİM SKOR') {
-                const sorted = values.slice().sort(function(a,b){ return b-a; });
-                const idx = sorted.indexOf(value);
-                const rankHigh = idx + 1;
-                const sortedAsc = values.slice().sort(function(a,b){ return a-b; });
-                const rankLow = sortedAsc.indexOf(value) + 1;
-
-                if (rankHigh <= Math.min(4, sorted.length)) {
-                    const blues = ['#063b73','#0a4f96','#1769aa','#4b8fc9'];
-                    bg = blues[rankHigh - 1] || blues[3];
-                    border = '#052f5f';
-                    fg = '#ffffff';
-                } else if (rankLow <= Math.min(3, sorted.length)) {
-                    const reds = ['#8b0000','#b22222','#dc4b4b'];
-                    bg = reds[rankLow - 1] || reds[2];
-                    border = '#6f0000';
-                    fg = '#ffffff';
+            // İlk 3: yeşil tonları + beyaz yazı.
+            if (rank <= 3) {
+                const greens = ['#16803c', '#2ca25f', '#55b879'];
+                bg = greens[rank - 1] || greens[2];
+                fg = '#ffffff';
+                border = '#116b31';
+            }
+            // Son 3: kırmızı tonları + mavi yazı.
+            else if (unique.length >= 3 && rank >= bottomStart) {
+                const redIndex = rank - bottomStart;
+                const reds = ['#e76f51', '#d94a3a', '#b91c1c'];
+                bg = reds[Math.max(0, Math.min(2, redIndex))];
+                fg = '#0057b8';
+                border = '#991b1b';
+            }
+            // Ortadakiler: sarı tonları.
+            else {
+                const ratio = unique.length > 1 ? (rank - 1) / (unique.length - 1) : 0.5;
+                if (ratio < 0.5) {
+                    bg = '#f7d774';
+                    border = '#d6ad32';
                 } else {
-                    const ratio = sorted.length > 1 ? idx / (sorted.length - 1) : 0.5;
-                    bg = ratio < 0.5 ? '#f7d774' : '#f1bd3a';
+                    bg = '#f1bd3a';
                     border = '#c99618';
-                    fg = '#111111';
-                }
-            }
-
-            // ------------------------------------------------------------
-            // GÜNCEL SINIF:
-            // Negatiflerde 0'a en yakın ilk 4 kırmızı tonları,
-            // en düşük/uzak 3 negatif mor tonları, ortadakiler sarı.
-            // Pozitiflerde en düşük 4 kırmızı, en yüksek 3 mor,
-            // ortadakiler sarı. Kırmızı/mor yazı beyaz.
-            // ------------------------------------------------------------
-            else if (field === 'GÜNCEL SINIF') {
-                if (value < 0) {
-                    const neg = values.filter(function(x){ return x < 0; }).sort(function(a,b){ return b-a; });
-                    const pos = values.filter(function(x){ return x > 0; }).sort(function(a,b){ return a-b; });
-                    const rankNearZero = neg.indexOf(value) + 1;
-                    const rankMostNegative = neg.slice().sort(function(a,b){ return a-b; }).indexOf(value) + 1;
-
-                    // NEGATİF GÜNCEL SINIF: 0'a en yakın ilk 3 değer yeşil tonları.
-                    // Diğer mevcut renk kuralları aynen korunur.
-                    if (rankNearZero <= Math.min(3, neg.length)) {
-                        const greens = ['#0b5d2a','#2f8f4e','#6fbd7f'];
-                        bg = greens[rankNearZero - 1] || greens[2];
-                        border = '#08451f';
-                        fg = '#ffffff';
-                    } else if (rankNearZero === 4) {
-                        const red = '#e34b4b';
-                        bg = red;
-                        border = '#720000';
-                        fg = '#ffffff';
-                    } else if (rankMostNegative <= Math.min(3, neg.length)) {
-                        const purples = ['#3b0a57','#5a1875','#7b3f98'];
-                        bg = purples[rankMostNegative - 1] || purples[2];
-                        border = '#2d0642';
-                        fg = '#ffffff';
-                    } else {
-                        bg = '#f3c84b';
-                        border = '#d6a900';
-                        fg = '#111111';
-                    }
-                } else if (value > 0) {
-                    const pos = values.filter(function(x){ return x > 0; }).sort(function(a,b){ return a-b; });
-                    const rankLow = pos.indexOf(value) + 1;
-                    const rankHigh = pos.slice().sort(function(a,b){ return b-a; }).indexOf(value) + 1;
-                    if (rankLow <= Math.min(4, pos.length)) {
-                        const reds = ['#8b0000','#a91515','#c92a2a','#e34b4b'];
-                        bg = reds[rankLow - 1] || reds[3];
-                        border = '#720000';
-                        fg = '#ffffff';
-                    } else if (rankHigh <= Math.min(3, pos.length)) {
-                        const purples = ['#3b0a57','#5a1875','#7b3f98'];
-                        bg = purples[rankHigh - 1] || purples[2];
-                        border = '#2d0642';
-                        fg = '#ffffff';
-                    } else {
-                        bg = '#f3c84b';
-                        border = '#d6a900';
-                        fg = '#111111';
-                    }
-                } else {
-                    bg = '#f3c84b';
-                    border = '#d6a900';
-                    fg = '#111111';
-                }
-            }
-
-            // REYTİNG: mevcut yeşil ilk 5 görünümü korunur.
-            else if (field === 'REYTİNG') {
-                const sorted = values.slice().sort(function(a,b){ return b-a; });
-                const rank = sorted.indexOf(value) + 1;
-                if (rank <= 5) {
-                    const greens = ['#0b5d2a','#167a3d','#299653','#4caf6b','#79c98b'];
-                    bg = greens[rank - 1] || greens[4];
-                    border = '#0a4d24';
-                    fg = '#ffffff';
-                } else {
-                    bg = '#f3c84b';
-                    border = '#d6a900';
-                    fg = '#111111';
                 }
             }
 
@@ -5517,41 +4879,8 @@ else:
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     gb.configure_column("REYTİNG", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
-    # GÜNCEL SINIF sıralaması: negatiflerde 0'a en yakın negatiften başlayarak,
-    # ardından daha düşük negatifler; sonra 0 ve pozitifler küçükten büyüğe.
-    # Örnek: -1, -5, -7, -8, +1, +3, +20
-    _guncel_sinif_comparator = JsCode(r"""
-    function(a, b) {
-        function num(v) {
-            if (v === null || v === undefined || v === '') return null;
-            var n = Number(String(v).replace('+','').replace(',', '.'));
-            return isFinite(n) ? n : null;
-        }
-        var x = num(a), y = num(b);
-        if (x === null && y === null) return 0;
-        if (x === null) return 1;
-        if (y === null) return -1;
-        if (x === y) return 0;
-        if (x < 0 && y < 0) return y - x;
-        if (x < 0 && y >= 0) return -1;
-        if (x >= 0 && y < 0) return 1;
-        return x - y;
-    }
-    """)
-    gb.configure_column(
-        "GÜNCEL SINIF", width=110, minWidth=95,
-        cellRenderer=_score_circle_renderer,
-        comparator=_guncel_sinif_comparator,
-        filter="agNumberColumnFilter",
-        filterParams=JsCode(r"""{
-            numberParser: function(params) {
-                if (params === null || params === undefined || params === '') return null;
-                var n = Number(String(params).replace('+','').replace(',', '.'));
-                return isFinite(n) ? n : null;
-            }
-        }"""),
-        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}")
-    )
+    gb.configure_column("GÜNCEL SINIF", width=110, minWidth=95, cellRenderer=_score_circle_renderer,
+                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     gb.configure_column("SON GALOP", width=95, minWidth=95, maxWidth=95, resizable=False, cellRenderer=workout_renderer, cellClass="ri-left-centered-cell")
     gb.configure_column("SON KOŞU", width=95, minWidth=80, cellRenderer=last_race_renderer, cellClass="ri-last-race-cell")
     gb.configure_column("BU YIL KAZANÇ", width=115, minWidth=100, cellStyle=JsCode("function(params){return {color:'#800020',fontWeight:'900'};}"))
@@ -5867,9 +5196,8 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "REYTİNG: Ortak Rakip+Kilo %23 • Kilo Uyumu %17 • Güncel Form %15 • Normalize Derece %10 • "
-                "Pist/Mesafe %12 • Sınıf %9 • Tempo %6 • Galop %6 • Ham Hız %2. "
-                "Hesapta yalnızca hedef koşu tarihinden önceki veriler kullanılır."
+                "REYTİNG formülü: Son 6 %30 + Hedef Mesafe Performans %30 + Hedef Mesafe Hız %15 + HP %15 + Kilo %10. "
+                "Tüm atlara aynı formül uygulanır."
             )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
@@ -5883,11 +5211,11 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %23 • Kilo Uyumu %17 • Form %15 • Normalize Derece %10 • "
-    f"Pist/Mesafe %12 • Sınıf %9 • Tempo %6 • Galop %6 • Ham Hız %2 • Seçili koşu: {race_number}. koşu",
+    f"**REYTİNG MOTORU:** Son 6 %30 • Hedef Mesafe Performans %30 • Hedef Mesafe Hız %15 • HP %15 • Kilo %10 • "
+    f"Seçili koşu: {race_number}. koşu",
 )
 st.caption(
-    "REYTİNG yalnızca yarış tarihinden önceki TJK geçmişi ve yarış öncesi galop verileriyle hesaplanır; aynı günkü sonuç REYTİNG'e girmez."
+    "REYTİNG, GERÇEK VERİ İLE ANALİZ ET butonundan sonra her at için aynı sabit 100 puanlık formülle hesaplanır."
 )
 
 # ============================================================
