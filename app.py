@@ -2044,6 +2044,7 @@ def _history_class_text(row: Dict[str, Any]) -> str:
     return display_value(_first_value(row, [
         "className", "class", "sinif", "Sınıf",
         "raceName", "race_name", "kosu", "Koşu",
+        "condition", "detail", "raceCondition", "race_condition",
     ]), "")
 
 
@@ -3390,7 +3391,10 @@ def calculate_guncel_sinif(
     for row in history:
         if not isinstance(row, dict):
             continue
-        row_dt = _rating_parse_date(_first_value(row, ["date", "tarih", "Tarih"]))
+        row_dt = _rating_parse_date(_first_value(row, [
+            "date", "tarih", "Tarih",
+            "raceDate", "race_date", "kosuTarihi"
+        ]))
         if target_dt is None or row_dt is None or row_dt >= target_dt:
             continue
 
