@@ -2047,6 +2047,11 @@ def _history_class_text(row: Dict[str, Any]) -> str:
         "condition", "detail", "raceCondition", "race_condition",
         "conditionName", "condition_name", "kosuSarti", "kosu_sarti",
         "raceTitle", "race_title", "eventName", "event_name",
+        "raceType", "race_type", "raceTypeName", "race_type_name",
+        "raceGroup", "race_group", "groupName", "group_name",
+        "yarisTuru", "yarısTuru", "yaris_turu", "kosuTuru", "kosu_turu",
+        "kosuAdi", "kosu_adi", "kosuSartiAdi", "kosu_sarti_adi",
+        "sart", "şart", "sartli", "şartli", "detailName", "detail_name",
     ])
     return display_value(value, "")
 
@@ -2151,30 +2156,45 @@ def _rating_parse_date(value: Any) -> date | None:
 
 
 def _history_value(row: Any, keys: List[str]) -> Any:
-    """Geçmiş yarış kaydında doğrudan veya iç içe TJK alanını bulur."""
-    if not isinstance(row, dict):
+    """Geçmiş yarış kaydında alanı derinlemesine ve güvenli biçimde bulur.
+
+    TJK/Worker bazı yanıtlarda tarih ve koşu sınıfını doğrudan satıra,
+    bazılarında race/result/data gibi iç içe yapılara koyabiliyor. Önceki
+    sürüm yalnızca bir seviye aradığı için tek geçmiş yarışı olan bazı
+    atlarda GÜNCEL SINIF gereksiz yere boş kalabiliyordu.
+    """
+    wanted = {str(k).casefold() for k in keys}
+    seen = set()
+
+    def walk(obj: Any, depth: int = 0) -> Any:
+        if depth > 8:
+            return ""
+        if isinstance(obj, dict):
+            oid = id(obj)
+            if oid in seen:
+                return ""
+            seen.add(oid)
+
+            # Önce bu seviyedeki doğrudan alanları kontrol et.
+            for k, v in obj.items():
+                if str(k).casefold() in wanted and v not in (None, "", [], {}):
+                    return v
+
+            # Sonra iç içe dict/list yapılarını tara.
+            for v in obj.values():
+                if isinstance(v, (dict, list, tuple)):
+                    found = walk(v, depth + 1)
+                    if found not in (None, "", [], {}):
+                        return found
+        elif isinstance(obj, (list, tuple)):
+            for v in obj:
+                if isinstance(v, (dict, list, tuple)):
+                    found = walk(v, depth + 1)
+                    if found not in (None, "", [], {}):
+                        return found
         return ""
-    # Önce doğrudan alanlar.
-    value = _first_value(row, keys)
-    if value not in (None, ""):
-        return value
 
-    # Bazı TJK/Worker cevaplarında yarış bilgileri race/result/data altında gelir.
-    preferred_nested = ("race", "result", "data", "raceInfo", "race_info", "resultInfo", "result_info")
-    for nk in preferred_nested:
-        child = row.get(nk)
-        if isinstance(child, dict):
-            value = _first_value(child, keys)
-            if value not in (None, ""):
-                return value
-
-    # Son çare: tek seviyelik iç içe sözlüklerde ara.
-    for child in row.values():
-        if isinstance(child, dict):
-            value = _first_value(child, keys)
-            if value not in (None, ""):
-                return value
-    return ""
+    return walk(row)
 
 def _rating_history_before_target(
     horse: Dict[str, Any],
@@ -2195,7 +2215,9 @@ def _rating_history_before_target(
             continue
         row_dt = _rating_parse_date(_history_value(row, [
             "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
-            "race_date_local", "runDate", "run_date", "kosuTarihiLocal"
+            "race_date_local", "runDate", "run_date", "kosuTarihiLocal",
+            "startDate", "start_date", "raceDay", "race_day", "yarisTarihi",
+            "yaris_tarihi", "kosuTarihiLocal", "eventDate", "event_date"
         ]))
         # Tarih çözülemeyen kayıt, veri sızıntısını önlemek için kullanılmaz.
         if row_dt is not None and row_dt < target_dt:
@@ -2203,7 +2225,8 @@ def _rating_history_before_target(
 
     out.sort(
         key=lambda r: _rating_parse_date(_first_value(
-            r, ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"]
+            r, ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
+            "startDate", "start_date", "yarisTarihi", "yaris_tarihi", "eventDate", "event_date"]
         )) or date.min,
         reverse=True,
     )
