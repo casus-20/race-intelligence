@@ -270,11 +270,18 @@ def class_base_points(value):
 
 
 def finish_factor(place):
+    """Derece sonuç katsayısı:
+    1. -> 1.00, 2. -> 0.90, 3. -> 0.80,
+    4. -> 0.70, 5. -> 0.60, 6.+ -> 0.50.
+    """
     p = _place({"place": place})
-    if p is None: return None
+    if p is None:
+        return None
     p = int(p)
-    if p in FINISH_FACTOR: return FINISH_FACTOR[p]
-    if p >= 6: return .20
+    if p in FINISH_FACTOR:
+        return FINISH_FACTOR[p]
+    if p >= 6:
+        return 0.50
     return None
 
 
@@ -344,12 +351,118 @@ def score_guncel_form(prior):
     return max(0.0,min(100.0,100.0*sum(vals)/denom))
 
 
-def score_start_kulvar(prior,target):
-    post=_num(_first(target,["post","st","start","kulvar"],None))
-    if post is None: return 0.0
-    rows=[r for r in prior if _num(_first(r,["post","st","start","kulvar"],None))==post and _place(r) is not None]
-    if not rows: return 0.0
-    return max(0.0,min(50.0,50.0*(_rate_score(rows) or 0.0)))
+def score_start_kulvar(prior, target):
+    """Start/Kulvar: maksimum 50 puan.
+
+    %35 aynı kulvar geçmiş performansı
+    %25 aynı kulvar + ±200 m mesafe
+    %20 aynı kulvar + aynı pist
+    %10 bugünkü koşudaki at sayısına göre kulvar konumu
+    %10 güncellik
+    """
+    post = _num(_first(target, ["post", "st", "start", "kulvar"], None))
+    if post is None:
+        return 0.0
+
+    same_post = [
+        r for r in prior
+        if _num(_first(r, ["post", "st", "start", "kulvar"], None)) == post
+        and _place(r) is not None
+    ]
+    if not same_post:
+        return 0.0
+
+    target_dist = _dist(target)
+    target_surface = _surface(target)
+
+    # %35 — aynı kulvar geçmiş performansı
+    base = _rate_score(same_post) or 0.0
+
+    # %25 — aynı kulvar + benzer mesafe
+    near = [
+        r for r in same_post
+        if target_dist is not None
+        and _dist(r) is not None
+        and abs(_dist(r) - target_dist) <= 200
+    ]
+    near_score = _rate_score(near) or 0.0
+
+    # %20 — aynı kulvar + aynı pist
+    same_surface = [
+        r for r in same_post
+        if target_surface and _surface(r) == target_surface
+    ]
+    surface_score = _rate_score(same_surface) or 0.0
+
+    # %10 — bugünkü koşudaki at sayısına göre kulvar konumu
+    field_size = _num(_first(
+        target,
+        ["horse_count", "horseCount", "field_size", "fieldSize",
+         "at_sayisi", "atSayisi"],
+        None,
+    ))
+    if field_size is not None and field_size >= 2:
+        field_score = max(
+            0.0,
+            min(1.0, 1.0 - ((post - 1.0) / (field_size - 1.0))),
+        )
+    else:
+        field_score = 0.0
+
+    # %10 — güncellik
+    target_date = _dt(_first(
+        target, ["date", "tarih", "Tarih"], None
+    ))
+    recency_values = []
+    recency_weights = []
+
+    if target_date is not None:
+        for r in same_post:
+            rd = _dt(_first(
+                r,
+                ["date", "tarih", "Tarih", "raceDate",
+                 "race_date", "kosuTarihi"],
+                None,
+            ))
+            ff = finish_factor(_place(r))
+            if rd is None or ff is None:
+                continue
+
+            days = (target_date - rd).days
+            if days < 0:
+                continue
+
+            if days <= 30:
+                rw = 1.00
+            elif days <= 60:
+                rw = 0.90
+            elif days <= 90:
+                rw = 0.80
+            elif days <= 180:
+                rw = 0.65
+            elif days <= 365:
+                rw = 0.50
+            else:
+                rw = 0.30
+
+            recency_values.append(ff * rw)
+            recency_weights.append(rw)
+
+    recency_score = (
+        max(0.0, min(1.0, sum(recency_values) / sum(recency_weights)))
+        if recency_values and recency_weights
+        else 0.0
+    )
+
+    normalized = (
+        0.35 * base
+        + 0.25 * near_score
+        + 0.20 * surface_score
+        + 0.10 * field_score
+        + 0.10 * recency_score
+    )
+
+    return max(0.0, min(50.0, 50.0 * normalized))
 
 
 def _current_values(horse,race):
