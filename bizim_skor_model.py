@@ -237,7 +237,7 @@ CLASS_BASE = {
     "MAIDEN": 10,
 }
 
-FINISH_FACTOR = {1: 1.00, 2: .90, 3: .80, 4: .70, 5: .60 6: .50, 7: .40, 8: .30, 9: .20}
+FINISH_FACTOR = {1: 1.00, 2: .90, 3: .80, 4: .70, 5: .60}
 
 
 def normalize_race_group(value):
