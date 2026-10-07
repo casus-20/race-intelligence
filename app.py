@@ -2018,7 +2018,7 @@ def _class_level_from_text(value: Any) -> float | None:
         return min(89.0, 70.0 + n * 2.0)
 
     # Şartlı 1-5.
-    m = re.search(r"ŞARTLI\s*([1-5])\b|ŞART\s*([1-5])\b", text)
+    m = re.search(r"ŞARTLI\s*[-/]?\s*([1-5])\b|ŞART\s*[-/]?\s*([1-5])\b", text)
     if m:
         n = int(m.group(1) or m.group(2))
         return 35.0 + n * 7.0
@@ -2041,11 +2041,14 @@ def _class_level_from_text(value: Any) -> float | None:
 
 def _history_class_text(row: Dict[str, Any]) -> str:
     """Geçmiş yarış kaydındaki gerçek TJK sınıf/koşu adını al."""
-    return display_value(_first_value(row, [
+    value = _history_value(row, [
         "className", "class", "sinif", "Sınıf",
         "raceName", "race_name", "kosu", "Koşu",
         "condition", "detail", "raceCondition", "race_condition",
-    ]), "")
+        "conditionName", "condition_name", "kosuSarti", "kosu_sarti",
+        "raceTitle", "race_title", "eventName", "event_name",
+    ])
+    return display_value(value, "")
 
 
 
@@ -2109,19 +2112,69 @@ def _rating_finish_points(place: Any) -> float:
     return _RATING_FORM_POINTS.get(p, 10.0)
 
 def _rating_parse_date(value: Any) -> date | None:
+    """TJK tarih alanlarını farklı formatlarda güvenli biçimde çözer."""
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
     text = str(value or "").strip()
-    if not text:
+    if not text or text in {"-", "—", "None", "null"}:
         return None
-    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+
+    # ISO timestamp: 2026-10-07T20:30:00 / 2026-10-07 20:30:00
+    iso = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(iso).date()
+    except Exception:
+        pass
+
+    # TJK'da görülebilecek tarih biçimleri.
+    for fmt in (
+        "%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y",
+        "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
+    ):
         try:
             return datetime.strptime(text[:10], fmt).date()
         except Exception:
             pass
+
+    # Metnin içinde tarih varsa (örn. '07.10.2026 20:30') bul.
+    m = re.search(r"(\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})", text)
+    if m:
+        token = m.group(1)
+        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+            try:
+                return datetime.strptime(token, fmt).date()
+            except Exception:
+                pass
     return None
+
+
+def _history_value(row: Any, keys: List[str]) -> Any:
+    """Geçmiş yarış kaydında doğrudan veya iç içe TJK alanını bulur."""
+    if not isinstance(row, dict):
+        return ""
+    # Önce doğrudan alanlar.
+    value = _first_value(row, keys)
+    if value not in (None, ""):
+        return value
+
+    # Bazı TJK/Worker cevaplarında yarış bilgileri race/result/data altında gelir.
+    preferred_nested = ("race", "result", "data", "raceInfo", "race_info", "resultInfo", "result_info")
+    for nk in preferred_nested:
+        child = row.get(nk)
+        if isinstance(child, dict):
+            value = _first_value(child, keys)
+            if value not in (None, ""):
+                return value
+
+    # Son çare: tek seviyelik iç içe sözlüklerde ara.
+    for child in row.values():
+        if isinstance(child, dict):
+            value = _first_value(child, keys)
+            if value not in (None, ""):
+                return value
+    return ""
 
 def _rating_history_before_target(
     horse: Dict[str, Any],
@@ -2140,8 +2193,9 @@ def _rating_history_before_target(
         if target_dt is None:
             out.append(row)
             continue
-        row_dt = _rating_parse_date(_first_value(row, [
-            "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"
+        row_dt = _rating_parse_date(_history_value(row, [
+            "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
+            "race_date_local", "runDate", "run_date", "kosuTarihiLocal"
         ]))
         # Tarih çözülemeyen kayıt, veri sızıntısını önlemek için kullanılmaz.
         if row_dt is not None and row_dt < target_dt:
@@ -3391,9 +3445,10 @@ def calculate_guncel_sinif(
     for row in history:
         if not isinstance(row, dict):
             continue
-        row_dt = _rating_parse_date(_first_value(row, [
+        row_dt = _rating_parse_date(_history_value(row, [
             "date", "tarih", "Tarih",
-            "raceDate", "race_date", "kosuTarihi"
+            "raceDate", "race_date", "kosuTarihi",
+            "race_date_local", "runDate", "run_date", "kosuTarihiLocal"
         ]))
         if target_dt is None or row_dt is None or row_dt >= target_dt:
             continue
@@ -3418,6 +3473,13 @@ def calculate_guncel_sinif(
             "display": "—",
             "race_class": get_race_condition(target_race),
             "history_count": 0,
+            "raw_history_count": len(history),
+            "history_sample_keys": list(history[0].keys())[:40] if history and isinstance(history[0], dict) else [],
+            "history_sample_date": display_value(_history_value(history[0], [
+                "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
+                "race_date_local", "runDate", "run_date", "kosuTarihiLocal"
+            ]), "") if history and isinstance(history[0], dict) else "",
+            "history_sample_class": _history_class_text(history[0]) if history and isinstance(history[0], dict) else "",
         }
 
     weights = [1.00, 0.90, 0.80, 0.70, 0.60]
@@ -4285,6 +4347,25 @@ else:
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
+
+    # GÜNCEL SINIF veri teşhisi: yalnızca hesaplanamayan atlar için, kullanıcı
+    # isterse ham geçmiş anahtarlarını görebilir. Hesabı değiştirmez.
+    _guncel_debug = []
+    for _hi, _hh in enumerate(horses):
+        if not isinstance(_hh, dict):
+            continue
+        _gc = calculate_guncel_sinif(_hh, selected_date, selected_race)
+        if _gc.get("display") == "—" and _gc.get("raw_history_count", 0) > 0:
+            _guncel_debug.append({
+                "at": get_horse_name(_hh),
+                "history_count": _gc.get("raw_history_count"),
+                "sample_keys": _gc.get("history_sample_keys"),
+                "sample_date": _gc.get("history_sample_date"),
+                "sample_class": _gc.get("history_sample_class"),
+            })
+    if _guncel_debug:
+        with st.expander("🔎 GÜNCEL SINIF VERİ TEŞHİSİ", expanded=False):
+            st.dataframe(pd.DataFrame(_guncel_debug), use_container_width=True, hide_index=True)
 
     # ========================================================
     # TJK YENİ ANA TABLO — TIKLANABİLİR SATIR + SIRALAMA/FİLTRE
