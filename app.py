@@ -3221,11 +3221,11 @@ def _su_history_row_match(
     # Eksik değerler 50 ile nötr kalır.
     # Pist + ırk eşleşmesi yukarıda filtrelenir.
     return (
-        scores["race_type"] * 0.20
-        + scores["class"] * 0.20
+        scores["race_type"] * 0.30
+        + scores["class"] * 0.30
         + scores["distance"] * 0.20
-        + scores["weight"] * 0.15
-        + scores["hp"] * 0.15
+        + scores["weight"] * 0.5
+        + scores["hp"] * 0.5
         + scores["finish"] * 0.10
     )
 
@@ -3337,11 +3337,11 @@ def calculate_sart_uyumu(
     elif sample >= 5:
         confidence = 80.0
     elif sample >= 3:
-        confidence = 65.0
+        confidence = 70.0
     elif sample >= 2:
-        confidence = 45.0
+        confidence = 60.0
     else:
-        confidence = 30.0
+        confidence = 50.0
 
     # Tek eşleşmenin skoru gereğinden fazla yükseltmesini önle.
     if sample == 1:
@@ -3399,7 +3399,7 @@ def calculate_guncel_sinif(
     parsed = parsed[:max_races]
 
     if parsed:
-        weights = [1.00, 0.85, 0.70, 0.55, 0.40]
+        weights = [1.00, 0.90, 0.80, 0.70, 0.60]
         used = weights[:len(parsed)]
         current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
         current_class = round(max(0.0, min(100.0, current_class)), 1)
