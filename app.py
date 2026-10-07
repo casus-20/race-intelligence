@@ -2806,6 +2806,12 @@ def _calculate_rating_for_race(
         if not isinstance(horse, dict):
             continue
 
+        # KESİN KURAL:
+        # Hedef tarihten önce en az 1 gerçek yarış yoksa REYTİNG hesaplanmaz.
+        eligible_history = _rating_history_before_target(horse, target_date)
+        if not eligible_history:
+            continue
+
         components = {
             "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
@@ -3398,13 +3404,22 @@ def calculate_guncel_sinif(
     parsed.sort(key=lambda x: x[0], reverse=True)
     parsed = parsed[:max_races]
 
-    if parsed:
-        weights = [1.00, 0.90, 0.80, 0.70, 0.60]
-        used = weights[:len(parsed)]
-        current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
-        current_class = round(max(0.0, min(100.0, current_class)), 1)
-    else:
-        current_class = 50.0
+    # Hedef tarihten önce sınıf bilgisi taşıyan gerçek yarış yoksa
+    # GÜNCEL SINIF hesaplanmaz; yapay 50 puan verilmez.
+    if not parsed:
+        return {
+            "score": None,
+            "race_class_score": None,
+            "difference": None,
+            "display": "—",
+            "race_class": get_race_condition(target_race),
+            "history_count": 0,
+        }
+
+    weights = [1.00, 0.90, 0.80, 0.70, 0.60]
+    used = weights[:len(parsed)]
+    current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
+    current_class = round(max(0.0, min(100.0, current_class)), 1)
 
     # Hedef koşunun sınıf puanı: aynı sınıf eşleştirme sistemi kullanılır.
     race_class_text = get_race_condition(target_race)
