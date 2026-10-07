@@ -2017,10 +2017,20 @@ def _class_level_from_text(value: Any) -> float | None:
         n = int(m.group(1))
         return min(89.0, 70.0 + n * 2.0)
 
-    # Şartlı 1-5.
-    m = re.search(r"ŞARTLI\s*[-/]?\s*([1-5])\b|ŞART\s*[-/]?\s*([1-5])\b", text)
+    # Şartlı 1-5. TJK bazı kayıtlarda "Şartlı" ile sınıf numarasını
+    # ayrı alanlarda döndürebilir; bu nedenle numaranın hemen yanında
+    # veya aynı metin içinde bulunmasını kabul ediyoruz.
+    m = re.search(r"(?:ŞARTLI|ŞART)\s*[-/]?\s*([1-5])\b", text)
+    if not m:
+        m = re.search(r"\b([1-5])\s*[-/]?\s*(?:ŞARTLI|ŞART)\b", text)
+    if not m and re.search(r"\bŞARTLI\b|\bŞART\b", text):
+        nums = re.findall(r"\b([1-5])\b", text)
+        if nums:
+            m = re.match(r"(.*)", nums[0])
+            n = int(nums[0])
+            return 35.0 + n * 7.0
     if m:
-        n = int(m.group(1) or m.group(2))
+        n = int(m.group(1))
         return 35.0 + n * 7.0
 
     # Handikap H1-H18. H numarası sınıf seviyesini doğrudan temsil eder.
@@ -2040,8 +2050,15 @@ def _class_level_from_text(value: Any) -> float | None:
 
 
 def _history_class_text(row: Dict[str, Any]) -> str:
-    """Geçmiş yarış kaydındaki gerçek TJK sınıf/koşu adını al."""
-    value = _history_value(row, [
+    """Geçmiş yarıştan sınıf bilgisini mümkün olan en geniş biçimde toplar.
+
+    TJK geçmişinde sınıf bazen tek bir alanda (örn. className), bazen de
+    raceType + raceName/condition gibi ayrı alanlarda gelir. Tek bir alanı
+    seçmek yerine bütün aday alanları birleştiriyoruz. Böylece örneğin
+    ``raceType=Şartlı`` ve ``class=4`` gibi iki ayrı alan da birlikte
+    değerlendirilebilir.
+    """
+    keys = [
         "className", "class", "sinif", "Sınıf",
         "raceName", "race_name", "kosu", "Koşu",
         "condition", "detail", "raceCondition", "race_condition",
@@ -2052,8 +2069,42 @@ def _history_class_text(row: Dict[str, Any]) -> str:
         "yarisTuru", "yarısTuru", "yaris_turu", "kosuTuru", "kosu_turu",
         "kosuAdi", "kosu_adi", "kosuSartiAdi", "kosu_sarti_adi",
         "sart", "şart", "sartli", "şartli", "detailName", "detail_name",
-    ])
-    return display_value(value, "")
+    ]
+    wanted = {str(k).casefold() for k in keys}
+    values = []
+    seen = set()
+
+    def walk(obj: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(obj, dict):
+            oid = id(obj)
+            if oid in seen:
+                return
+            seen.add(oid)
+            for k, v in obj.items():
+                if str(k).casefold() in wanted and v not in (None, "", [], {}):
+                    if isinstance(v, (str, int, float)):
+                        values.append(str(v))
+                    elif isinstance(v, list):
+                        values.extend(str(x) for x in v if isinstance(x, (str, int, float)))
+                if isinstance(v, (dict, list, tuple)):
+                    walk(v, depth + 1)
+        elif isinstance(obj, (list, tuple)):
+            for v in obj:
+                if isinstance(v, (dict, list, tuple)):
+                    walk(v, depth + 1)
+
+    walk(row)
+    # Sıralamayı koruyup tekrarları kaldır.
+    out = []
+    seen_text = set()
+    for v in values:
+        t = str(v).strip()
+        if t and t.casefold() not in seen_text:
+            seen_text.add(t.casefold())
+            out.append(t)
+    return " | ".join(out)
 
 
 
