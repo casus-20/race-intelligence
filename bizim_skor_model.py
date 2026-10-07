@@ -270,9 +270,8 @@ def class_base_points(value):
 
 
 def finish_factor(place):
-    """Derece sonuç katsayısı:
-    1. -> 1.00, 2. -> 0.90, 3. -> 0.80,
-    4. -> 0.70, 5. -> 0.60, 6.+ -> 0.50.
+    """Sonuç katsayısı: 1=1.00, 2=0.90, 3=0.80,
+    4=0.70, 5=0.60, 6 ve sonrası=0.50.
     """
     p = _place({"place": place})
     if p is None:
@@ -360,13 +359,13 @@ def score_start_kulvar(prior, target):
     %10 bugünkü koşudaki at sayısına göre kulvar konumu
     %10 güncellik
     """
-    post = _num(_first(target, ["post", "st", "start", "kulvar"], None))
+    post = _num(_first(target, ["post","st","start","kulvar"], None))
     if post is None:
         return 0.0
 
     same_post = [
         r for r in prior
-        if _num(_first(r, ["post", "st", "start", "kulvar"], None)) == post
+        if _num(_first(r, ["post","st","start","kulvar"], None)) == post
         and _place(r) is not None
     ]
     if not same_post:
@@ -375,10 +374,8 @@ def score_start_kulvar(prior, target):
     target_dist = _dist(target)
     target_surface = _surface(target)
 
-    # %35 — aynı kulvar geçmiş performansı
     base = _rate_score(same_post) or 0.0
 
-    # %25 — aynı kulvar + benzer mesafe
     near = [
         r for r in same_post
         if target_dist is not None
@@ -387,32 +384,25 @@ def score_start_kulvar(prior, target):
     ]
     near_score = _rate_score(near) or 0.0
 
-    # %20 — aynı kulvar + aynı pist
     same_surface = [
         r for r in same_post
         if target_surface and _surface(r) == target_surface
     ]
     surface_score = _rate_score(same_surface) or 0.0
 
-    # %10 — bugünkü koşudaki at sayısına göre kulvar konumu
     field_size = _num(_first(
         target,
-        ["horse_count", "horseCount", "field_size", "fieldSize",
-         "at_sayisi", "atSayisi"],
+        ["horse_count","horseCount","field_size","fieldSize","at_sayisi","atSayisi"],
         None,
     ))
     if field_size is not None and field_size >= 2:
-        field_score = max(
-            0.0,
-            min(1.0, 1.0 - ((post - 1.0) / (field_size - 1.0))),
-        )
+        field_score = max(0.0, min(1.0,
+            1.0 - ((post - 1.0) / (field_size - 1.0))
+        ))
     else:
         field_score = 0.0
 
-    # %10 — güncellik
-    target_date = _dt(_first(
-        target, ["date", "tarih", "Tarih"], None
-    ))
+    target_date = _dt(_first(target, ["date","tarih","Tarih"], None))
     recency_values = []
     recency_weights = []
 
@@ -420,38 +410,29 @@ def score_start_kulvar(prior, target):
         for r in same_post:
             rd = _dt(_first(
                 r,
-                ["date", "tarih", "Tarih", "raceDate",
-                 "race_date", "kosuTarihi"],
+                ["date","tarih","Tarih","raceDate","race_date","kosuTarihi"],
                 None,
             ))
             ff = finish_factor(_place(r))
             if rd is None or ff is None:
                 continue
-
             days = (target_date - rd).days
             if days < 0:
                 continue
 
-            if days <= 30:
-                rw = 1.00
-            elif days <= 60:
-                rw = 0.90
-            elif days <= 90:
-                rw = 0.80
-            elif days <= 180:
-                rw = 0.65
-            elif days <= 365:
-                rw = 0.50
-            else:
-                rw = 0.30
+            if days <= 30: rw = 1.00
+            elif days <= 60: rw = 0.90
+            elif days <= 90: rw = 0.80
+            elif days <= 180: rw = 0.65
+            elif days <= 365: rw = 0.50
+            else: rw = 0.30
 
             recency_values.append(ff * rw)
             recency_weights.append(rw)
 
     recency_score = (
         max(0.0, min(1.0, sum(recency_values) / sum(recency_weights)))
-        if recency_values and recency_weights
-        else 0.0
+        if recency_values and recency_weights else 0.0
     )
 
     normalized = (
@@ -475,7 +456,13 @@ def _current_values(horse,race):
     # KRİTİK TARİH KURALI:
     # Hedef koşunun yapıldığı gün kesinlikle kullanılmaz.
     # Yalnızca bir gün önce ve daha eski yarışlar kullanılır.
+    # KESİN KURAL:
+    # Hedef tarihten önce en az 1 gerçek yarış yoksa hiçbir geçmiş
+    # tabanlı hesaplama yapılmaz.
     prior=_history_before_target(_history(horse), target.get("date"))
+    if not prior:
+        return None
+
     condition_total, groups=calculate_condition_score(prior)
     return {
         "kosu_sarti_uyumu": condition_total,
@@ -488,16 +475,22 @@ def _current_values(horse,race):
 
 
 def calculate_bizim_ranking(horses,race):
-    """Her atı, geçmiş yarış sayısından bağımsız olarak puanlar.
+    """Yalnızca hedef tarihten önce gerçek geçmişi bulunan atları puanlar.
 
-    1 geçmiş yarış bile yeterlidir. Bileşenlerden biri için veri yoksa o
-    bileşen 0 olur; atın tamamı analiz dışı bırakılmaz.
+    En az 1 uygun geçmiş yarış gerekir. Hedef tarihten önce geçmişi
+    bulunmayan at hiçbir BİZİM SKOR hesabına dahil edilmez.
     """
     if not isinstance(horses,list) or not horses: return []
     results=[]
     for idx,h in enumerate(horses):
         if not isinstance(h,dict): continue
         vals=_current_values(h,race)
+
+        # Hedef tarihten önce uygun geçmişi olmayan at hiçbir BİZİM SKOR
+        # hesabına dahil edilmez.
+        if vals is None:
+            continue
+
         components={
             "01_kosu_sarti_uyumu":round(vals["kosu_sarti_uyumu"],2),
             "02_pist_mesafe":round(vals["pist_mesafe"],2),
