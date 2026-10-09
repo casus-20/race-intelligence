@@ -2543,16 +2543,30 @@ def _rating_weight_score(
         + 0.25 * _rating_weight_response(horse, target_date)
     ))
 
-def _rating_last_six_form(horse: Dict[str, Any], target_date: Any) -> float:
-    history = _rating_history_before_target(horse, target_date)[:6]
-    if not history:
-        return 50.0
+def _rating_all_history_form(horse: Dict[str, Any], target_date: Any) -> float | None:
+    """Tüm geçmiş yarışları kullanır; yeni yarışlara daha fazla ağırlık verir.
+
+    Yalnızca hedef tarihten önceki, bitiriş sırası okunabilen yarışlar puanlanır.
+    Geçerli sonuç yoksa yapay/nötr puan üretmek yerine None döner.
+    """
+    history = _rating_history_before_target(horse, target_date)
     vals = []
     for row in history:
-        p = _rating_place_number(_rating_row_value(row, ["place", "sira", "Sıra", "S", "finishPosition", "finish_position", "rank"]))
-        vals.append(_rating_finish_points(p))
-    weights = _RATING_FORM_WEIGHTS[:len(vals)]
-    return max(0.0, min(100.0, sum(v*w for v,w in zip(vals, weights)) / sum(weights)))
+        place = _rating_place_number(_rating_row_value(
+            row, ["place", "sira", "Sıra", "S", "finishPosition", "finish_position", "rank"]
+        ))
+        if place is None:
+            continue
+        points = _rating_finish_points(place)
+        recency = _rating_recency_factor(row, target_date)
+        # Her geçmiş yarış dahil; recency fonksiyonu eski yarışın etkisini azaltır.
+        vals.append((points, recency))
+    if not vals:
+        return None
+    denominator = sum(weight for _, weight in vals)
+    if denominator <= 0:
+        return None
+    return max(0.0, min(100.0, sum(value * weight for value, weight in vals) / denominator))
 
 def _rating_distance_performance(
     horse: Dict[str, Any],
@@ -2842,7 +2856,8 @@ def _rating_style_value(row: Dict[str, Any]) -> str:
     return ""
 
 def _rating_infer_style(history: list[Dict[str, Any]]) -> str:
-    for row in history[:6]:
+    # Tüm geçmiş yarışlarda kayıtlı stil aranır; son 6 ile sınırlandırılmaz.
+    for row in history:
         s = _rating_style_value(row)
         if s:
             return s
@@ -3029,7 +3044,7 @@ def _calculate_rating_for_race(
         components = {
             "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
-            "Güncel Form": _rating_last_six_form(horse, target_date),
+            "Güncel Form": _rating_all_history_form(horse, target_date),
             "Normalize Derece": norm_degree.get(idx),
             "Pist / Mesafe": _rating_distance_component(
                 horse, target_distance, target_surface, target_date
@@ -3629,12 +3644,15 @@ def calculate_guncel_sinif(
     target_race: Dict[str, Any],
     max_races: int = 5,
 ) -> Dict[str, Any]:
-    """GÜNCEL SINIF puanını hedef tarihten önceki TÜM geçmiş yarışlardan hesaplar.
+    """GÜNCEL SINIF farkını hedef koşu tarihinden önceki yarışlardan hesaplar.
 
-    Çim/kum/sentetik ayrımı yapılmaz. Yalnızca hedef tarihten önceki,
-    tarihi doğrulanabilen ve sınıfı çözümlenebilen geçmiş yarışlar kullanılır.
-    Tüm uygun yarışlar hesaba girer; yeni yarışlara daha yüksek ağırlık verilir.
-    Hedef koşu sınıfıyla fark alınmaz; +5/-5 ekleme-çıkarma uygulanmaz.
+    1) Yalnızca row_date < target_date olan geçmiş yarışlar kullanılır.
+    2) Bu geçmiş yarışlardan ağırlıklı GÜNCEL SINIF puanı hesaplanır.
+    3) Hedef koşunun sınıf puanı yalnızca bilgi amacıyla hesaplanır.
+    4) Gösterilen sonuç doğrudan hesaplanan GÜNCEL SINIF puanıdır.
+       Hedef koşu sınıfıyla fark alınmaz; +5/-5 ekleme-çıkarma uygulanmaz.
+    Tarihi doğrulanamayan geçmiş kayıtları güvenli tarafta kalmak için
+    hesaba dahil edilmez; böylece hedef koşunun sonucu geçmişe sızmaz.
     """
     history = horse.get("_history", [])
     if not isinstance(history, list):
@@ -3662,8 +3680,7 @@ def calculate_guncel_sinif(
 
     # En yeni geçmiş yarıştan eskiye doğru sırala.
     parsed.sort(key=lambda x: x[0], reverse=True)
-    # max_races parametresi geriye dönük uyumluluk için tutulur; sınıf
-    # hesabında artık geçmiş yarış sayısı sınırlandırılmaz.
+    parsed = parsed[:max_races]
 
     # Hedef tarihten önce sınıf bilgisi taşıyan gerçek yarış yoksa
     # GÜNCEL SINIF hesaplanmaz; yapay 50 puan verilmez.
@@ -3684,9 +3701,8 @@ def calculate_guncel_sinif(
             "history_sample_class": _history_class_text(history[0]) if history and isinstance(history[0], dict) else "",
         }
 
-    # Tüm pist türleri dahil edilir. Yakın geçmiş biraz daha ağırlıklıdır,
-    # ancak 5 yarıştan eski kayıtlar da hesaplamaya katkı verir.
-    used = [max(0.30, 1.00 - 0.10 * i) for i in range(len(parsed))]
+    weights = [1.00, 0.90, 0.80, 0.70, 0.60]
+    used = weights[:len(parsed)]
     current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
     current_class = round(max(0.0, min(100.0, current_class)), 1)
 
