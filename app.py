@@ -3502,10 +3502,9 @@ def calculate_guncel_sinif(
 
     1) Yalnızca row_date < target_date olan geçmiş yarışlar kullanılır.
     2) Bu geçmiş yarışlardan ağırlıklı GÜNCEL SINIF puanı hesaplanır.
-    3) Hedef koşunun sınıf puanı ayrıca hesaplanır.
-    4) Sonuç = GÜNCEL SINIF PUANI - HEDEF KOŞU SINIF PUANI.
-
-    Sonuç pozitifse "+5", negatifse "-5" biçiminde gösterilir.
+    3) Hedef koşunun sınıf puanı yalnızca bilgi amacıyla hesaplanır.
+    4) Gösterilen sonuç doğrudan hesaplanan GÜNCEL SINIF puanıdır.
+       Hedef koşu sınıfıyla fark alınmaz; +5/-5 ekleme-çıkarma uygulanmaz.
     Tarihi doğrulanamayan geçmiş kayıtları güvenli tarafta kalmak için
     hesaba dahil edilmez; böylece hedef koşunun sonucu geçmişe sızmaz.
     """
@@ -3569,13 +3568,13 @@ def calculate_guncel_sinif(
     if race_class_score is None:
         race_class_score = 50.0
 
-    difference = round(current_class - float(race_class_score), 1)
-
+    # Kullanıcının istediği nihai davranış: doğrudan hesaplanan güncel sınıfı göster.
+    # Hedef koşu sınıfından çıkarma/toplama ve +5/-5 fark gösterimi yoktur.
     return {
         "score": current_class,
         "race_class_score": round(float(race_class_score), 1),
-        "difference": difference,
-        "display": f"{difference:+g}",
+        "difference": current_class,
+        "display": f"{current_class:g}",
         "race_class": race_class_text,
         "history_count": len(parsed),
     }
