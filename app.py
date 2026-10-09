@@ -3629,15 +3629,12 @@ def calculate_guncel_sinif(
     target_race: Dict[str, Any],
     max_races: int = 5,
 ) -> Dict[str, Any]:
-    """GÜNCEL SINIF farkını hedef koşu tarihinden önceki yarışlardan hesaplar.
+    """GÜNCEL SINIF puanını hedef tarihten önceki TÜM geçmiş yarışlardan hesaplar.
 
-    1) Yalnızca row_date < target_date olan geçmiş yarışlar kullanılır.
-    2) Bu geçmiş yarışlardan ağırlıklı GÜNCEL SINIF puanı hesaplanır.
-    3) Hedef koşunun sınıf puanı yalnızca bilgi amacıyla hesaplanır.
-    4) Gösterilen sonuç doğrudan hesaplanan GÜNCEL SINIF puanıdır.
-       Hedef koşu sınıfıyla fark alınmaz; +5/-5 ekleme-çıkarma uygulanmaz.
-    Tarihi doğrulanamayan geçmiş kayıtları güvenli tarafta kalmak için
-    hesaba dahil edilmez; böylece hedef koşunun sonucu geçmişe sızmaz.
+    Çim/kum/sentetik ayrımı yapılmaz. Yalnızca hedef tarihten önceki,
+    tarihi doğrulanabilen ve sınıfı çözümlenebilen geçmiş yarışlar kullanılır.
+    Tüm uygun yarışlar hesaba girer; yeni yarışlara daha yüksek ağırlık verilir.
+    Hedef koşu sınıfıyla fark alınmaz; +5/-5 ekleme-çıkarma uygulanmaz.
     """
     history = horse.get("_history", [])
     if not isinstance(history, list):
@@ -3665,7 +3662,8 @@ def calculate_guncel_sinif(
 
     # En yeni geçmiş yarıştan eskiye doğru sırala.
     parsed.sort(key=lambda x: x[0], reverse=True)
-    parsed = parsed[:max_races]
+    # max_races parametresi geriye dönük uyumluluk için tutulur; sınıf
+    # hesabında artık geçmiş yarış sayısı sınırlandırılmaz.
 
     # Hedef tarihten önce sınıf bilgisi taşıyan gerçek yarış yoksa
     # GÜNCEL SINIF hesaplanmaz; yapay 50 puan verilmez.
@@ -3686,8 +3684,9 @@ def calculate_guncel_sinif(
             "history_sample_class": _history_class_text(history[0]) if history and isinstance(history[0], dict) else "",
         }
 
-    weights = [1.00, 0.90, 0.80, 0.70, 0.60]
-    used = weights[:len(parsed)]
+    # Tüm pist türleri dahil edilir. Yakın geçmiş biraz daha ağırlıklıdır,
+    # ancak 5 yarıştan eski kayıtlar da hesaplamaya katkı verir.
+    used = [max(0.30, 1.00 - 0.10 * i) for i in range(len(parsed))]
     current_class = sum(item[2] * w for item, w in zip(parsed, used)) / sum(used)
     current_class = round(max(0.0, min(100.0, current_class)), 1)
 
