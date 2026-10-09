@@ -2116,28 +2116,28 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 # kayıtlar hiçbir faktöre giremez.
 #
 # Ana ağırlıklar:
-#   Ortak rakip + kilo farkı  %23
-#   Kilo uyumu               %17
+#   Ortak rakip + kilo farkı  %25
+#   Kilo uyumu               %10
 #   Güncel form              %15
 #   Normalize derece         %10
-#   Pist / mesafe            %12
+#   Pist / mesafe            %20
 #   Sınıf uyumu               %9
 #   Tempo                     %6
-#   Galop / hazırlık          %6
+#   Galop / hazırlık          %3
 #   Ham hız                   %2
 #
 # Her alt puan 0-100 aralığındadır; toplam REYTİNG de 0-100'dür.
 # ============================================================
 
 _RATING_WEIGHTS = {
-    "Ortak Rakip + Kilo": 0.23,
-    "Kilo Uyumu": 0.17,
+    "Ortak Rakip + Kilo": 0.25,
+    "Kilo Uyumu": 0.10,
     "Güncel Form": 0.15,
     "Normalize Derece": 0.10,
-    "Pist / Mesafe": 0.12,
+    "Pist / Mesafe": 0.20,
     "Sınıf Uyumu": 0.09,
     "Tempo": 0.06,
-    "Galop / Hazırlık": 0.06,
+    "Galop / Hazırlık": 0.03,
     "Ham Hız": 0.02,
 }
 
@@ -6040,8 +6040,8 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "REYTİNG: Ortak Rakip+Kilo %23 • Kilo Uyumu %17 • Güncel Form %15 • Normalize Derece %10 • "
-                "Pist/Mesafe %12 • Sınıf %9 • Tempo %6 • Galop %6 • Ham Hız %2. "
+                "REYTİNG: Ortak Rakip+Kilo %25 • Kilo Uyumu %10 • Güncel Form %15 • Normalize Derece %10 • "
+                "Pist/Mesafe %20 • Sınıf %9 • Tempo %6 • Galop %3 • Ham Hız %2. "
                 "Hesapta yalnızca hedef koşu tarihinden önceki veriler kullanılır."
             )
 
@@ -6056,8 +6056,8 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %23 • Kilo Uyumu %17 • Form %15 • Normalize Derece %10 • "
-    f"Pist/Mesafe %12 • Sınıf %9 • Tempo %6 • Galop %6 • Ham Hız %2 • Seçili koşu: {race_number}. koşu",
+    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %25 • Kilo Uyumu %10 • Form %15 • Normalize Derece %10 • "
+    f"Pist/Mesafe %20 • Sınıf %9 • Tempo %6 • Galop %3 • Ham Hız %2 • Seçili koşu: {race_number}. koşu",
 )
 st.caption(
     "REYTİNG yalnızca yarış tarihinden önceki TJK geçmişi ve yarış öncesi galop verileriyle hesaplanır; aynı günkü sonuç REYTİNG'e girmez."
