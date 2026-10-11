@@ -1285,6 +1285,7 @@ def enrich_race_horses(
             item["_history_candidate_counts"] = data.get("historyCandidateCounts", [])
             item["_workout_attempts"] = data.get("workoutAttempts", [])
             item["_history_http_status"] = data.get("historyStatus")
+            item["_fallback_history_count"] = data.get("fallbackHistoryCount", 0)
 
         if isinstance(data, dict):
             for key in (
@@ -4408,7 +4409,7 @@ else:
 
     # REYTİNG TEŞHİS TABLOSU: gerçek motor ara puanlarını ve eksik bileşenleri gösterir.
     # Yalnızca görüntüleme amaçlıdır; REYTİNG hesabını veya sıralamayı değiştirmez.
-    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=False):
+    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=True):
         _rating_debug_rows = []
         _rating_component_names = [
             "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
@@ -4436,6 +4437,7 @@ else:
                 "Galop Kaydı": len(_rh.get("_workouts", [])) if isinstance(_rh.get("_workouts"), list) else 0,
                 "Veri Kaynağı": _rh.get("_history_source", "-"),
                 "Veri Hatası": _rh.get("_enrichment_error", "-"),
+                "Yedek geçmiş kaydı": _rh.get("_fallback_history_count", 0),
             })
         if _rating_debug_rows:
             _rating_debug_df = pd.DataFrame(_rating_debug_rows)
