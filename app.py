@@ -1757,13 +1757,32 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
 
     # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
     no = get_horse_number(horse, horse_index + 1)
-    for container in (race.get("results"), race.get("result"), race.get("resultMap"), race.get("result_map"), race.get("finish")):
+    target_no_values = {str(x).strip() for x in (no, horse.get("no"), horse.get("numara"), horse.get("horseNo"), horse.get("horse_no")) if x not in (None, "", "-")}
+    target_name = re.sub(r"[^a-z0-9]", "", str(get_horse_name(horse) or "").casefold())
+    for container in (race.get("results"), race.get("result"), race.get("resultMap"), race.get("result_map"), race.get("finish"), race.get("finishers"), race.get("officialResults"), race.get("official_results")):
         if isinstance(container, dict):
-            for key in (no, str(no), horse.get("no"), horse.get("numara")):
+            for key in (no, str(no), horse.get("no"), horse.get("numara"), horse.get("horseNo"), horse.get("horse_no")):
                 if key in container:
                     pos = _position(container.get(key))
                     if pos is not None:
                         return f"({pos}.)"
+            # Bazı TJK yanıtları sonuçları at numarası yerine iç içe kayıtlar olarak döndürür.
+            entries = list(container.values())
+        elif isinstance(container, (list, tuple)):
+            entries = list(container)
+        else:
+            entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_no = next((entry.get(k) for k in ("no", "numara", "horseNo", "horse_no", "horseNumber", "horse_number", "programNo", "program_no") if entry.get(k) not in (None, "", "-")), None)
+            entry_name = next((entry.get(k) for k in ("horseName", "horse_name", "atAdi", "at_adi", "name", "horse", "at") if entry.get(k) not in (None, "", "-")), "")
+            name_norm = re.sub(r"[^a-z0-9]", "", str(entry_name).casefold())
+            matched = (entry_no is not None and str(entry_no).strip() in target_no_values) or (target_name and name_norm and (target_name == name_norm or target_name in name_norm or name_norm in target_name))
+            if matched:
+                pos = _position(entry)
+                if pos is not None:
+                    return f"({pos}.)"
 
     target_dt = _parse_date(target_date or race.get("date") or race.get("tarih") or race.get("Tarih"))
     if target_dt is not None:
@@ -2973,9 +2992,24 @@ def _calculate_rating_for_race(
             for r in own_history
         ):
             components["Güncel Form"] = None
-        # Pist/mesafe için derece alanını zorunlu tutma. Tek bir geçmiş
-        # yarış, aynı pistte hedef mesafe veya +/-100 m içindeyse yeterlidir.
-        if components.get("Pist / Mesafe") is None:
+        # Pist/mesafe bileşeninin kullanılabilirliği puan fonksiyonuyla aynı
+        # kurala göre belirlenir. Derece alanı zorunlu değildir; tek uygun kayıt yeterlidir.
+        _target_surface_norm = _rating_surface(target_surface)
+        _target_distance_num = _number(target_distance)
+        _has_track_distance = False
+        if _target_surface_norm and _target_distance_num is not None:
+            for _hist_row in own_history:
+                _hist_surface = _rating_surface(_rating_row_value(_hist_row, [
+                    "surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi",
+                    "trackSurface", "track_surface", "surfaceType", "surface_type",
+                    "trackType", "track_type", "trackCondition", "track_condition",
+                    "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"
+                ]))
+                _hist_distance = _rating_distance(_hist_row)
+                if _hist_surface == _target_surface_norm and _hist_distance is not None and abs(_hist_distance - _target_distance_num) <= 100:
+                    _has_track_distance = True
+                    break
+        if not _has_track_distance:
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
