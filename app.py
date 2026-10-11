@@ -1202,21 +1202,7 @@ def load_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """TJK zenginleştirmesi: başarılı geçmişi bağlam anahtarıyla cache'le;
-    boş/hatalı yanıtları cache'leme ve sonraki rerun'da tekrar dene.
-    """
-    cache_key = (
-        str(at_id), str(horse_name), str(target_date), str(target_city),
-        str(target_distance), str(target_surface), str(target_class)
-    )
-    cache = st.session_state.setdefault("_tjk_enrichment_success", {})
-    cached = cache.get(cache_key)
-    # Yalnızca gerçek geçmiş içeren başarılı yanıtı kullan; boş yanıtı asla
-    # başarılı veri gibi saklama. Böylece her Streamlit rerun'ında TJK'ya
-    # tekrar tekrar yük binmez ve rate-limit kaynaklı eksik veri riski azalır.
-    if isinstance(cached, dict) and isinstance(cached.get("history"), list) and cached["history"]:
-        return cached
-
+    """TJK zenginleştirmesi: başarısız/boş yanıtları cache'leme."""
     try:
         data = get_horse_enrichment(
             at_id, horse_name,
@@ -1230,6 +1216,8 @@ def load_horse_enrichment(
         # Başarılı yanıtlar Streamlit session_state içinde tutulur; başka koşuya
         # ait bağlamın yanlışlıkla kullanılmasını engellemek için bağlam anahtarlı.
         if isinstance(data, dict) and data.get("history"):
+            cache = st.session_state.setdefault("_tjk_enrichment_success", {})
+            cache_key = (str(at_id), str(horse_name), str(target_date), str(target_city), str(target_distance), str(target_surface), str(target_class))
             cache[cache_key] = data
         return data if isinstance(data, dict) else {"ok": False, "history": [], "workouts": [], "error": "TJK yanıt biçimi geçersiz."}
     except Exception as exc:
@@ -1292,6 +1280,11 @@ def enrich_race_horses(
         item["_enrichment_error"] = str(data.get("error") or "-") if isinstance(data, dict) else "-"
         if isinstance(data, dict) and data.get("historySource"):
             item["_history_source"] = data.get("historySource")
+        if isinstance(data, dict):
+            item["_history_attempts"] = data.get("historyAttempts", [])
+            item["_history_candidate_counts"] = data.get("historyCandidateCounts", [])
+            item["_workout_attempts"] = data.get("workoutAttempts", [])
+            item["_history_http_status"] = data.get("historyStatus")
 
         if isinstance(data, dict):
             for key in (
@@ -6088,32 +6081,20 @@ else:
                 "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
                 "Pist / Mesafe", "Sınıf Uyumu",
             ]
-            # ÖNEMLİ: tabloyu rating_results üzerinden döndürme.
-            # Motor geçmişi olmayan atları bilinçli olarak rating_results dışına çıkarabilir.
-            # Tablo her zaman programdaki tüm atlar üzerinden kurulur; hesaplanamayan at da
-            # görünür ve nedeni belirtilir. Böylece koşudaki at sayısı değişince satır kaybolmaz.
-            _rating_result_by_index = {
-                int(item.get("horse_index")): item
-                for item in rating_results
-                if isinstance(item, dict) and item.get("horse_index") is not None
-            }
-            for hi, horse in enumerate(_ranking_input):
-                if not isinstance(horse, dict):
-                    continue
-                rating_item = _rating_result_by_index.get(hi)
-                comps = rating_item.get("components", {}) if isinstance(rating_item, dict) else {}
-                _history = _rating_history_before_target(horse, selected_date)
-                _has_score = isinstance(rating_item, dict) and rating_item.get("score") is not None
+            for rating_item in rating_results:
+                hi = rating_item["horse_index"]
+                horse = _ranking_input[hi] if hi < len(_ranking_input) else {}
+                comps = rating_item.get("components", {})
                 row = {
-                    "REYTİNG Sıra": rating_item.get("rank") if _has_score else "—",
+                    "REYTİNG Sıra": rating_item.get("rank"),
                     "No": get_horse_number(horse, hi + 1),
                     "At": get_horse_name(horse),
-                    "REYTİNG": rating_item.get("score") if _has_score else "HESAPLANMADI",
+                    "REYTİNG": rating_item.get("score"),
                 }
                 for name in component_names:
-                    row[name] = comps.get(name) if _has_score else None
-                row["Kullanılan bileşen"] = rating_item.get("available_components", 0) if _has_score else 0
-                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0) if _has_score else 0
+                    row[name] = comps.get(name)
+                row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
+                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
                 _history = _rating_history_before_target(horse, selected_date) if isinstance(horse, dict) else []
                 _class_aliases = [
                     "className", "class_name", "class", "classType", "class_type",
@@ -6147,11 +6128,19 @@ else:
                 row["İlk geçmiş kaydın alanları"] = " | ".join(_key_values[:70]) if _key_values else "Geçmiş kayıt yok"
                 row["Geçmiş kaynağı"] = horse.get("_history_source", "-") if isinstance(horse, dict) else "-"
                 row["Veri hatası"] = horse.get("_enrichment_error", "-") if isinstance(horse, dict) else "-"
-                row["Eksik bileşenler"] = (
-                    ", ".join(name for name in component_names if comps.get(name) is None)
-                    if _has_score else "Hedef tarihten önce uygun geçmiş yarış yok / motor sonucu yok"
-                )
-                row["Hesaplama durumu"] = "Hesaplandı" if _has_score else "Hesaplanmadı — veri kontrolü gerekli"
+                row["TJK HTTP durumu"] = horse.get("_history_http_status", "-") if isinstance(horse, dict) else "-"
+                row["TJK sorgu denemeleri"] = " | ".join(
+                    f"HTTP {x.get('status', '?')}: {x.get('parsedCount', x.get('count', 0))} kayıt — {x.get('source', x.get('url', '?'))}"
+                    + (f" — HATA: {x.get('error')}" if x.get('error') else "")
+                    for x in (horse.get("_history_attempts", []) if isinstance(horse, dict) else [])
+                    if isinstance(x, dict)
+                ) or "Worker deneme ayrıntısı gelmedi"
+                row["TJK aday kayıt sayıları"] = " | ".join(
+                    f"{x.get('count', 0)} kayıt: {x.get('source', '?')}"
+                    for x in (horse.get("_history_candidate_counts", []) if isinstance(horse, dict) else [])
+                    if isinstance(x, dict)
+                ) or "-"
+                row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
                 rating_breakdown_rows.append(row)
             if rating_breakdown_rows:
                 st.dataframe(
