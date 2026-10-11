@@ -2118,23 +2118,23 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 #
 # Ana ağırlıklar:
 #   Ortak rakip + kilo farkı  %35
-#   Kilo uyumu               %10
+#   Kilo uyumu               %5
 #   Güncel form              %25
-# #   Pist / mesafe            %20
+# #   Pist / mesafe            %15
 #   Sınıf uyumu              %20
 #   Tempo                     %6
 # #   Ham hız                   %2
 #
-# Tempo, Ham Hız, Normalize Derece ve Galop kullanıcı isteğiyle motor dışında bırakılmıştır.
+# REYTİNG yalnızca tanımlı beş bileşeni kullanır.
 # Kalan bileşenlerin ağırlıkları, mevcut veri bulunurluğuna göre normalize edilir.
 # Her alt puan 0-100 aralığındadır; toplam REYTİNG de 0-100'dür.
 # ============================================================
 
 _RATING_WEIGHTS = {
     "Ortak Rakip + Kilo": 0.35,
-    "Kilo Uyumu": 0.10,
+    "Kilo Uyumu": 0.05,
     "Güncel Form": 0.25,
-    "Pist / Mesafe": 0.20,
+    "Pist / Mesafe": 0.15,
     "Sınıf Uyumu": 0.20,
 }
 
@@ -2694,95 +2694,6 @@ def _rating_time_seconds(value: Any) -> float | None:
 
     return None
 
-def _rating_normalized_degree_scores(
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> dict[int, float]:
-    """Alan içi normalize derece: aynı pist ve yakın mesafe öncelikli.
-
-    Önce her atın hedef pistte ve hedef mesafeye en fazla 200 m uzaklıktaki
-    geçmiş dereceleri kullanılır. Bu grupta veri yoksa aynı yüzeydeki en yakın
-    mesafe grubu kullanılır. Farklı yüzeyler birbiriyle doğrudan kıyaslanmaz.
-    Atın en iyi tek derecesi yerine güncellik ve mesafe yakınlığıyla ağırlıklı
-    hız ortalaması alınır; ardından atlar aynı alan içinde 0-100 ölçeğine taşınır.
-    """
-    surface_target = _rating_surface(target_surface)
-    candidates: dict[int, list[tuple[float, float, float]]] = {}
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        rows = []
-        for row in _rating_history_before_target(horse, target_date):
-            dist = _rating_distance(row)
-            sec = _rating_time_seconds(_rating_row_value(row, [
-                "time", "derece", "Derece", "finishTime", "finish_time", "resultTime"
-            ]))
-            surf = _rating_surface(_rating_row_value(row, [
-                "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-                "surfaceType", "surface_type", "trackType", "track_type"
-            ]))
-            if dist is None or sec is None or sec <= 0 or not surface_target or surf != surface_target:
-                continue
-            delta = abs(dist - target_distance) if target_distance else 0
-            if target_distance and delta > 200:
-                continue
-            proximity = max(0.25, 1.0 - delta / 400.0) if target_distance else 1.0
-            recency = _rating_recency_factor(row, target_date)
-            rows.append((dist / sec, proximity * recency, delta))
-        if rows:
-            candidates[idx] = rows
-
-    # Fallback: dacă hiç kimsenin ±200 m içinde derecesi yoksa aynı yüzeyde
-    # en yakın mesafe grubunu kullan; yine farklı pistleri karıştırma.
-    if not candidates and target_distance:
-        for idx, horse in enumerate(horses):
-            if not isinstance(horse, dict):
-                continue
-            rows = []
-            for row in _rating_history_before_target(horse, target_date):
-                dist = _rating_distance(row)
-                sec = _rating_time_seconds(_rating_row_value(row, [
-                    "time", "derece", "Derece", "finishTime", "finish_time", "resultTime"
-                ]))
-                surf = _rating_surface(_rating_row_value(row, [
-                    "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-                    "surfaceType", "surface_type", "trackType", "track_type"
-                ]))
-                if dist is None or sec is None or sec <= 0 or not surface_target or surf != surface_target:
-                    continue
-                rows.append((dist / sec, _rating_recency_factor(row, target_date), abs(dist-target_distance)))
-            if rows:
-                nearest = min(x[2] for x in rows)
-                candidates[idx] = [(v,w,d) for v,w,d in rows if d == nearest]
-
-    horse_speed = {}
-    for idx, rows in candidates.items():
-        denom = sum(w for _, w, _ in rows)
-        if denom > 0:
-            horse_speed[idx] = sum(v*w for v,w,_ in rows) / denom
-    if not horse_speed:
-        return {i: None for i in range(len(horses))}
-    # Mid-rank percentile reduces sensitivity to one extreme/erroneous time.
-    ordered = sorted(horse_speed.items(), key=lambda item: item[1])
-    n = len(ordered)
-    out = {i: None for i in range(len(horses))}
-    if n == 1:
-        # Tek atın alan içi yüzdelik sırası hesaplanamaz; veri eksik sayılır.
-        out[ordered[0][0]] = None
-    else:
-        pos = 0
-        while pos < n:
-            end = pos + 1
-            while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
-                end += 1
-            # Artan hız sırası: en yavaş 0, en hızlı 100 puan alır.
-            percentile = 100.0 * ((pos + end - 1) / 2) / (n - 1)
-            for j in range(pos, end):
-                out[ordered[j][0]] = percentile
-            pos = end
-    return out
 
 def _rating_class_group(value: Any) -> str:
     s = str(value or "").strip().lower()
@@ -2920,158 +2831,9 @@ def _rating_infer_style(history: list[Dict[str, Any]]) -> str:
             return s
     return ""
 
-def _rating_tempo_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_date: Any,
-) -> float:
-    """Geçmiş koşu stili varsa alanın muhtemel temposuyla uyumunu ölçer."""
-    styles = []
-    own_style = _rating_infer_style(_rating_history_before_target(horse, target_date))
-    for h in horses:
-        if not isinstance(h, dict):
-            continue
-        s = _rating_infer_style(_rating_history_before_target(h, target_date))
-        if s:
-            styles.append(s)
-
-    # TJK geçmişinde stil alanı yoksa nötr; veri uydurulmaz.
-    if not own_style or not styles:
-        return 50.0
-
-    front = styles.count("front")
-    stalker = styles.count("stalker")
-    middle = styles.count("middle")
-    closer = styles.count("closer")
-    fast_pressure = front + stalker
-
-    if fast_pressure >= max(3, len(styles)*0.45):
-        expected = "closer" if closer else "stalker"
-    elif fast_pressure <= max(1, len(styles)*0.20):
-        expected = "front" if front else "stalker"
-    else:
-        expected = "stalker"
-
-    matrix = {
-        ("front","front"):75, ("front","stalker"):90, ("front","middle"):65, ("front","closer"):45,
-        ("stalker","front"):80, ("stalker","stalker"):90, ("stalker","middle"):80, ("stalker","closer"):65,
-        ("middle","front"):55, ("middle","stalker"):80, ("middle","middle"):90, ("middle","closer"):80,
-        ("closer","front"):95, ("closer","stalker"):90, ("closer","middle"):80, ("closer","closer"):70,
-    }
-    return float(matrix.get((own_style, expected), 50))
-
-def _rating_gallop_scores(horses: List[Dict[str, Any]], target_date: Any) -> dict[int, float]:
-    """Galop puanını atın kendi galopları arasında değil, tüm koşu alanında kıyaslar."""
-    target_dt = _rating_parse_date(target_date)
-    split_distances = {
-        "1200": 1200.0, "m1200": 1200.0, "time1200": 1200.0,
-        "1000": 1000.0, "m1000": 1000.0, "time1000": 1000.0,
-        "800": 800.0, "m800": 800.0, "time800": 800.0,
-        "600": 600.0, "m600": 600.0, "time600": 600.0,
-        "400": 400.0, "m400": 400.0, "time400": 400.0,
-    }
-    raw = {}
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        workouts = horse.get("_workouts", [])
-        vals = []
-        if isinstance(workouts, list):
-            for row in workouts:
-                if not isinstance(row, dict):
-                    continue
-                dt = _rating_row_date(row)
-                # Tarihi belirsiz galop hedef tarihli yarışa sızmasın.
-                if target_dt is not None and (dt is None or dt >= target_dt):
-                    continue
-                speeds = []
-                for key, metres in split_distances.items():
-                    sec = _rating_time_seconds(_rating_row_value(row, [key]))
-                    if sec and sec > 0:
-                        speeds.append(metres/sec)
-                if not speeds:
-                    continue
-                speed = max(speeds)
-                rec = _rating_recency_factor({"date": dt.isoformat() if dt else ""}, target_date)
-                vals.append((speed, rec))
-        if vals:
-            vals.sort(key=lambda x: x[0])
-            # En uç tek galop yerine üst çeyrekteki hızların ağırlıklı ortalaması.
-            cutoff = vals[max(0, int(len(vals)*0.50))][0]
-            selected = [(v,w) for v,w in vals if v >= cutoff]
-            raw[idx] = sum(v*w for v,w in selected) / sum(w for _,w in selected)
-    out = {i: None for i in range(len(horses))}
-    if not raw:
-        return out
-    ordered = sorted(raw.items(), key=lambda item: item[1])
-    n = len(ordered)
-    if n == 1:
-        # Tek ölçümden alan içi puan üretilemez; nötr puan verme.
-        out[ordered[0][0]] = None
-        return out
-    pos = 0
-    while pos < n:
-        end = pos + 1
-        while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
-            end += 1
-        # Artan hız sırası: en yavaş 0, en hızlı 100 puan alır.
-        score = 100.0 * ((pos + end - 1) / 2) / (n - 1)
-        for j in range(pos, end):
-            out[ordered[j][0]] = score
-        pos = end
-    return out
 
 
-def _rating_raw_speed_scores(
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> dict[int, float]:
-    """Ham hız alan içi puanı; yalnız hedef pist ve ±100 m geçmişi kullanılır."""
-    surface_target = _rating_surface(target_surface)
-    raw = {}
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        vals = []
-        for row in _rating_history_before_target(horse, target_date):
-            dist = _rating_distance(row)
-            sec = _rating_time_seconds(_rating_row_value(row, [
-                "time", "derece", "Derece", "finishTime", "finish_time", "resultTime"
-            ]))
-            surf = _rating_surface(_rating_row_value(row, [
-                "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-                "surfaceType", "surface_type", "trackType", "track_type"
-            ]))
-            if dist is None or sec is None or sec <= 0 or not surface_target or surf != surface_target:
-                continue
-            delta = abs(dist-target_distance) if target_distance else 0
-            if target_distance and delta > 100:
-                continue
-            weight = _rating_recency_factor(row, target_date) * (1.0 - delta/300.0 if target_distance else 1.0)
-            vals.append((dist/sec, max(0.01, weight)))
-        if vals:
-            raw[idx] = sum(v*w for v,w in vals) / sum(w for _,w in vals)
-    out = {i: None for i in range(len(horses))}
-    if not raw:
-        return out
-    ordered = sorted(raw.items(), key=lambda item: item[1])
-    n = len(ordered)
-    if n == 1:
-        # Tek ölçümden alan içi puan üretilemez; nötr puan verme.
-        out[ordered[0][0]] = None
-        return out
-    pos = 0
-    while pos < n:
-        end = pos + 1
-        while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
-            end += 1
-        score = 100.0 * ((pos + end - 1) / 2) / (n - 1)
-        for j in range(pos, end):
-            out[ordered[j][0]] = score
-        pos = end
-    return out
+
 
 def _calculate_rating_for_race(
     horses: List[Dict[str, Any]],
@@ -3125,12 +2887,9 @@ def _calculate_rating_for_race(
             and _rating_time_seconds(_rating_row_value(r, ["time", "derece", "Derece", "finishTime", "finish_time", "resultTime"])) is not None
             for r in own_history
         ):
-            components["Normalize Derece"] = None
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
-        if not horse.get("_workouts"):
-            components["Galop / Hazırlık"] = None
 
         # Eksik veri için 50 puan uydurulmaz. Yalnız gerçek puanı hesaplanan
         # bileşenler kullanılır; kalan ağırlıklar mevcut bileşenler arasında
@@ -6340,7 +6099,7 @@ else:
             else:
                 st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
             st.caption(
-                "Tempo, Ham Hız, Normalize Derece ve Galop kullanıcı isteğiyle devre dışıdır. Bu tablo motorun kalan bileşenlerini gösterir. "
+                "REYTİNG yalnızca tanımlı beş bileşeni kullanır. Bu tablo motorun kalan bileşenlerini gösterir. "
                 "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
                 "Hedef koşu gününün sonucu hesaba katılmaz."
             )
