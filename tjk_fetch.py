@@ -718,8 +718,11 @@ def get_horse_enrichment(
     workouts: List[Dict[str, Any]] = []
     source = ""
 
-    if at_id in (None, ""):
-        return {"ok": False, "history": [], "workouts": [], "error": "TJK program kaydında atId yok."}
+    # At kimliği bazı program/hipodrom yanıtlarında eksik gelebiliyor.
+    # Yeni Worker sürümü at adıyla da sorgu yapabildiğinden bu durumda
+    # zenginleştirmeyi erken kesme.
+    if at_id in (None, "") and not horse_name:
+        return {"ok": False, "history": [], "workouts": [], "error": "TJK at kimliği ve adı bulunamadı."}
 
     # Worker'ın /horsedata sürümü birden fazla resmi TJK sayfasını deneyip
     # en zengin geçmişi seçebiliyor. Hedef koşu bilgileri de teşhis için iletilir.
@@ -745,7 +748,7 @@ def get_horse_enrichment(
         errors.append(f"horsedata: {exc}")
 
     # Yedekler yalnızca ana uç eksik veri döndürdüyse çağrılır.
-    if not history:
+    if not history and at_id not in (None, ""):
         try:
             fallback = get_horse_history(at_id, timeout=max(timeout, 45))
             if isinstance(fallback.get("history"), list):
