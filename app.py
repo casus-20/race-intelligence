@@ -4563,6 +4563,52 @@ else:
     rating_results = calculate_rating_cached(_ranking_input, selected_race)
     rating_by_index = {item["horse_index"]: item for item in rating_results}
 
+    # REYTİNG TEŞHİS TABLOSU: gerçek motor ara puanlarını ve eksik bileşenleri gösterir.
+    # Yalnızca görüntüleme amaçlıdır; REYTİNG hesabını veya sıralamayı değiştirmez.
+    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=False):
+        _rating_debug_rows = []
+        _rating_component_names = [
+            "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
+            "Normalize Derece", "Pist / Mesafe", "Sınıf Uyumu",
+            "Tempo", "Galop / Hazırlık", "Ham Hız",
+        ]
+        for _ri, _rh in enumerate(_ranking_input):
+            if not isinstance(_rh, dict):
+                continue
+            _rr = rating_by_index.get(_ri)
+            _rc = _rr.get("components", {}) if isinstance(_rr, dict) else {}
+            _missing = [name for name in _rating_component_names if _rc.get(name) is None]
+            _rating_debug_rows.append({
+                "At No": get_horse_number(_rh, _ri + 1),
+                "At": get_horse_name(_rh),
+                "REYTİNG": _rr.get("score", "HESAPLANMADI") if isinstance(_rr, dict) else "HESAPLANMADI",
+                "Ortak Rakip + Kilo": _rc.get("Ortak Rakip + Kilo"),
+                "Kilo Uyumu": _rc.get("Kilo Uyumu"),
+                "Güncel Form": _rc.get("Güncel Form"),
+                "Normalize Derece": _rc.get("Normalize Derece"),
+                "Pist / Mesafe": _rc.get("Pist / Mesafe"),
+                "Sınıf Uyumu": _rc.get("Sınıf Uyumu"),
+                "Tempo": _rc.get("Tempo"),
+                "Galop / Hazırlık": _rc.get("Galop / Hazırlık"),
+                "Ham Hız": _rc.get("Ham Hız"),
+                "Kullanılan Bileşen": _rr.get("available_components", 0) if isinstance(_rr, dict) else 0,
+                "Kullanılan Ağırlık %": _rr.get("available_weight_pct", 0) if isinstance(_rr, dict) else 0,
+                "Eksik Bileşenler": ", ".join(_missing) if _missing else "Yok",
+                "Geçmiş Yarış Sayısı": len(_rating_history_before_target(_rh, selected_date)),
+                "Galop Kaydı": len(_rh.get("_workouts", [])) if isinstance(_rh.get("_workouts"), list) else 0,
+                "Veri Kaynağı": _rh.get("_history_source", "-"),
+                "Veri Hatası": _rh.get("_enrichment_error", "-"),
+            })
+        if _rating_debug_rows:
+            _rating_debug_df = pd.DataFrame(_rating_debug_rows)
+            st.dataframe(_rating_debug_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Bu tablo motorun mevcut hesaplamasını gösterir; hesaplama mantığını değiştirmez. "
+                "Boş bileşenler puana katılmamıştır; kullanılan ağırlık kalan bileşenler arasında yeniden dağıtılmıştır."
+            )
+        else:
+            st.warning("REYTİNG teşhisi için at verisi bulunamadı.")
+
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
