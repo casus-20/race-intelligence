@@ -2110,36 +2110,32 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# REYTİNG — YENİ 9 FAKTÖRLÜ, TARİH-SIZDIRMALI MOTOR
+# REYTİNG — AKTİF BİLEŞENLİ, TARİH-SIZDIRMALI MOTOR
 # ============================================================
 # REYTİNG yalnızca hedef koşunun tarihinden ÖNCEKİ gerçek TJK geçmişini
 # kullanır. Hedef koşunun kendisi, aynı günkü sonuçlar veya gelecekteki
 # kayıtlar hiçbir faktöre giremez.
 #
 # Ana ağırlıklar:
-#   Ortak rakip + kilo farkı  %25
+#   Ortak rakip + kilo farkı  %35
 #   Kilo uyumu               %5
-#   Güncel form              %15
-#   Normalize derece         %5
-#   Pist / mesafe            %20
-#   Sınıf uyumu               %19
+#   Güncel form              %25
+# #   Pist / mesafe            %15
+#   Sınıf uyumu              %20
 #   Tempo                     %6
-#   Galop / hazırlık          %3
-#   Ham hız                   %2
+# #   Ham hız                   %2
 #
+# REYTİNG yalnızca tanımlı beş bileşeni kullanır.
+# Kalan bileşenlerin ağırlıkları, mevcut veri bulunurluğuna göre normalize edilir.
 # Her alt puan 0-100 aralığındadır; toplam REYTİNG de 0-100'dür.
 # ============================================================
 
 _RATING_WEIGHTS = {
-    "Ortak Rakip + Kilo": 0.25,
+    "Ortak Rakip + Kilo": 0.35,
     "Kilo Uyumu": 0.05,
-    "Güncel Form": 0.15,
-    "Normalize Derece": 0.05,
-    "Pist / Mesafe": 0.20,
-    "Sınıf Uyumu": 0.19,
-    "Tempo": 0.06,
-    "Galop / Hazırlık": 0.03,
-    "Ham Hız": 0.02,
+    "Güncel Form": 0.25,
+    "Pist / Mesafe": 0.15,
+    "Sınıf Uyumu": 0.20,
 }
 
 _RATING_FORM_WEIGHTS = (0.30, 0.22, 0.17, 0.13, 0.10, 0.08)
@@ -2371,28 +2367,44 @@ def _rating_weight_similarity(history_weight: float | None, target_weight: float
     return 35.0
 
 def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
-    """Aynı yarışta koşmuş atları geçmiş kayıtlarından eşleştirir."""
+    """TJK geçmişindeki aynı koşuyu ID varsa ID ile, yoksa alanlarıyla eşleştirir."""
+    race_id = _rating_row_value(row, [
+        "raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key",
+        "eventId", "event_id", "resultId", "result_id"
+    ])
     dt = _rating_row_date(row)
     city = str(_rating_row_value(row, [
-        "city", "şehir", "Sehir", "hipodrom", "track", "trackName", "track_name"
+        "city", "cityName", "city_name", "hipodrom", "hipodromAdi",
+        "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name",
+        "track", "trackName", "track_name", "raceTrack", "race_track",
+        "location", "venue"
     ]) or "").strip().lower()
     dist = _rating_distance(row)
     surface = _rating_surface(_rating_row_value(row, [
-        "surface", "pist", "Pist", "trackSurface", "track_surface",
-        "surfaceType", "surface_type", "trackType", "track_type"
+        "surface", "pist", "pistAdi", "pist_adi", "trackSurface",
+        "track_surface", "surfaceType", "surface_type", "trackType",
+        "track_type", "trackCondition", "track_condition"
     ]))
+    race_no = _rating_row_value(row, [
+        "raceNo", "race_no", "kosuNo", "kosu_no", "raceNumber",
+        "race_number", "kosuSirasi", "kosu_sirasi"
+    ])
     race_name = str(_rating_row_value(row, [
-        "raceName", "race_name", "kosu", "Koşu", "className", "class", "condition",
-        "raceCondition", "race_condition"
+        "raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName",
+        "condition_name", "className", "class_name", "raceClass",
+        "race_class", "condition", "raceCondition", "race_condition",
+        "raceType", "race_type"
     ]) or "").strip().lower()
-    # Tarih + hipodrom + mesafe + pist temel anahtar.
-    # Yarış adı varsa anahtarı güçlendirir, ancak boşsa eşleştirme yine yapılabilir.
+    if race_id not in (None, ""):
+        return ("id", str(race_id).strip())
     return (
+        "fields",
         dt.isoformat() if dt else "",
-        re.sub(r"\s+", " ", city),
+        " ".join(city.split()),
         round(dist, 1) if dist is not None else "",
         surface,
-        re.sub(r"\s+", " ", race_name),
+        str(race_no or "").strip(),
+        " ".join(race_name.split()),
     )
 
 def _rating_shared_race_keys(
@@ -2400,25 +2412,37 @@ def _rating_shared_race_keys(
     h2: Dict[str, Any],
     target_date: Any,
 ) -> list[tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Aynı geçmiş yarışı yanlış pozitif üretmeden eşleştirir."""
     a = _rating_history_before_target(h1, target_date)
     b = _rating_history_before_target(h2, target_date)
-    # Aynı yarış adı boş olduğunda daha gevşek anahtar da denenir.
     idx = {}
     for row in b:
-        k = _rating_row_race_key(row)
-        idx.setdefault(k, []).append(row)
+        idx.setdefault(_rating_row_race_key(row), []).append(row)
 
     pairs = []
     used = set()
     for row_a in a:
-        k = _rating_row_race_key(row_a)
-        candidates = idx.get(k, [])
-        if not candidates:
-            base = k[:4]
-            candidates = []
-            for kb, rows in idx.items():
-                if kb[:4] == base:
-                    candidates.extend(rows)
+        key_a = _rating_row_race_key(row_a)
+        candidates = list(idx.get(key_a, []))
+        # ID yoksa yarış adı farklı/eksik gelebilir. Ancak tarih, hipodrom,
+        # mesafe, pist ve varsa koşu numarası uyumlu olmalı.
+        if not candidates and key_a and key_a[0] == "fields":
+            _, dt_a, city_a, dist_a, surface_a, no_a, _name_a = key_a
+            if dt_a and dist_a != "" and surface_a:
+                for key_b, rows_b in idx.items():
+                    if not key_b or key_b[0] != "fields":
+                        continue
+                    _, dt_b, city_b, dist_b, surface_b, no_b, _name_b = key_b
+                    if (dt_a != dt_b or dist_a != dist_b or surface_a != surface_b):
+                        continue
+                    if city_a and city_b and city_a != city_b:
+                        continue
+                    if no_a and no_b and no_a != no_b:
+                        continue
+                    # Yarış adı her iki tarafta varsa farklı isimli koşuları eşleştirme.
+                    if _name_a and _name_b and _name_a != _name_b:
+                        continue
+                    candidates.extend(rows_b)
         for row_b in candidates:
             pair_key = (id(row_a), id(row_b))
             if pair_key in used:
@@ -2670,94 +2694,6 @@ def _rating_time_seconds(value: Any) -> float | None:
 
     return None
 
-def _rating_normalized_degree_scores(
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> dict[int, float]:
-    """Alan içi normalize derece: aynı pist ve yakın mesafe öncelikli.
-
-    Önce her atın hedef pistte ve hedef mesafeye en fazla 200 m uzaklıktaki
-    geçmiş dereceleri kullanılır. Bu grupta veri yoksa aynı yüzeydeki en yakın
-    mesafe grubu kullanılır. Farklı yüzeyler birbiriyle doğrudan kıyaslanmaz.
-    Atın en iyi tek derecesi yerine güncellik ve mesafe yakınlığıyla ağırlıklı
-    hız ortalaması alınır; ardından atlar aynı alan içinde 0-100 ölçeğine taşınır.
-    """
-    surface_target = _rating_surface(target_surface)
-    candidates: dict[int, list[tuple[float, float, float]]] = {}
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        rows = []
-        for row in _rating_history_before_target(horse, target_date):
-            dist = _rating_distance(row)
-            sec = _rating_time_seconds(_rating_row_value(row, [
-                "time", "derece", "Derece", "finishTime", "finish_time", "resultTime"
-            ]))
-            surf = _rating_surface(_rating_row_value(row, [
-                "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-                "surfaceType", "surface_type", "trackType", "track_type"
-            ]))
-            if dist is None or sec is None or sec <= 0 or not surface_target or surf != surface_target:
-                continue
-            delta = abs(dist - target_distance) if target_distance else 0
-            if target_distance and delta > 200:
-                continue
-            proximity = max(0.25, 1.0 - delta / 400.0) if target_distance else 1.0
-            recency = _rating_recency_factor(row, target_date)
-            rows.append((dist / sec, proximity * recency, delta))
-        if rows:
-            candidates[idx] = rows
-
-    # Fallback: dacă hiç kimsenin ±200 m içinde derecesi yoksa aynı yüzeyde
-    # en yakın mesafe grubunu kullan; yine farklı pistleri karıştırma.
-    if not candidates and target_distance:
-        for idx, horse in enumerate(horses):
-            if not isinstance(horse, dict):
-                continue
-            rows = []
-            for row in _rating_history_before_target(horse, target_date):
-                dist = _rating_distance(row)
-                sec = _rating_time_seconds(_rating_row_value(row, [
-                    "time", "derece", "Derece", "finishTime", "finish_time", "resultTime"
-                ]))
-                surf = _rating_surface(_rating_row_value(row, [
-                    "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-                    "surfaceType", "surface_type", "trackType", "track_type"
-                ]))
-                if dist is None or sec is None or sec <= 0 or not surface_target or surf != surface_target:
-                    continue
-                rows.append((dist / sec, _rating_recency_factor(row, target_date), abs(dist-target_distance)))
-            if rows:
-                nearest = min(x[2] for x in rows)
-                candidates[idx] = [(v,w,d) for v,w,d in rows if d == nearest]
-
-    horse_speed = {}
-    for idx, rows in candidates.items():
-        denom = sum(w for _, w, _ in rows)
-        if denom > 0:
-            horse_speed[idx] = sum(v*w for v,w,_ in rows) / denom
-    if not horse_speed:
-        return {i: None for i in range(len(horses))}
-    # Mid-rank percentile reduces sensitivity to one extreme/erroneous time.
-    ordered = sorted(horse_speed.items(), key=lambda item: item[1])
-    n = len(ordered)
-    out = {i: None for i in range(len(horses))}
-    if n == 1:
-        # Tek atın alan içi yüzdelik sırası hesaplanamaz; veri eksik sayılır.
-        out[ordered[0][0]] = None
-    else:
-        pos = 0
-        while pos < n:
-            end = pos + 1
-            while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
-                end += 1
-            percentile = 100.0 * ((pos + end - 1) / 2) / (n - 1)
-            for j in range(pos, end):
-                out[ordered[j][0]] = percentile
-            pos = end
-    return out
 
 def _rating_class_group(value: Any) -> str:
     s = str(value or "").strip().lower()
@@ -2791,29 +2727,59 @@ _RATING_CLASS_BASE = {
 }
 
 def _rating_class_value(row: Dict[str, Any]) -> float | None:
-    group = _rating_class_group(_rating_row_value(row, [
-        "className", "class", "sinif", "Sınıf", "raceName", "race_name", "kosu", "Koşu", "condition"
-    ]))
-    base = _RATING_CLASS_BASE.get(group)
-    if base is None:
-        # H ve KV gibi sınıflar tablo dışında kalırsa mevcut sınıf
-        # dönüştürücüsünü kullanmayı dene.
-        raw = _rating_row_value(row, [
-            "className", "class", "sinif", "Sınıf", "raceName", "race_name", "kosu", "Koşu", "condition"
-        ])
-        lv = _class_level_from_text(raw)
-        if lv is not None:
-            base = lv
+    """Geçmiş koşu sınıfını yalnız sınıf/koşu türü alanlarından çıkarır."""
+    keys = [
+        "className", "class_name", "class", "classType", "class_type",
+        "raceClass", "race_class", "raceClassName", "race_class_name",
+        "raceType", "race_type", "raceTypeName", "race_type_name",
+        "condition", "conditionName", "condition_name",
+        "raceCondition", "race_condition", "kosuSarti", "kosu_sarti",
+        "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+        "raceName", "race_name", "kosuAdi", "kosu_adi", "kosu", "Koşu",
+        "raceTitle", "race_title", "eventName", "event_name",
+        "raceGroup", "race_group", "groupName", "group_name",
+        "yarisTuru", "yaris_turu", "kosuTuru", "kosu_turu",
+        "kosuSartiAdi", "kosu_sarti_adi", "sart", "şart", "sartli", "şartli",
+    ]
+    values = []
+    for key in keys:
+        value = _history_value(row, [key])
+        if value not in (None, "", [], {}) and not isinstance(value, (dict, list)):
+            text = str(value).strip()
+            if text and text not in values:
+                values.append(text)
+
+    # Şartlı/Handikap gibi tür ile sınıf numarası ayrı alanlardaysa birleştir.
+    combined = " ".join(values)
+    if combined:
+        values.append(combined)
+
+    base = None
+    for raw in values:
+        group = _rating_class_group(raw)
+        candidate = _RATING_CLASS_BASE.get(group)
+        if candidate is None:
+            candidate = _class_level_from_text(raw)
+        if candidate is not None:
+            base = candidate
+            break
     if base is None:
         return None
-    place = _rating_place_number(_rating_row_value(row, ["place", "sira", "Sıra", "S", "finishPosition", "finish_position", "rank"]))
+
+    place = _rating_place_number(_rating_row_value(row, [
+        "place", "sira", "Sıra", "finishPosition", "finish_position",
+        "rank", "finish", "position", "result"
+    ]))
     if place is None:
         return base * 0.50
-    factor = _RATING_FINISH_FACTOR.get(place, 0.50)
-    return base * factor
+    return base * _RATING_FINISH_FACTOR.get(place, 0.50)
 
 def _rating_target_class_value(race: Dict[str, Any]) -> float:
-    raw = get_race_condition(race)
+    raw = _rating_row_value(race, [
+        "condition", "conditionName", "condition_name", "raceCondition", "race_condition",
+        "className", "class_name", "raceClass", "race_class", "raceType", "race_type",
+        "raceTypeName", "race_type_name", "raceName", "race_name", "kosu", "Koşu", "class"
+    ]) or get_race_condition(race)
     group = _rating_class_group(raw)
     if group in _RATING_CLASS_BASE:
         return _RATING_CLASS_BASE[group]
@@ -2846,8 +2812,10 @@ def _rating_class_score(
 
 def _rating_style_value(row: Dict[str, Any]) -> str:
     text = str(_rating_row_value(row, [
-        "style", "runningStyle", "running_style", "koşuStili", "kosuStili",
-        "stili", "stil", "position", "pozisyon"
+        "style", "runningStyle", "running_style", "runningStyleName",
+        "running_style_name", "raceStyle", "race_style", "koşuStili",
+        "kosuStili", "stili", "stil", "position", "pozisyon",
+        "racePosition", "race_position", "earlyPosition", "early_position"
     ]) or "").lower()
     if any(x in text for x in ("önde", "onde", "lider", "front")): return "front"
     if any(x in text for x in ("takip", "lideri takip", "stalker")): return "stalker"
@@ -2863,157 +2831,9 @@ def _rating_infer_style(history: list[Dict[str, Any]]) -> str:
             return s
     return ""
 
-def _rating_tempo_score(
-    horse: Dict[str, Any],
-    horses: List[Dict[str, Any]],
-    target_date: Any,
-) -> float:
-    """Geçmiş koşu stili varsa alanın muhtemel temposuyla uyumunu ölçer."""
-    styles = []
-    own_style = _rating_infer_style(_rating_history_before_target(horse, target_date))
-    for h in horses:
-        if not isinstance(h, dict):
-            continue
-        s = _rating_infer_style(_rating_history_before_target(h, target_date))
-        if s:
-            styles.append(s)
-
-    # TJK geçmişinde stil alanı yoksa nötr; veri uydurulmaz.
-    if not own_style or not styles:
-        return 50.0
-
-    front = styles.count("front")
-    stalker = styles.count("stalker")
-    middle = styles.count("middle")
-    closer = styles.count("closer")
-    fast_pressure = front + stalker
-
-    if fast_pressure >= max(3, len(styles)*0.45):
-        expected = "closer" if closer else "stalker"
-    elif fast_pressure <= max(1, len(styles)*0.20):
-        expected = "front" if front else "stalker"
-    else:
-        expected = "stalker"
-
-    matrix = {
-        ("front","front"):75, ("front","stalker"):90, ("front","middle"):65, ("front","closer"):45,
-        ("stalker","front"):80, ("stalker","stalker"):90, ("stalker","middle"):80, ("stalker","closer"):65,
-        ("middle","front"):55, ("middle","stalker"):80, ("middle","middle"):90, ("middle","closer"):80,
-        ("closer","front"):95, ("closer","stalker"):90, ("closer","middle"):80, ("closer","closer"):70,
-    }
-    return float(matrix.get((own_style, expected), 50))
-
-def _rating_gallop_scores(horses: List[Dict[str, Any]], target_date: Any) -> dict[int, float]:
-    """Galop puanını atın kendi galopları arasında değil, tüm koşu alanında kıyaslar."""
-    target_dt = _rating_parse_date(target_date)
-    split_distances = {
-        "1200": 1200.0, "m1200": 1200.0, "time1200": 1200.0,
-        "1000": 1000.0, "m1000": 1000.0, "time1000": 1000.0,
-        "800": 800.0, "m800": 800.0, "time800": 800.0,
-        "600": 600.0, "m600": 600.0, "time600": 600.0,
-        "400": 400.0, "m400": 400.0, "time400": 400.0,
-    }
-    raw = {}
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        workouts = horse.get("_workouts", [])
-        vals = []
-        if isinstance(workouts, list):
-            for row in workouts:
-                if not isinstance(row, dict):
-                    continue
-                dt = _rating_row_date(row)
-                # Tarihi belirsiz galop hedef tarihli yarışa sızmasın.
-                if target_dt is not None and (dt is None or dt >= target_dt):
-                    continue
-                speeds = []
-                for key, metres in split_distances.items():
-                    sec = _rating_time_seconds(_rating_row_value(row, [key]))
-                    if sec and sec > 0:
-                        speeds.append(metres/sec)
-                if not speeds:
-                    continue
-                speed = max(speeds)
-                rec = _rating_recency_factor({"date": dt.isoformat() if dt else ""}, target_date)
-                vals.append((speed, rec))
-        if vals:
-            vals.sort(key=lambda x: x[0])
-            # En uç tek galop yerine üst çeyrekteki hızların ağırlıklı ortalaması.
-            cutoff = vals[max(0, int(len(vals)*0.50))][0]
-            selected = [(v,w) for v,w in vals if v >= cutoff]
-            raw[idx] = sum(v*w for v,w in selected) / sum(w for _,w in selected)
-    out = {i: None for i in range(len(horses))}
-    if not raw:
-        return out
-    ordered = sorted(raw.items(), key=lambda item: item[1])
-    n = len(ordered)
-    if n == 1:
-        # Tek ölçümden alan içi puan üretilemez; nötr puan verme.
-        out[ordered[0][0]] = None
-        return out
-    pos = 0
-    while pos < n:
-        end = pos + 1
-        while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
-            end += 1
-        score = 100.0 * ((pos + end - 1) / 2) / (n - 1)
-        for j in range(pos, end):
-            out[ordered[j][0]] = score
-        pos = end
-    return out
 
 
-def _rating_raw_speed_scores(
-    horses: List[Dict[str, Any]],
-    target_distance: float | None,
-    target_surface: str,
-    target_date: Any,
-) -> dict[int, float]:
-    """Ham hız alan içi puanı; yalnız hedef pist ve ±100 m geçmişi kullanılır."""
-    surface_target = _rating_surface(target_surface)
-    raw = {}
-    for idx, horse in enumerate(horses):
-        if not isinstance(horse, dict):
-            continue
-        vals = []
-        for row in _rating_history_before_target(horse, target_date):
-            dist = _rating_distance(row)
-            sec = _rating_time_seconds(_rating_row_value(row, [
-                "time", "derece", "Derece", "finishTime", "finish_time", "resultTime"
-            ]))
-            surf = _rating_surface(_rating_row_value(row, [
-                "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-                "surfaceType", "surface_type", "trackType", "track_type"
-            ]))
-            if dist is None or sec is None or sec <= 0 or not surface_target or surf != surface_target:
-                continue
-            delta = abs(dist-target_distance) if target_distance else 0
-            if target_distance and delta > 100:
-                continue
-            weight = _rating_recency_factor(row, target_date) * (1.0 - delta/300.0 if target_distance else 1.0)
-            vals.append((dist/sec, max(0.01, weight)))
-        if vals:
-            raw[idx] = sum(v*w for v,w in vals) / sum(w for _,w in vals)
-    out = {i: None for i in range(len(horses))}
-    if not raw:
-        return out
-    ordered = sorted(raw.items(), key=lambda item: item[1])
-    n = len(ordered)
-    if n == 1:
-        # Tek ölçümden alan içi puan üretilemez; nötr puan verme.
-        out[ordered[0][0]] = None
-        return out
-    pos = 0
-    while pos < n:
-        end = pos + 1
-        while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
-            end += 1
-        score = 100.0 * ((pos + end - 1) / 2) / (n - 1)
-        for j in range(pos, end):
-            out[ordered[j][0]] = score
-        pos = end
-    return out
+
 
 def _calculate_rating_for_race(
     horses: List[Dict[str, Any]],
@@ -3022,14 +2842,6 @@ def _calculate_rating_for_race(
     target_date = race.get("date")
     target_distance = _number(race.get("distance"))
     target_surface = display_value(race.get("surface"), "")
-    norm_degree = _rating_normalized_degree_scores(
-        horses, target_distance, target_surface, target_date
-    )
-    raw_speed_scores = _rating_raw_speed_scores(
-        horses, target_distance, target_surface, target_date
-    )
-    gallop_scores = _rating_gallop_scores(horses, target_date)
-
     results = []
     for idx, horse in enumerate(horses):
         if not isinstance(horse, dict):
@@ -3045,14 +2857,10 @@ def _calculate_rating_for_race(
             "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
             "Güncel Form": _rating_all_history_form(horse, target_date),
-            "Normalize Derece": norm_degree.get(idx),
             "Pist / Mesafe": _rating_distance_component(
                 horse, target_distance, target_surface, target_date
             ),
             "Sınıf Uyumu": _rating_class_score(horse, race, target_date),
-            "Tempo": _rating_tempo_score(horse, horses, target_date),
-            "Galop / Hazırlık": gallop_scores.get(idx),
-            "Ham Hız": raw_speed_scores.get(idx),
         }
 
         # Veri varlığını bileşen bazında doğrula. Kaynak veri yoksa 50 puan
@@ -3079,15 +2887,9 @@ def _calculate_rating_for_race(
             and _rating_time_seconds(_rating_row_value(r, ["time", "derece", "Derece", "finishTime", "finish_time", "resultTime"])) is not None
             for r in own_history
         ):
-            components["Normalize Derece"] = None
-            components["Ham Hız"] = None
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
-        if not _rating_infer_style(own_history):
-            components["Tempo"] = None
-        if not horse.get("_workouts"):
-            components["Galop / Hazırlık"] = None
 
         # Eksik veri için 50 puan uydurulmaz. Yalnız gerçek puanı hesaplanan
         # bileşenler kullanılır; kalan ağırlıklar mevcut bileşenler arasında
