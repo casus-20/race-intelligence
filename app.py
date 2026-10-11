@@ -2366,9 +2366,20 @@ def _rating_surface(value: Any) -> str:
         return s
 
 def _rating_distance(row: Dict[str, Any]) -> float | None:
-    return _number(_rating_row_value(row, [
-        "distance", "msf", "mesafe", "Msf", "distanceMeters", "distance_meters"
-    ]))
+    """TJK geçmişindeki mesafeyi farklı kaynak şemalarından oku."""
+    raw = _rating_row_value(row, [
+        "distance", "Distance", "msf", "Msf", "mesafe", "Mesafe",
+        "distanceMeters", "distance_meters", "distance_m", "mesafe_m",
+        "raceDistance", "race_distance", "distanceValue", "distance_value",
+        "metre", "metres", "meters", "metersRun", "meters_run"
+    ])
+    value = _number(raw)
+    # Bazı kaynaklar mesafeyi '1.200' biçiminde binlik ayraçla verir.
+    if value is not None and value < 100 and isinstance(raw, str):
+        digits = re.sub(r"\D", "", raw)
+        if digits.isdigit() and len(digits) >= 3:
+            value = float(digits)
+    return value
 
 def _rating_weight_value(value: Any) -> float | None:
     if value is None:
@@ -2710,8 +2721,10 @@ def _rating_distance_component(
     same_surface = []
     for row in history:
         row_surface = _rating_surface(_rating_row_value(row, [
-            "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
-            "surfaceType", "surface_type", "trackType", "track_type"
+            "surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi",
+            "trackSurface", "track_surface", "surfaceType", "surface_type",
+            "trackType", "track_type", "trackCondition", "track_condition",
+            "pistDurumu", "pist_durumu", "yuzey", "yüzey"
         ]))
         dist = _rating_distance(row)
         if surface_target and row_surface == surface_target and dist is not None:
