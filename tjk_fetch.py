@@ -707,10 +707,11 @@ def get_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """TJK at geçmişini önce çoklu-kaynak /horsedata endpointinden alır.
+    """Önce daha önce çalışan /horse ve /workouts akışını kullanır.
 
-    Tek bir TJK sayfasının eksik/boş dönmesi durumunda /horse ve galop
-    endpointlerine geri düşer. Hatalı/boş yanıtlar başarılı veri gibi sunulmaz.
+    /horsedata yalnızca bu iki endpoint veri döndürmezse yedek olarak denenir.
+    Böylece yeni çoklu-kaynak endpointindeki boş/uyumsuz yanıt, çalışan eski
+    endpointlerden alınabilecek gerçek geçmiş ve galop verisini gölgeleyemez.
     """
     horse_name = normalize_text(horse)
     errors: List[str] = []
@@ -718,57 +719,51 @@ def get_horse_enrichment(
     workouts: List[Dict[str, Any]] = []
     source = ""
 
-    # At kimliği bazı program/hipodrom yanıtlarında eksik gelebiliyor.
-    # Yeni Worker sürümü at adıyla da sorgu yapabildiğinden bu durumda
-    # zenginleştirmeyi erken kesme.
-    if at_id in (None, "") and not horse_name:
-        return {"ok": False, "history": [], "workouts": [], "error": "TJK at kimliği ve adı bulunamadı."}
-
-    # Worker'ın /horsedata sürümü birden fazla resmi TJK sayfasını deneyip
-    # en zengin geçmişi seçebiliyor. Hedef koşu bilgileri de teşhis için iletilir.
-    params = {
-        "atId": str(at_id),
-        "horse": horse_name,
-        "date": normalize_date(target_date) if target_date is not None else "",
-        "city": normalize_text(target_city),
-        "distance": normalize_text(target_distance),
-        "surface": normalize_text(target_surface),
-        "raceClass": normalize_text(target_class),
-    }
-    try:
-        data = _worker_json(API_HORSEDATA, params, timeout=max(timeout, 45))
-        if isinstance(data.get("history"), list):
-            history = data["history"]
-        if isinstance(data.get("workouts"), list):
-            workouts = data["workouts"]
-        source = normalize_text(data.get("historySource") or data.get("source"))
-        if data.get("errors"):
-            errors.append(f"horsedata: {data.get('errors')}")
-    except Exception as exc:
-        errors.append(f"horsedata: {exc}")
-
-    # Ana /horsedata ucu kısmi geçmiş döndürebilir. Sadece tamamen boşken değil,
-    # 6'dan az kayıt varsa da kimlikli /horse ucunu sorgula ve kayıtları birleştir.
-    fallback_history_count = 0
-    if at_id not in (None, "") and len(history) < 6:
+    # 1) Eski/kanıtlanmış yarış geçmişi endpointi önceliklidir.
+    if at_id not in (None, ""):
         try:
-            fallback = get_horse_history(at_id, timeout=max(timeout, 45))
-            fallback_rows = fallback.get("history", []) if isinstance(fallback, dict) else []
-            if isinstance(fallback_rows, list):
-                fallback_history_count = len(fallback_rows)
-                if fallback_rows:
-                    history = list(history) + [r for r in fallback_rows if isinstance(r, dict)]
-                    source = (source + "+api/tjk/horse") if source else "api/tjk/horse"
+            data = get_horse_history(at_id, timeout=max(timeout, 45))
+            if isinstance(data.get("history"), list):
+                history = data["history"]
+            if history:
+                source = "api/tjk/horse"
         except Exception as exc:
             errors.append(f"horse: {exc}")
+    else:
+        errors.append("TJK atId bulunamadı; geçmiş adıyla yedek sorgulanacak.")
 
-    if not workouts and horse_name:
+    # 2) Eski/kanıtlanmış galop endpointi önceliklidir.
+    if horse_name:
         try:
-            fallback_workouts = get_horse_workouts(horse_name, timeout=max(timeout, 45))
-            if isinstance(fallback_workouts.get("workouts"), list):
-                workouts = fallback_workouts["workouts"]
+            data = get_horse_workouts(horse_name, timeout=max(timeout, 45))
+            if isinstance(data.get("workouts"), list):
+                workouts = data["workouts"]
         except Exception as exc:
             errors.append(f"workouts: {exc}")
+
+    # 3) Yedek: ana endpointlerden biri eksik kaldıysa çoklu-kaynak sorgusu.
+    if (not history or not workouts) and (at_id not in (None, "") or horse_name):
+        params = {
+            "atId": str(at_id or ""),
+            "horse": horse_name,
+            "date": normalize_date(target_date) if target_date is not None else "",
+            "city": normalize_text(target_city),
+            "distance": normalize_text(target_distance),
+            "surface": normalize_text(target_surface),
+            "raceClass": normalize_text(target_class),
+        }
+        try:
+            data = _worker_json(API_HORSEDATA, params, timeout=max(timeout, 45))
+            if not history and isinstance(data.get("history"), list):
+                history = data["history"]
+                if history:
+                    source = normalize_text(data.get("historySource") or data.get("source") or "api/tjk/horsedata")
+            if not workouts and isinstance(data.get("workouts"), list):
+                workouts = data["workouts"]
+            if data.get("errors"):
+                errors.append(f"horsedata: {data.get('errors')}")
+        except Exception as exc:
+            errors.append(f"horsedata: {exc}")
 
     # Yalnızca gerçek dict kayıtları tut; satırları isim/tarih/hipodrom/mesafe
     # kombinasyonuyla tekilleştir, farklı yarışları yanlışlıkla birleştirme.
@@ -817,11 +812,6 @@ def get_horse_enrichment(
         "historyCount": len(clean_history),
         "workoutCount": len(clean_workouts),
         "historySource": source,
-        "fallbackHistoryCount": fallback_history_count,
-        "historyAttempts": data.get("historyAttempts", []) if isinstance(data, dict) else [],
-        "workoutAttempts": data.get("workoutAttempts", []) if isinstance(data, dict) else [],
-        "historyCandidateCounts": data.get("historyCandidateCounts", []) if isinstance(data, dict) else [],
-        "historyStatus": data.get("historyStatus") if isinstance(data, dict) else None,
     }
     if errors:
         result["error"] = " | ".join(dict.fromkeys(errors))
