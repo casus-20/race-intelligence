@@ -2110,7 +2110,7 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# REYTİNG — YENİ 9 FAKTÖRLÜ, TARİH-SIZDIRMALI MOTOR
+# REYTİNG — AKTİF BİLEŞENLİ, TARİH-SIZDIRMALI MOTOR
 # ============================================================
 # REYTİNG yalnızca hedef koşunun tarihinden ÖNCEKİ gerçek TJK geçmişini
 # kullanır. Hedef koşunun kendisi, aynı günkü sonuçlar veya gelecekteki
@@ -2371,31 +2371,44 @@ def _rating_weight_similarity(history_weight: float | None, target_weight: float
     return 35.0
 
 def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
-    """Aynı yarışta koşmuş atları geçmiş kayıtlarından eşleştirir."""
+    """TJK geçmişindeki aynı koşuyu ID varsa ID ile, yoksa alanlarıyla eşleştirir."""
+    race_id = _rating_row_value(row, [
+        "raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key",
+        "eventId", "event_id", "resultId", "result_id"
+    ])
     dt = _rating_row_date(row)
     city = str(_rating_row_value(row, [
-        "city", "cityName", "city_name", "şehir", "Sehir", "hipodrom",
-        "hippodrome", "hippodromeName", "hippodrome_name", "track",
-        "trackName", "track_name", "location", "venue"
+        "city", "cityName", "city_name", "hipodrom", "hipodromAdi",
+        "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name",
+        "track", "trackName", "track_name", "raceTrack", "race_track",
+        "location", "venue"
     ]) or "").strip().lower()
     dist = _rating_distance(row)
     surface = _rating_surface(_rating_row_value(row, [
-        "surface", "pist", "Pist", "trackSurface", "track_surface",
-        "surfaceType", "surface_type", "trackType", "track_type"
+        "surface", "pist", "pistAdi", "pist_adi", "trackSurface",
+        "track_surface", "surfaceType", "surface_type", "trackType",
+        "track_type", "trackCondition", "track_condition"
     ]))
+    race_no = _rating_row_value(row, [
+        "raceNo", "race_no", "kosuNo", "kosu_no", "raceNumber",
+        "race_number", "kosuSirasi", "kosu_sirasi"
+    ])
     race_name = str(_rating_row_value(row, [
-        "raceName", "race_name", "kosu", "Koşu", "className", "class_name",
-        "raceClass", "race_class", "class", "condition", "raceCondition",
-        "race_condition", "raceType", "race_type"
+        "raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName",
+        "condition_name", "className", "class_name", "raceClass",
+        "race_class", "condition", "raceCondition", "race_condition",
+        "raceType", "race_type"
     ]) or "").strip().lower()
-    # Tarih + hipodrom + mesafe + pist temel anahtar.
-    # Yarış adı varsa anahtarı güçlendirir, ancak boşsa eşleştirme yine yapılabilir.
+    if race_id not in (None, ""):
+        return ("id", str(race_id).strip())
     return (
+        "fields",
         dt.isoformat() if dt else "",
-        re.sub(r"\s+", " ", city),
+        " ".join(city.split()),
         round(dist, 1) if dist is not None else "",
         surface,
-        re.sub(r"\s+", " ", race_name),
+        str(race_no or "").strip(),
+        " ".join(race_name.split()),
     )
 
 def _rating_shared_race_keys(
@@ -2403,25 +2416,37 @@ def _rating_shared_race_keys(
     h2: Dict[str, Any],
     target_date: Any,
 ) -> list[tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Aynı geçmiş yarışı yanlış pozitif üretmeden eşleştirir."""
     a = _rating_history_before_target(h1, target_date)
     b = _rating_history_before_target(h2, target_date)
-    # Aynı yarış adı boş olduğunda daha gevşek anahtar da denenir.
     idx = {}
     for row in b:
-        k = _rating_row_race_key(row)
-        idx.setdefault(k, []).append(row)
+        idx.setdefault(_rating_row_race_key(row), []).append(row)
 
     pairs = []
     used = set()
     for row_a in a:
-        k = _rating_row_race_key(row_a)
-        candidates = idx.get(k, [])
-        if not candidates:
-            base = k[:4]
-            candidates = []
-            for kb, rows in idx.items():
-                if kb[:4] == base:
-                    candidates.extend(rows)
+        key_a = _rating_row_race_key(row_a)
+        candidates = list(idx.get(key_a, []))
+        # ID yoksa yarış adı farklı/eksik gelebilir. Ancak tarih, hipodrom,
+        # mesafe, pist ve varsa koşu numarası uyumlu olmalı.
+        if not candidates and key_a and key_a[0] == "fields":
+            _, dt_a, city_a, dist_a, surface_a, no_a, _name_a = key_a
+            if dt_a and dist_a != "" and surface_a:
+                for key_b, rows_b in idx.items():
+                    if not key_b or key_b[0] != "fields":
+                        continue
+                    _, dt_b, city_b, dist_b, surface_b, no_b, _name_b = key_b
+                    if (dt_a != dt_b or dist_a != dist_b or surface_a != surface_b):
+                        continue
+                    if city_a and city_b and city_a != city_b:
+                        continue
+                    if no_a and no_b and no_a != no_b:
+                        continue
+                    # Yarış adı her iki tarafta varsa farklı isimli koşuları eşleştirme.
+                    if _name_a and _name_b and _name_a != _name_b:
+                        continue
+                    candidates.extend(rows_b)
         for row_b in candidates:
             pair_key = (id(row_a), id(row_b))
             if pair_key in used:
@@ -2795,7 +2820,7 @@ _RATING_CLASS_BASE = {
 }
 
 def _rating_class_value(row: Dict[str, Any]) -> float | None:
-    """Geçmiş TJK kaydındaki koşu sınıfını güvenilir alanlardan çıkarır."""
+    """Geçmiş koşu sınıfını yalnız sınıf/koşu türü alanlarından çıkarır."""
     keys = [
         "className", "class_name", "class", "classType", "class_type",
         "raceClass", "race_class", "raceClassName", "race_class_name",
@@ -2803,44 +2828,44 @@ def _rating_class_value(row: Dict[str, Any]) -> float | None:
         "condition", "conditionName", "condition_name",
         "raceCondition", "race_condition", "kosuSarti", "kosu_sarti",
         "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
-        "raceName", "race_name", "kosu", "Koşu",
+        "raceName", "race_name", "kosuAdi", "kosu_adi", "kosu", "Koşu",
+        "raceTitle", "race_title", "eventName", "event_name",
+        "raceGroup", "race_group", "groupName", "group_name",
+        "yarisTuru", "yaris_turu", "kosuTuru", "kosu_turu",
+        "kosuSartiAdi", "kosu_sarti_adi", "sart", "şart", "sartli", "şartli",
     ]
-    raw_values = []
-    try:
-        extracted = _history_class_text(row)
-        if extracted:
-            raw_values.append(extracted)
-    except Exception:
-        pass
+    values = []
     for key in keys:
-        value = row.get(key)
-        if value not in (None, "") and not isinstance(value, (dict, list)):
-            raw_values.append(value)
-    # Some TJK responses place race metadata in nested dicts.
-    for parent in ("race", "raceInfo", "race_info", "competition", "metadata", "meta", "raw"):
-        nested = row.get(parent)
-        if isinstance(nested, dict):
-            for key in keys:
-                value = nested.get(key)
-                if value not in (None, "") and not isinstance(value, (dict, list)):
-                    raw_values.append(value)
-    for raw in raw_values:
+        value = _history_value(row, [key])
+        if value not in (None, "", [], {}) and not isinstance(value, (dict, list)):
+            text = str(value).strip()
+            if text and text not in values:
+                values.append(text)
+
+    # Şartlı/Handikap gibi tür ile sınıf numarası ayrı alanlardaysa birleştir.
+    combined = " ".join(values)
+    if combined:
+        values.append(combined)
+
+    base = None
+    for raw in values:
         group = _rating_class_group(raw)
-        base = _RATING_CLASS_BASE.get(group)
-        if base is None:
-            level = _class_level_from_text(raw)
-            if level is not None:
-                base = level
-        if base is None:
-            continue
-        place = _rating_place_number(_rating_row_value(row, [
-            "place", "sira", "Sıra", "S", "finishPosition", "finish_position",
-            "rank", "finish", "position"
-        ]))
-        if place is None:
-            return base * 0.50
-        return base * _RATING_FINISH_FACTOR.get(place, 0.50)
-    return None
+        candidate = _RATING_CLASS_BASE.get(group)
+        if candidate is None:
+            candidate = _class_level_from_text(raw)
+        if candidate is not None:
+            base = candidate
+            break
+    if base is None:
+        return None
+
+    place = _rating_place_number(_rating_row_value(row, [
+        "place", "sira", "Sıra", "finishPosition", "finish_position",
+        "rank", "finish", "position", "result"
+    ]))
+    if place is None:
+        return base * 0.50
+    return base * _RATING_FINISH_FACTOR.get(place, 0.50)
 
 def _rating_target_class_value(race: Dict[str, Any]) -> float:
     raw = _rating_row_value(race, [
