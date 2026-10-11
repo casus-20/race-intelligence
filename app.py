@@ -1649,7 +1649,7 @@ def _normalize_surface_for_table(value: Any) -> str:
         return "kum"
     if text.startswith("ç:") or text.startswith("c:") or text.startswith("c-") or text.startswith("cim:") or text == "ç" or text == "c":
         return "cim"
-    if text.startswith("s:") or text.startswith("s-") or text == "s":
+    if text.startswith("s:") or text.startswith("s-") or text == "s" or text.startswith("sentetik:"):
         return "sentetik"
     if any(x in text for x in ("cim", "grass", "turf")):
         return "cim"
@@ -1718,7 +1718,7 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
     """
     def _position(value: Any) -> int | None:
         if isinstance(value, dict):
-            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+            for k in ("finish", "place", "sira", "Sıra", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank", "sonucSira", "sonuc_sira", "bitirisSira", "bitiris_sira"):
                 if value.get(k) not in (None, "", "-"):
                     return _position(value.get(k))
             return None
@@ -1749,7 +1749,7 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
         return None
 
     # 1) Program sonucunda doğrudan sonuç varsa kullan.
-    for key in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+    for key in ("finish", "place", "sira", "Sıra", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank", "sonucSira", "sonuc_sira", "bitirisSira", "bitiris_sira"):
         if horse.get(key) not in (None, "", "-"):
             pos = _position(horse.get(key))
             if pos is not None:
@@ -1790,10 +1790,16 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
         for row in horse.get("_history", []):
             if not isinstance(row, dict):
                 continue
-            row_dt = _parse_date(row.get("date") or row.get("tarih") or row.get("Tarih"))
+            # TJK geçmiş kayıtları bazı yanıtlarda race/run/result alt nesnelerine
+            # gömülüdür. Üst seviye .get() bu kayıtların tarihini ve sırasını kaçırır.
+            row_dt = _rating_row_date(row)
             if row_dt != target_dt:
                 continue
-            pos = _position(row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("position") or row.get("finishPosition") or row.get("rank"))
+            pos = _position(_rating_row_value(row, [
+                "place", "sira", "Sıra", "S", "finish", "position",
+                "finishPosition", "finish_position", "rank", "result",
+                "sonuc", "sonucSira", "sonuc_sira", "bitirisSira", "bitiris_sira"
+            ]))
             if pos is not None:
                 same_day.append((row, pos))
 
@@ -2951,7 +2957,12 @@ def _calculate_rating_for_race(
     race: Dict[str, Any],
 ) -> list[Dict[str, Any]]:
     target_date = race.get("date")
-    target_distance = _number(race.get("distance"))
+    target_distance = _number(race.get("distance") or race.get("mesafe") or race.get("Distance") or race.get("Mesafe") or race.get("distanceMeters") or race.get("distance_meters"))
+    if target_distance is not None and target_distance < 100:
+        _raw_distance = str(race.get("distance") or race.get("mesafe") or "")
+        _digits_distance = re.sub(r"\D", "", _raw_distance)
+        if len(_digits_distance) >= 3:
+            target_distance = float(_digits_distance)
     target_surface = display_value(race.get("surface"), "")
     results = []
     for idx, horse in enumerate(horses):
