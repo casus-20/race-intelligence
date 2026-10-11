@@ -1248,17 +1248,23 @@ def enrich_race_horses(
 
     def one(idx_item):
         idx, item = idx_item
+        # TJK program parser'ları aynı kimliği farklı büyük/küçük harflerle
+        # döndürebiliyor. Özellikle atId/AtId/atID farkı, yalnızca bazı atların
+        # geçmişinin hiç çekilmemesine ve REYTİNG/GÜNCEL SINIF hücrelerinin boş
+        # kalmasına neden olur. Var olan alanlar korunur; yeni alias'lar eklenir.
         at_id = (
-            item.get("atId") or item.get("at_id") or
-            item.get("horseId") or item.get("horse_id") or
-            item.get("horseKey") or item.get("horse_key") or
-            item.get("id") or item.get("Id") or ""
+            item.get("atId") or item.get("AtId") or item.get("ATID") or
+            item.get("atID") or item.get("at_id") or item.get("atid") or
+            item.get("horseId") or item.get("HorseId") or item.get("HORSEID") or
+            item.get("horseID") or item.get("horse_id") or item.get("horseid") or
+            item.get("horseKey") or item.get("HorseKey") or item.get("horse_key") or
+            item.get("idAt") or item.get("id_at") or item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
         if not at_id:
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
+            item["_enrichment_error"] = "TJK at kimliği bulunamadı (atId/AtId/atID/horseId alanları kontrol edildi); geçmiş çekilemedi."
             return idx, item, name
 
         try:
