@@ -1779,6 +1779,8 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
     return ""
 
 
+
+
 def last_race_display(horse: Dict[str, Any]) -> str:
     """Ana tabloda SON KOŞU sütununda yalnızca gerçek dereceyi gösterir."""
     row = horse.get("_last_race")
@@ -2307,13 +2309,12 @@ def _rating_history_before_target(
         return []
 
     target_dt = _rating_parse_date(target_date) if target_date is not None else None
-    # Hedef tarih çözümlenemiyorsa geçmiş filtresini gevşetme: güvenli biçimde
-    # hiçbir kaydı kullanma. Aksi hâlde aynı gün/gelecek yarış sızabilir.
-    if target_dt is None:
-        return []
     out = []
     for row in history:
         if not isinstance(row, dict):
+            continue
+        if target_dt is None:
+            out.append(row)
             continue
         row_dt = _rating_parse_date(_history_value(row, [
             "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
@@ -2726,6 +2727,9 @@ def _rating_distance_component(
         return None
     total = sum(weight for _, weight in available)
     return max(0.0, min(100.0, sum(value * weight for value, weight in available) / total))
+
+
+
 def _rating_time_seconds(value: Any) -> float | None:
     if value is None:
         return None
@@ -2951,12 +2955,11 @@ def _calculate_rating_for_race(
             for r in own_history
         ):
             components["Güncel Form"] = None
-        # Pist/mesafe puanının geçerlilik kontrolü, puan fonksiyonuyla birebir aynı:
-        # aynı pist + hedef mesafe; o mesafede kayıt yoksa aynı pistte +/-100 m.
-        # Derece/süre alanı şart değildir; tek gerçek yarış kaydı yeterlidir.
+        # Pist/Mesafe kullanılabilirliği, puan fonksiyonuyla aynı kesin kurala bağlıdır:
+        # aynı pistte önce tam mesafe; yoksa yalnızca +/-100 m. Derece alanı şart değildir.
         _target_surface_norm = _rating_surface(target_surface)
         _target_distance_num = _number(target_distance)
-        _same_surface_distances = []
+        _matching_track_distance = []
         if _target_surface_norm and _target_distance_num is not None:
             for _hist_row in own_history:
                 _hist_surface = _rating_surface(_rating_row_value(_hist_row, [
@@ -2967,10 +2970,10 @@ def _calculate_rating_for_race(
                 ]))
                 _hist_distance = _rating_distance(_hist_row)
                 if _hist_surface == _target_surface_norm and _hist_distance is not None:
-                    _same_surface_distances.append(_hist_distance)
-        _has_track_distance = any(abs(d - _target_distance_num) <= 0.01 for d in _same_surface_distances) if _target_distance_num is not None else False
-        if not _has_track_distance and _target_distance_num is not None:
-            _has_track_distance = any(abs(d - _target_distance_num) <= 100 for d in _same_surface_distances)
+                    _matching_track_distance.append(float(_hist_distance))
+        _has_track_distance = any(abs(d - _target_distance_num) <= 0.01 for d in _matching_track_distance)
+        if not _has_track_distance:
+            _has_track_distance = any(abs(d - _target_distance_num) <= 100 for d in _matching_track_distance)
         if not _has_track_distance:
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
