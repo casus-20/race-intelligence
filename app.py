@@ -2307,12 +2307,13 @@ def _rating_history_before_target(
         return []
 
     target_dt = _rating_parse_date(target_date) if target_date is not None else None
+    # Hedef tarih çözümlenemiyorsa geçmiş filtresini gevşetme: güvenli biçimde
+    # hiçbir kaydı kullanma. Aksi hâlde aynı gün/gelecek yarış sızabilir.
+    if target_dt is None:
+        return []
     out = []
     for row in history:
         if not isinstance(row, dict):
-            continue
-        if target_dt is None:
-            out.append(row)
             continue
         row_dt = _rating_parse_date(_history_value(row, [
             "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
