@@ -2127,6 +2127,8 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 #   Galop / hazırlık          %3
 #   Ham hız                   %2
 #
+# Tempo ve Ham Hız kullanıcı isteğiyle motor dışında bırakılmıştır.
+# Kalan bileşenlerin ağırlıkları, mevcut veri bulunurluğuna göre normalize edilir.
 # Her alt puan 0-100 aralığındadır; toplam REYTİNG de 0-100'dür.
 # ============================================================
 
@@ -2137,9 +2139,7 @@ _RATING_WEIGHTS = {
     "Normalize Derece": 0.05,
     "Pist / Mesafe": 0.20,
     "Sınıf Uyumu": 0.19,
-    "Tempo": 0.06,
     "Galop / Hazırlık": 0.03,
-    "Ham Hız": 0.02,
 }
 
 _RATING_FORM_WEIGHTS = (0.30, 0.22, 0.17, 0.13, 0.10, 0.08)
@@ -2795,40 +2795,58 @@ _RATING_CLASS_BASE = {
 }
 
 def _rating_class_value(row: Dict[str, Any]) -> float | None:
-    group = _rating_class_group(_rating_row_value(row, [
+    """Geçmiş TJK kaydındaki koşu sınıfını güvenilir alanlardan çıkarır."""
+    keys = [
         "className", "class_name", "class", "classType", "class_type",
         "raceClass", "race_class", "raceClassName", "race_class_name",
-        "raceType", "race_type", "raceCondition", "race_condition",
-        "condition", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
-        "raceName", "race_name", "kosu", "Koşu", "name", "title"
-    ]))
-    base = _RATING_CLASS_BASE.get(group)
-    if base is None:
-        # H ve KV gibi sınıflar tablo dışında kalırsa mevcut sınıf
-        # dönüştürücüsünü kullanmayı dene.
-        raw = _rating_row_value(row, [
-            "className", "class_name", "class", "classType", "class_type",
-            "raceClass", "race_class", "raceClassName", "race_class_name",
-            "raceType", "race_type", "raceCondition", "race_condition",
-            "condition", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
-            "raceName", "race_name", "kosu", "Koşu", "name", "title"
-        ])
-        lv = _class_level_from_text(raw)
-        if lv is not None:
-            base = lv
-    if base is None:
-        return None
-    place = _rating_place_number(_rating_row_value(row, ["place", "sira", "Sıra", "S", "finishPosition", "finish_position", "rank"]))
-    if place is None:
-        return base * 0.50
-    factor = _RATING_FINISH_FACTOR.get(place, 0.50)
-    return base * factor
+        "raceType", "race_type", "raceTypeName", "race_type_name",
+        "condition", "conditionName", "condition_name",
+        "raceCondition", "race_condition", "kosuSarti", "kosu_sarti",
+        "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+        "raceName", "race_name", "kosu", "Koşu",
+    ]
+    raw_values = []
+    try:
+        extracted = _history_class_text(row)
+        if extracted:
+            raw_values.append(extracted)
+    except Exception:
+        pass
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, "") and not isinstance(value, (dict, list)):
+            raw_values.append(value)
+    # Some TJK responses place race metadata in nested dicts.
+    for parent in ("race", "raceInfo", "race_info", "competition", "metadata", "meta", "raw"):
+        nested = row.get(parent)
+        if isinstance(nested, dict):
+            for key in keys:
+                value = nested.get(key)
+                if value not in (None, "") and not isinstance(value, (dict, list)):
+                    raw_values.append(value)
+    for raw in raw_values:
+        group = _rating_class_group(raw)
+        base = _RATING_CLASS_BASE.get(group)
+        if base is None:
+            level = _class_level_from_text(raw)
+            if level is not None:
+                base = level
+        if base is None:
+            continue
+        place = _rating_place_number(_rating_row_value(row, [
+            "place", "sira", "Sıra", "S", "finishPosition", "finish_position",
+            "rank", "finish", "position"
+        ]))
+        if place is None:
+            return base * 0.50
+        return base * _RATING_FINISH_FACTOR.get(place, 0.50)
+    return None
 
 def _rating_target_class_value(race: Dict[str, Any]) -> float:
     raw = _rating_row_value(race, [
-        "condition", "raceCondition", "race_condition", "className",
-        "class_name", "raceClass", "race_class", "raceType", "race_type",
-        "raceName", "race_name", "kosu", "Koşu", "class"
+        "condition", "conditionName", "condition_name", "raceCondition", "race_condition",
+        "className", "class_name", "raceClass", "race_class", "raceType", "race_type",
+        "raceTypeName", "race_type_name", "raceName", "race_name", "kosu", "Koşu", "class"
     ]) or get_race_condition(race)
     group = _rating_class_group(raw)
     if group in _RATING_CLASS_BASE:
@@ -3044,9 +3062,6 @@ def _calculate_rating_for_race(
     norm_degree = _rating_normalized_degree_scores(
         horses, target_distance, target_surface, target_date
     )
-    raw_speed_scores = _rating_raw_speed_scores(
-        horses, target_distance, target_surface, target_date
-    )
     gallop_scores = _rating_gallop_scores(horses, target_date)
 
     results = []
@@ -3069,9 +3084,7 @@ def _calculate_rating_for_race(
                 horse, target_distance, target_surface, target_date
             ),
             "Sınıf Uyumu": _rating_class_score(horse, race, target_date),
-            "Tempo": _rating_tempo_score(horse, horses, target_date),
             "Galop / Hazırlık": gallop_scores.get(idx),
-            "Ham Hız": raw_speed_scores.get(idx),
         }
 
         # Veri varlığını bileşen bazında doğrula. Kaynak veri yoksa 50 puan
@@ -3099,12 +3112,9 @@ def _calculate_rating_for_race(
             for r in own_history
         ):
             components["Normalize Derece"] = None
-            components["Ham Hız"] = None
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
-        if not _rating_infer_style(own_history):
-            components["Tempo"] = None
         if not horse.get("_workouts"):
             components["Galop / Hazırlık"] = None
 
@@ -4589,7 +4599,7 @@ else:
         _rating_component_names = [
             "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
             "Normalize Derece", "Pist / Mesafe", "Sınıf Uyumu",
-            "Tempo", "Galop / Hazırlık", "Ham Hız",
+            "Galop / Hazırlık",
         ]
         for _ri, _rh in enumerate(_ranking_input):
             if not isinstance(_rh, dict):
@@ -4607,9 +4617,7 @@ else:
                 "Normalize Derece": _rc.get("Normalize Derece"),
                 "Pist / Mesafe": _rc.get("Pist / Mesafe"),
                 "Sınıf Uyumu": _rc.get("Sınıf Uyumu"),
-                "Tempo": _rc.get("Tempo"),
                 "Galop / Hazırlık": _rc.get("Galop / Hazırlık"),
-                "Ham Hız": _rc.get("Ham Hız"),
                 "Kullanılan Bileşen": _rr.get("available_components", 0) if isinstance(_rr, dict) else 0,
                 "Kullanılan Ağırlık %": _rr.get("available_weight_pct", 0) if isinstance(_rr, dict) else 0,
                 "Eksik Bileşenler": ", ".join(_missing) if _missing else "Yok",
@@ -6255,12 +6263,12 @@ else:
             )
             st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
 
-        with st.expander("🎯 REYTİNG — gerçek 9 bileşen puanları", expanded=True):
+        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=True):
             rating_breakdown_rows = []
             component_names = [
                 "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
                 "Normalize Derece", "Pist / Mesafe", "Sınıf Uyumu",
-                "Tempo", "Galop / Hazırlık", "Ham Hız",
+                "Galop / Hazırlık",
             ]
             for rating_item in rating_results:
                 hi = rating_item["horse_index"]
@@ -6280,9 +6288,14 @@ else:
                 _class_aliases = [
                     "className", "class_name", "class", "classType", "class_type",
                     "raceClass", "race_class", "raceClassName", "race_class_name",
-                    "raceType", "race_type", "raceCondition", "race_condition",
-                    "condition", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
-                    "raceName", "race_name", "kosu", "Koşu", "name", "title"
+                    "raceType", "race_type", "raceTypeName", "race_type_name",
+                    "raceCondition", "race_condition", "condition", "conditionName",
+                    "condition_name", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+                    "raceTitle", "race_title", "eventName", "event_name",
+                    "raceGroup", "race_group", "groupName", "group_name",
+                    "yarisTuru", "yaris_turu", "kosuTuru", "kosu_turu",
+                    "kosuAdi", "kosu_adi", "kosuSartiAdi", "kosu_sarti_adi",
+                    "raceName", "race_name", "kosu", "Koşu"
                 ]
                 _raw_classes = []
                 for _hr in _history:
@@ -6302,7 +6315,7 @@ else:
             else:
                 st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
             st.caption(
-                "Bu tablo doğrudan REYTİNG motorunun döndürdüğü bileşenleri gösterir. "
+                "Tempo ve Ham Hız kullanıcı isteğiyle devre dışıdır. Bu tablo motorun kalan bileşenlerini gösterir. "
                 "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
                 "Hedef koşu gününün sonucu hesaba katılmaz."
             )
@@ -6319,7 +6332,7 @@ else:
 st.markdown("---")
 st.markdown(
     f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Form %15 • Normalize Derece %5 • "
-    f"Pist/Mesafe %20 • Sınıf %19 • Tempo %6 • Galop %3 • Ham Hız %2 • Seçili koşu: {race_number}. koşu",
+    f"Pist/Mesafe %20 • Sınıf %19 • Galop %3 • Seçili koşu: {race_number}. koşu",
 )
 st.caption(
     "REYTİNG yalnızca yarış tarihinden önceki TJK geçmişi ve yarış öncesi galop verileriyle hesaplanır; aynı günkü sonuç REYTİNG'e girmez."
