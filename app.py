@@ -1818,12 +1818,13 @@ def last_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _first_value(row: Dict[str, Any], keys: List[str]) -> Any:
+def _first_value(row: Dict[str, Any], keys: List[str], default: Any = "") -> Any:
+    """Return the first non-empty field; use default when none is present."""
     for key in keys:
         value = row.get(key)
         if value not in (None, ""):
             return value
-    return ""
+    return default
 
 
 def _html_real_table(df: pd.DataFrame, widths=None) -> None:
