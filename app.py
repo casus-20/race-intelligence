@@ -1193,23 +1193,35 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
-@st.cache_data(ttl=10800, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
+    target_date: Any = None,
+    target_city: str = "",
+    target_distance: Any = None,
+    target_surface: str = "",
+    target_class: str = "",
 ) -> Dict[str, Any]:
+    """TJK zenginleştirmesi: başarısız/boş yanıtları cache'leme."""
     try:
-        # Cache anahtarı yalnızca at kimliği + isimdir.
-        # Hız sürümünde gerçek TJK geçmişi doğrudan alınır;
-        # yarış parametreleri burada kullanılmaz.
-        return get_horse_enrichment(at_id, horse_name)
+        data = get_horse_enrichment(
+            at_id, horse_name,
+            target_date=target_date,
+            target_city=target_city,
+            target_distance=target_distance,
+            target_surface=target_surface,
+            target_class=target_class,
+        )
+        # Hata veya boş geçmiş döndüyse sonraki rerun'da yeniden TJK'ya sor.
+        # Başarılı yanıtlar Streamlit session_state içinde tutulur; başka koşuya
+        # ait bağlamın yanlışlıkla kullanılmasını engellemek için bağlam anahtarlı.
+        if isinstance(data, dict) and data.get("history"):
+            cache = st.session_state.setdefault("_tjk_enrichment_success", {})
+            cache_key = (str(at_id), str(horse_name), str(target_date), str(target_city), str(target_distance), str(target_surface), str(target_class))
+            cache[cache_key] = data
+        return data if isinstance(data, dict) else {"ok": False, "history": [], "workouts": [], "error": "TJK yanıt biçimi geçersiz."}
     except Exception as exc:
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": str(exc),
-        }
+        return {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
 
 def enrich_race_horses(
@@ -1250,7 +1262,7 @@ def enrich_race_horses(
             return idx, item, name
 
         try:
-            data = load_horse_enrichment(str(at_id), name)
+            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
