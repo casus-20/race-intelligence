@@ -2117,29 +2117,25 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 # kayıtlar hiçbir faktöre giremez.
 #
 # Ana ağırlıklar:
-#   Ortak rakip + kilo farkı  %25
-#   Kilo uyumu               %5
-#   Güncel form              %15
-#   Normalize derece         %5
-#   Pist / mesafe            %20
-#   Sınıf uyumu               %19
+#   Ortak rakip + kilo farkı  %35
+#   Kilo uyumu               %10
+#   Güncel form              %25
+# #   Pist / mesafe            %20
+#   Sınıf uyumu              %20
 #   Tempo                     %6
-#   Galop / hazırlık          %3
-#   Ham hız                   %2
+# #   Ham hız                   %2
 #
-# Tempo ve Ham Hız kullanıcı isteğiyle motor dışında bırakılmıştır.
+# Tempo, Ham Hız, Normalize Derece ve Galop kullanıcı isteğiyle motor dışında bırakılmıştır.
 # Kalan bileşenlerin ağırlıkları, mevcut veri bulunurluğuna göre normalize edilir.
 # Her alt puan 0-100 aralığındadır; toplam REYTİNG de 0-100'dür.
 # ============================================================
 
 _RATING_WEIGHTS = {
-    "Ortak Rakip + Kilo": 0.25,
-    "Kilo Uyumu": 0.05,
-    "Güncel Form": 0.15,
-    "Normalize Derece": 0.05,
+    "Ortak Rakip + Kilo": 0.35,
+    "Kilo Uyumu": 0.10,
+    "Güncel Form": 0.25,
     "Pist / Mesafe": 0.20,
-    "Sınıf Uyumu": 0.19,
-    "Galop / Hazırlık": 0.03,
+    "Sınıf Uyumu": 0.20,
 }
 
 _RATING_FORM_WEIGHTS = (0.30, 0.22, 0.17, 0.13, 0.10, 0.08)
@@ -3084,11 +3080,6 @@ def _calculate_rating_for_race(
     target_date = race.get("date")
     target_distance = _number(race.get("distance"))
     target_surface = display_value(race.get("surface"), "")
-    norm_degree = _rating_normalized_degree_scores(
-        horses, target_distance, target_surface, target_date
-    )
-    gallop_scores = _rating_gallop_scores(horses, target_date)
-
     results = []
     for idx, horse in enumerate(horses):
         if not isinstance(horse, dict):
@@ -3104,12 +3095,10 @@ def _calculate_rating_for_race(
             "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
             "Güncel Form": _rating_all_history_form(horse, target_date),
-            "Normalize Derece": norm_degree.get(idx),
             "Pist / Mesafe": _rating_distance_component(
                 horse, target_distance, target_surface, target_date
             ),
             "Sınıf Uyumu": _rating_class_score(horse, race, target_date),
-            "Galop / Hazırlık": gallop_scores.get(idx),
         }
 
         # Veri varlığını bileşen bazında doğrula. Kaynak veri yoksa 50 puan
@@ -4623,8 +4612,7 @@ else:
         _rating_debug_rows = []
         _rating_component_names = [
             "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
-            "Normalize Derece", "Pist / Mesafe", "Sınıf Uyumu",
-            "Galop / Hazırlık",
+            "Pist / Mesafe", "Sınıf Uyumu",
         ]
         for _ri, _rh in enumerate(_ranking_input):
             if not isinstance(_rh, dict):
@@ -4639,10 +4627,8 @@ else:
                 "Ortak Rakip + Kilo": _rc.get("Ortak Rakip + Kilo"),
                 "Kilo Uyumu": _rc.get("Kilo Uyumu"),
                 "Güncel Form": _rc.get("Güncel Form"),
-                "Normalize Derece": _rc.get("Normalize Derece"),
                 "Pist / Mesafe": _rc.get("Pist / Mesafe"),
                 "Sınıf Uyumu": _rc.get("Sınıf Uyumu"),
-                "Galop / Hazırlık": _rc.get("Galop / Hazırlık"),
                 "Kullanılan Bileşen": _rr.get("available_components", 0) if isinstance(_rr, dict) else 0,
                 "Kullanılan Ağırlık %": _rr.get("available_weight_pct", 0) if isinstance(_rr, dict) else 0,
                 "Eksik Bileşenler": ", ".join(_missing) if _missing else "Yok",
@@ -6288,7 +6274,7 @@ else:
             )
             st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
 
-        with st.expander("🎯 REYTİNG — aktif bileşen puanları ve ham TJK alanları", expanded=True):
+        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=True):
             rating_breakdown_rows = []
             component_names = [
                 "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
@@ -6354,7 +6340,7 @@ else:
             else:
                 st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
             st.caption(
-                "Tempo ve Ham Hız kullanıcı isteğiyle devre dışıdır. Bu tablo motorun kalan bileşenlerini gösterir. "
+                "Tempo, Ham Hız, Normalize Derece ve Galop kullanıcı isteğiyle devre dışıdır. Bu tablo motorun kalan bileşenlerini gösterir. "
                 "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
                 "Hedef koşu gününün sonucu hesaba katılmaz."
             )
@@ -6370,8 +6356,8 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Form %15 • Normalize Derece %5 • "
-    f"Pist/Mesafe %20 • Sınıf %19 • Galop %3 • Seçili koşu: {race_number}. koşu",
+    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Form %15 • "
+    f"Pist/Mesafe %20 • Sınıf %19 • Seçili koşu: {race_number}. koşu",
 )
 st.caption(
     "REYTİNG yalnızca yarış tarihinden önceki TJK geçmişi ve yarış öncesi galop verileriyle hesaplanır; aynı günkü sonuç REYTİNG'e girmez."
