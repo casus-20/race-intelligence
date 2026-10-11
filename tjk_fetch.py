@@ -747,13 +747,18 @@ def get_horse_enrichment(
     except Exception as exc:
         errors.append(f"horsedata: {exc}")
 
-    # Yedekler yalnızca ana uç eksik veri döndürdüyse çağrılır.
-    if not history and at_id not in (None, ""):
+    # Ana /horsedata ucu kısmi geçmiş döndürebilir. Sadece tamamen boşken değil,
+    # 6'dan az kayıt varsa da kimlikli /horse ucunu sorgula ve kayıtları birleştir.
+    fallback_history_count = 0
+    if at_id not in (None, "") and len(history) < 6:
         try:
             fallback = get_horse_history(at_id, timeout=max(timeout, 45))
-            if isinstance(fallback.get("history"), list):
-                history = fallback["history"]
-                source = source or "api/tjk/horse"
+            fallback_rows = fallback.get("history", []) if isinstance(fallback, dict) else []
+            if isinstance(fallback_rows, list):
+                fallback_history_count = len(fallback_rows)
+                if fallback_rows:
+                    history = list(history) + [r for r in fallback_rows if isinstance(r, dict)]
+                    source = (source + "+api/tjk/horse") if source else "api/tjk/horse"
         except Exception as exc:
             errors.append(f"horse: {exc}")
 
@@ -812,6 +817,11 @@ def get_horse_enrichment(
         "historyCount": len(clean_history),
         "workoutCount": len(clean_workouts),
         "historySource": source,
+        "fallbackHistoryCount": fallback_history_count,
+        "historyAttempts": data.get("historyAttempts", []) if isinstance(data, dict) else [],
+        "workoutAttempts": data.get("workoutAttempts", []) if isinstance(data, dict) else [],
+        "historyCandidateCounts": data.get("historyCandidateCounts", []) if isinstance(data, dict) else [],
+        "historyStatus": data.get("historyStatus") if isinstance(data, dict) else None,
     }
     if errors:
         result["error"] = " | ".join(dict.fromkeys(errors))
