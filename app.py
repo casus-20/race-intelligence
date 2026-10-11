@@ -2693,51 +2693,64 @@ def _rating_distance_component(
     target_distance: float | None,
     target_surface: str,
     target_date: Any,
-) -> float:
-    """Pist/mesafe = %35 mesafe + %30 pist + %20 benzer kilo + %15 güncellik."""
+) -> float | None:
+    """Pist/mesafe puanı: tek uygun geçmiş yarışla da hesaplanır.
+
+    Önce aynı pist ve hedef mesafedeki geçmiş yarışlar kullanılır. Bu mesafede
+    kayıt yoksa aynı pistte hedef mesafenin +/-100 m aralığına bakılır.
+    Hedef tarihten önceki kayıtlar _rating_history_before_target tarafından
+    filtrelenir. Derece alanı zorunlu değildir; sonuç, pist, mesafe ve diğer
+    bileşen verileri mevcutsa tek yarıştan da puan hesaplanabilir.
+    """
     history = _rating_history_before_target(horse, target_date)
-    if not history:
-        return 50.0
+    if not history or target_distance is None:
+        return None
+
+    surface_target = _rating_surface(target_surface)
+    same_surface = []
+    for row in history:
+        row_surface = _rating_surface(_rating_row_value(row, [
+            "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface",
+            "surfaceType", "surface_type", "trackType", "track_type"
+        ]))
+        dist = _rating_distance(row)
+        if surface_target and row_surface == surface_target and dist is not None:
+            same_surface.append((row, dist))
+
+    exact = [(row, dist) for row, dist in same_surface if abs(dist - target_distance) <= 0.01]
+    candidates = exact if exact else [
+        (row, dist) for row, dist in same_surface
+        if abs(dist - target_distance) <= 100
+    ]
+    if not candidates:
+        return None
 
     target_weight = _rating_target_weight(horse)
-    surface_target = _rating_surface(target_surface)
-
-    distance_vals = []
-    surface_vals = []
-    weight_vals = []
-    recency_vals = []
-
-    for row in history:
+    distance_vals, finish_vals, weight_vals, recency_vals = [], [], [], []
+    for row, dist in candidates:
         rec = _rating_recency_factor(row, target_date)
-        dist = _rating_distance(row)
-        rw = _rating_row_weight(row)
-        row_surface = _rating_surface(_rating_row_value(row, [
-            "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface"
-        ]))
-
         distance_vals.append((_rating_distance_proximity(dist, target_distance), rec))
-
-        if surface_target and row_surface == surface_target:
-            surface_vals.append((_rating_finish_points(_first_value(
-                row, ["place", "sira", "Sıra", "S"]
-            )), rec))
-
-        weight_vals.append((_rating_weight_similarity(rw, target_weight), rec))
+        place = _rating_place_number(_rating_row_value(row, [
+            "place", "sira", "Sıra", "S", "finishPosition", "finish_position", "rank"
+        ]))
+        if place is not None:
+            finish_vals.append((_rating_finish_points(place), rec))
+        rw = _rating_row_weight(row)
+        if rw is not None and target_weight is not None:
+            weight_vals.append((_rating_weight_similarity(rw, target_weight), rec))
         recency_vals.append((rec * 100.0, 1.0))
 
-    def weighted(vals, default=50.0):
-        if not vals:
-            return default
-        return sum(v*w for v,w in vals) / sum(w for _,w in vals)
+    def weighted(vals):
+        return sum(v*w for v, w in vals) / sum(w for _, w in vals) if vals else None
 
-    m = weighted(distance_vals)
-    p = weighted(surface_vals, 50.0)
-    k = weighted(weight_vals)
-    g = weighted(recency_vals)
-
-    return max(0.0, min(100.0,
-        0.35*m + 0.30*p + 0.20*k + 0.15*g
-    ))
+    # Ağırlıklar yalnız mevcut gerçek alt veriler arasında normalize edilir.
+    sub = [(weighted(distance_vals), 0.35), (weighted(finish_vals), 0.30),
+           (weighted(weight_vals), 0.20), (weighted(recency_vals), 0.15)]
+    available = [(value, weight) for value, weight in sub if value is not None]
+    if not available:
+        return None
+    total = sum(weight for _, weight in available)
+    return max(0.0, min(100.0, sum(value * weight for value, weight in available) / total))
 
 def _rating_time_seconds(value: Any) -> float | None:
     if value is None:
@@ -2947,12 +2960,9 @@ def _calculate_rating_for_race(
             for r in own_history
         ):
             components["Güncel Form"] = None
-        if not any(
-            _rating_distance(r) is not None
-            and _rating_surface(_rating_row_value(r, ["surface", "pist", "Pist", "Surface", "trackSurface", "track_surface", "surfaceType", "surface_type", "trackType", "track_type"])) == _rating_surface(target_surface)
-            and _rating_time_seconds(_rating_row_value(r, ["time", "derece", "Derece", "finishTime", "finish_time", "resultTime"])) is not None
-            for r in own_history
-        ):
+        # Pist/mesafe için derece alanını zorunlu tutma. Tek bir geçmiş
+        # yarış, aynı pistte hedef mesafe veya +/-100 m içindeyse yeterlidir.
+        if components.get("Pist / Mesafe") is None:
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
