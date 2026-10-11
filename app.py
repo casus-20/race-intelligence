@@ -6076,20 +6076,32 @@ else:
                 "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
                 "Pist / Mesafe", "Sınıf Uyumu",
             ]
-            for rating_item in rating_results:
-                hi = rating_item["horse_index"]
-                horse = _ranking_input[hi] if hi < len(_ranking_input) else {}
-                comps = rating_item.get("components", {})
+            # ÖNEMLİ: tabloyu rating_results üzerinden döndürme.
+            # Motor geçmişi olmayan atları bilinçli olarak rating_results dışına çıkarabilir.
+            # Tablo her zaman programdaki tüm atlar üzerinden kurulur; hesaplanamayan at da
+            # görünür ve nedeni belirtilir. Böylece koşudaki at sayısı değişince satır kaybolmaz.
+            _rating_result_by_index = {
+                int(item.get("horse_index")): item
+                for item in rating_results
+                if isinstance(item, dict) and item.get("horse_index") is not None
+            }
+            for hi, horse in enumerate(_ranking_input):
+                if not isinstance(horse, dict):
+                    continue
+                rating_item = _rating_result_by_index.get(hi)
+                comps = rating_item.get("components", {}) if isinstance(rating_item, dict) else {}
+                _history = _rating_history_before_target(horse, selected_date)
+                _has_score = isinstance(rating_item, dict) and rating_item.get("score") is not None
                 row = {
-                    "REYTİNG Sıra": rating_item.get("rank"),
+                    "REYTİNG Sıra": rating_item.get("rank") if _has_score else "—",
                     "No": get_horse_number(horse, hi + 1),
                     "At": get_horse_name(horse),
-                    "REYTİNG": rating_item.get("score"),
+                    "REYTİNG": rating_item.get("score") if _has_score else "HESAPLANMADI",
                 }
                 for name in component_names:
-                    row[name] = comps.get(name)
-                row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
-                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
+                    row[name] = comps.get(name) if _has_score else None
+                row["Kullanılan bileşen"] = rating_item.get("available_components", 0) if _has_score else 0
+                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0) if _has_score else 0
                 _history = _rating_history_before_target(horse, selected_date) if isinstance(horse, dict) else []
                 _class_aliases = [
                     "className", "class_name", "class", "classType", "class_type",
@@ -6123,7 +6135,11 @@ else:
                 row["İlk geçmiş kaydın alanları"] = " | ".join(_key_values[:70]) if _key_values else "Geçmiş kayıt yok"
                 row["Geçmiş kaynağı"] = horse.get("_history_source", "-") if isinstance(horse, dict) else "-"
                 row["Veri hatası"] = horse.get("_enrichment_error", "-") if isinstance(horse, dict) else "-"
-                row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
+                row["Eksik bileşenler"] = (
+                    ", ".join(name for name in component_names if comps.get(name) is None)
+                    if _has_score else "Hedef tarihten önce uygun geçmiş yarış yok / motor sonucu yok"
+                )
+                row["Hesaplama durumu"] = "Hesaplandı" if _has_score else "Hesaplanmadı — veri kontrolü gerekli"
                 rating_breakdown_rows.append(row)
             if rating_breakdown_rows:
                 st.dataframe(
