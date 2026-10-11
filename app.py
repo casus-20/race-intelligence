@@ -2131,11 +2131,15 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 # ============================================================
 
 _RATING_WEIGHTS = {
-    "Ortak Rakip + Kilo": 0.35,
+    "Ortak Rakip + Kilo": 0.25,
     "Kilo Uyumu": 0.05,
-    "Güncel Form": 0.25,
-    "Pist / Mesafe": 0.15,
-    "Sınıf Uyumu": 0.20,
+    "Güncel Form": 0.15,
+    "Normalize Derece": 0.05,
+    "Pist / Mesafe": 0.20,
+    "Sınıf Uyumu": 0.19,
+    "Tempo": 0.06,
+    "Galop / Hazırlık": 0.03,
+    "Ham Hız": 0.02,
 }
 
 _RATING_FORM_WEIGHTS = (0.30, 0.22, 0.17, 0.13, 0.10, 0.08)
@@ -3018,28 +3022,43 @@ def _calculate_rating_for_race(
     target_date = race.get("date")
     target_distance = _number(race.get("distance"))
     target_surface = display_value(race.get("surface"), "")
+    norm_degree = _rating_normalized_degree_scores(
+        horses, target_distance, target_surface, target_date
+    )
+    raw_speed_scores = _rating_raw_speed_scores(
+        horses, target_distance, target_surface, target_date
+    )
+    gallop_scores = _rating_gallop_scores(horses, target_date)
 
     results = []
     for idx, horse in enumerate(horses):
         if not isinstance(horse, dict):
             continue
 
-        # Kesin kural: hedef koşu tarihinden önce gerçek geçmiş yarış yoksa puan üretme.
-        own_history = _rating_history_before_target(horse, target_date)
-        if not own_history:
+        # KESİN KURAL:
+        # Hedef tarihten önce en az 1 gerçek yarış yoksa REYTİNG hesaplanmaz.
+        eligible_history = _rating_history_before_target(horse, target_date)
+        if not eligible_history:
             continue
 
         components = {
             "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
             "Güncel Form": _rating_all_history_form(horse, target_date),
+            "Normalize Derece": norm_degree.get(idx),
             "Pist / Mesafe": _rating_distance_component(
                 horse, target_distance, target_surface, target_date
             ),
             "Sınıf Uyumu": _rating_class_score(horse, race, target_date),
+            "Tempo": _rating_tempo_score(horse, horses, target_date),
+            "Galop / Hazırlık": gallop_scores.get(idx),
+            "Ham Hız": raw_speed_scores.get(idx),
         }
 
-        # Kaynakta gerçek veri yoksa ilgili bileşen puanlanmaz; hiçbir varsayılan puan atanmaz.
+        # Veri varlığını bileşen bazında doğrula. Kaynak veri yoksa 50 puan
+        # vermek yerine bileşeni eksik işaretle; veri toplama/enrichment
+        # katmanı (_history / _workouts) gerçek kayıtları sağlar.
+        own_history = _rating_history_before_target(horse, target_date)
         if not any(
             _rating_shared_race_keys(horse, other, target_date)
             for other in horses if isinstance(other, dict) and other is not horse
@@ -3060,12 +3079,19 @@ def _calculate_rating_for_race(
             and _rating_time_seconds(_rating_row_value(r, ["time", "derece", "Derece", "finishTime", "finish_time", "resultTime"])) is not None
             for r in own_history
         ):
+            components["Normalize Derece"] = None
+            components["Ham Hız"] = None
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
+        if not _rating_infer_style(own_history):
+            components["Tempo"] = None
+        if not horse.get("_workouts"):
+            components["Galop / Hazırlık"] = None
 
-        # Eksik bileşenlere 0/50 gibi sahte puan verilmez. Kalan gerçek bileşenlerin
-        # ağırlıkları kendi aralarında normalize edilir; detayda eksikler None kalır.
+        # Eksik veri için 50 puan uydurulmaz. Yalnız gerçek puanı hesaplanan
+        # bileşenler kullanılır; kalan ağırlıklar mevcut bileşenler arasında
+        # oranlı olarak yeniden dağıtılır. Bileşen detayı eksik olanı gösterir.
         available = {
             key: value for key, value in components.items()
             if isinstance(value, (int, float)) and math.isfinite(float(value))
@@ -3083,15 +3109,23 @@ def _calculate_rating_for_race(
         results.append({
             "horse_index": idx,
             "score": round(max(0.0, min(100.0, score)), 2),
-            "components": {
-                k: (round(float(v), 2) if isinstance(v, (int, float)) and math.isfinite(float(v)) else None)
-                for k, v in components.items()
-            },
+            "components": {k: (round(float(v), 2) if isinstance(v, (int, float)) and math.isfinite(float(v)) else None) for k,v in components.items()},
             "available_components": len(available),
             "available_weight_pct": round(weight_total * 100, 2),
         })
+
+    results.sort(key=lambda x: (-x["score"], x["horse_index"]))
+    for rank, item in enumerate(results, 1):
+        item["rank"] = rank
+        item["label"] = (
+            "ÇOK GÜÇLÜ" if item["score"] >= 80 else
+            "GÜÇLÜ" if item["score"] >= 70 else
+            "ORTA" if item["score"] >= 55 else
+            "ZAYIF"
+        )
     return results
 
+@st.cache_data(ttl=10800, show_spinner=False)
 def calculate_rating_cached(horses: List[Dict[str, Any]], race: Dict[str, Any]):
     """REYTİNG için 180 dk cache; anahtar yarış tarihi/koşu ve gerçek geçmişi içerir."""
     return _calculate_rating_for_race(horses, race)
@@ -6152,8 +6186,8 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "REYTİNG: Ortak Rakip + Kilo %35 • Kilo Uyumu %5 • Güncel Form %25 • "
-                "Pist / Mesafe %15 • Sınıf Uyumu %20. "
+                "REYTİNG: Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Güncel Form %15 • Normalize Derece %5 • "
+                "Pist/Mesafe %20 • Sınıf %19 • Tempo %6 • Galop %3 • Ham Hız %2. "
                 "Hesapta yalnızca hedef koşu tarihinden önceki veriler kullanılır."
             )
 
@@ -6168,8 +6202,8 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Ortak Rakip + Kilo %35 • Kilo Uyumu %5 • Güncel Form %25 • "
-    f"Pist / Mesafe %15 • Sınıf Uyumu %20 • Seçili koşu: {race_number}. koşu",
+    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Form %15 • Normalize Derece %5 • "
+    f"Pist/Mesafe %20 • Sınıf %19 • Tempo %6 • Galop %3 • Ham Hız %2 • Seçili koşu: {race_number}. koşu",
 )
 st.caption(
     "REYTİNG yalnızca yarış tarihinden önceki TJK geçmişi ve yarış öncesi galop verileriyle hesaplanır; aynı günkü sonuç REYTİNG'e girmez."
