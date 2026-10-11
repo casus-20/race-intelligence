@@ -2374,7 +2374,9 @@ def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
     """Aynı yarışta koşmuş atları geçmiş kayıtlarından eşleştirir."""
     dt = _rating_row_date(row)
     city = str(_rating_row_value(row, [
-        "city", "şehir", "Sehir", "hipodrom", "track", "trackName", "track_name"
+        "city", "cityName", "city_name", "şehir", "Sehir", "hipodrom",
+        "hippodrome", "hippodromeName", "hippodrome_name", "track",
+        "trackName", "track_name", "location", "venue"
     ]) or "").strip().lower()
     dist = _rating_distance(row)
     surface = _rating_surface(_rating_row_value(row, [
@@ -2382,8 +2384,9 @@ def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
         "surfaceType", "surface_type", "trackType", "track_type"
     ]))
     race_name = str(_rating_row_value(row, [
-        "raceName", "race_name", "kosu", "Koşu", "className", "class", "condition",
-        "raceCondition", "race_condition"
+        "raceName", "race_name", "kosu", "Koşu", "className", "class_name",
+        "raceClass", "race_class", "class", "condition", "raceCondition",
+        "race_condition", "raceType", "race_type"
     ]) or "").strip().lower()
     # Tarih + hipodrom + mesafe + pist temel anahtar.
     # Yarış adı varsa anahtarı güçlendirir, ancak boşsa eşleştirme yine yapılabilir.
@@ -2753,6 +2756,7 @@ def _rating_normalized_degree_scores(
             end = pos + 1
             while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
                 end += 1
+            # Artan hız sırası: en yavaş 0, en hızlı 100 puan alır.
             percentile = 100.0 * ((pos + end - 1) / 2) / (n - 1)
             for j in range(pos, end):
                 out[ordered[j][0]] = percentile
@@ -2792,14 +2796,22 @@ _RATING_CLASS_BASE = {
 
 def _rating_class_value(row: Dict[str, Any]) -> float | None:
     group = _rating_class_group(_rating_row_value(row, [
-        "className", "class", "sinif", "Sınıf", "raceName", "race_name", "kosu", "Koşu", "condition"
+        "className", "class_name", "class", "classType", "class_type",
+        "raceClass", "race_class", "raceClassName", "race_class_name",
+        "raceType", "race_type", "raceCondition", "race_condition",
+        "condition", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+        "raceName", "race_name", "kosu", "Koşu", "name", "title"
     ]))
     base = _RATING_CLASS_BASE.get(group)
     if base is None:
         # H ve KV gibi sınıflar tablo dışında kalırsa mevcut sınıf
         # dönüştürücüsünü kullanmayı dene.
         raw = _rating_row_value(row, [
-            "className", "class", "sinif", "Sınıf", "raceName", "race_name", "kosu", "Koşu", "condition"
+            "className", "class_name", "class", "classType", "class_type",
+            "raceClass", "race_class", "raceClassName", "race_class_name",
+            "raceType", "race_type", "raceCondition", "race_condition",
+            "condition", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+            "raceName", "race_name", "kosu", "Koşu", "name", "title"
         ])
         lv = _class_level_from_text(raw)
         if lv is not None:
@@ -2813,7 +2825,11 @@ def _rating_class_value(row: Dict[str, Any]) -> float | None:
     return base * factor
 
 def _rating_target_class_value(race: Dict[str, Any]) -> float:
-    raw = get_race_condition(race)
+    raw = _rating_row_value(race, [
+        "condition", "raceCondition", "race_condition", "className",
+        "class_name", "raceClass", "race_class", "raceType", "race_type",
+        "raceName", "race_name", "kosu", "Koşu", "class"
+    ]) or get_race_condition(race)
     group = _rating_class_group(raw)
     if group in _RATING_CLASS_BASE:
         return _RATING_CLASS_BASE[group]
@@ -2846,8 +2862,10 @@ def _rating_class_score(
 
 def _rating_style_value(row: Dict[str, Any]) -> str:
     text = str(_rating_row_value(row, [
-        "style", "runningStyle", "running_style", "koşuStili", "kosuStili",
-        "stili", "stil", "position", "pozisyon"
+        "style", "runningStyle", "running_style", "runningStyleName",
+        "running_style_name", "raceStyle", "race_style", "koşuStili",
+        "kosuStili", "stili", "stil", "position", "pozisyon",
+        "racePosition", "race_position", "earlyPosition", "early_position"
     ]) or "").lower()
     if any(x in text for x in ("önde", "onde", "lider", "front")): return "front"
     if any(x in text for x in ("takip", "lideri takip", "stalker")): return "stalker"
@@ -2957,6 +2975,7 @@ def _rating_gallop_scores(horses: List[Dict[str, Any]], target_date: Any) -> dic
         end = pos + 1
         while end < n and abs(ordered[end][1] - ordered[pos][1]) < 1e-9:
             end += 1
+        # Artan hız sırası: en yavaş 0, en hızlı 100 puan alır.
         score = 100.0 * ((pos + end - 1) / 2) / (n - 1)
         for j in range(pos, end):
             out[ordered[j][0]] = score
@@ -6257,6 +6276,20 @@ else:
                     row[name] = comps.get(name)
                 row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
                 row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
+                _history = _rating_history_before_target(horse, selected_date) if isinstance(horse, dict) else []
+                _class_aliases = [
+                    "className", "class_name", "class", "classType", "class_type",
+                    "raceClass", "race_class", "raceClassName", "race_class_name",
+                    "raceType", "race_type", "raceCondition", "race_condition",
+                    "condition", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+                    "raceName", "race_name", "kosu", "Koşu", "name", "title"
+                ]
+                _raw_classes = []
+                for _hr in _history:
+                    _cv = _rating_row_value(_hr, _class_aliases)
+                    if _cv not in (None, ""):
+                        _raw_classes.append(str(_cv))
+                row["Örnek geçmiş sınıf verisi"] = " | ".join(_raw_classes[:3]) if _raw_classes else "Bulunamadı"
                 row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
                 rating_breakdown_rows.append(row)
             if rating_breakdown_rows:
