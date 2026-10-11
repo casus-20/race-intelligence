@@ -6263,7 +6263,7 @@ else:
             )
             st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
 
-        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=True):
+        with st.expander("🎯 REYTİNG — aktif bileşen puanları ve ham TJK alanları", expanded=True):
             rating_breakdown_rows = []
             component_names = [
                 "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
@@ -6303,6 +6303,20 @@ else:
                     if _cv not in (None, ""):
                         _raw_classes.append(str(_cv))
                 row["Örnek geçmiş sınıf verisi"] = " | ".join(_raw_classes[:3]) if _raw_classes else "Bulunamadı"
+                # Gerçek TJK şemasını görmek için en yakın geçmiş kaydın alan adlarını ve değerlerini göster.
+                # Bu, yanlışlıkla sahip/antrenör adını sınıf olarak yorumlamayı engelleyen teşhis bilgisidir.
+                _first_history = _history[0] if _history and isinstance(_history[0], dict) else {}
+                _key_values = []
+                for _k, _v in _first_history.items():
+                    if isinstance(_v, (str, int, float, bool)) or _v is None:
+                        _key_values.append(f"{_k}={_v}")
+                    elif isinstance(_v, dict):
+                        _key_values.append(f"{_k}=<dict:{','.join(str(x) for x in list(_v.keys())[:12])}>")
+                    elif isinstance(_v, list):
+                        _key_values.append(f"{_k}=<list:{len(_v)}>")
+                row["İlk geçmiş kaydın alanları"] = " | ".join(_key_values[:70]) if _key_values else "Geçmiş kayıt yok"
+                row["Geçmiş kaynağı"] = horse.get("_history_source", "-") if isinstance(horse, dict) else "-"
+                row["Veri hatası"] = horse.get("_enrichment_error", "-") if isinstance(horse, dict) else "-"
                 row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
                 rating_breakdown_rows.append(row)
             if rating_breakdown_rows:
