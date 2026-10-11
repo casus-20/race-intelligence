@@ -1261,20 +1261,20 @@ def enrich_race_horses(
             item.get("idAt") or item.get("id_at") or item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
-        if not at_id:
+        if not at_id and not name:
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK at kimliği bulunamadı (atId/AtId/atID/horseId alanları kontrol edildi); geçmiş çekilemedi."
+            item["_enrichment_error"] = "TJK at kimliği ve adı bulunamadı; geçmiş çekilemedi."
             return idx, item, name
 
         try:
-            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
+            data = load_horse_enrichment(str(at_id or ""), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
-        item["_at_id"] = str(at_id)
+        item["_at_id"] = str(at_id or "")
         item["_history"] = history if isinstance(history, list) else []
         item["_workouts"] = workouts if isinstance(workouts, list) else []
         item["_enrichment_error"] = str(data.get("error") or "-") if isinstance(data, dict) else "-"
