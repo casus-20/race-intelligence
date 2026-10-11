@@ -6213,7 +6213,7 @@ else:
             )
             st.caption(summary)
 
-        with st.expander("📊 Puan kırılımını göster"):
+        with st.expander("📊 BİZİM SKOR — puan kırılımı", expanded=False):
             breakdown_rows = []
             for item in ranking:
                 horse = horses[item["horse_index"]]
@@ -6221,20 +6221,57 @@ else:
                     "Sıra": item["rank"],
                     "No": get_horse_number(horse, item["horse_index"] + 1),
                     "At": get_horse_name(horse),
-                    "Puan": item["score"],
+                    "BİZİM SKOR": item["score"],
                 }
-                row.update({k: round(v, 1) for k, v in item["components"].items()})
+                row.update({
+                    k: (round(float(v), 1) if isinstance(v, (int, float)) else v)
+                    for k, v in item.get("components", {}).items()
+                })
                 breakdown_rows.append(row)
             st.dataframe(
                 pd.DataFrame(breakdown_rows),
                 use_container_width=True,
                 hide_index=True,
-                column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
+                column_config={"BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f")},
             )
+            st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
+
+        with st.expander("🎯 REYTİNG — gerçek 9 bileşen puanları", expanded=True):
+            rating_breakdown_rows = []
+            component_names = [
+                "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
+                "Normalize Derece", "Pist / Mesafe", "Sınıf Uyumu",
+                "Tempo", "Galop / Hazırlık", "Ham Hız",
+            ]
+            for rating_item in rating_results:
+                hi = rating_item["horse_index"]
+                horse = _ranking_input[hi] if hi < len(_ranking_input) else {}
+                comps = rating_item.get("components", {})
+                row = {
+                    "REYTİNG Sıra": rating_item.get("rank"),
+                    "No": get_horse_number(horse, hi + 1),
+                    "At": get_horse_name(horse),
+                    "REYTİNG": rating_item.get("score"),
+                }
+                for name in component_names:
+                    row[name] = comps.get(name)
+                row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
+                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
+                row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
+                rating_breakdown_rows.append(row)
+            if rating_breakdown_rows:
+                st.dataframe(
+                    pd.DataFrame(rating_breakdown_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"REYTİNG": st.column_config.NumberColumn("REYTİNG", format="%.2f")},
+                )
+            else:
+                st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
             st.caption(
-                "REYTİNG: Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Güncel Form %15 • Normalize Derece %5 • "
-                "Pist/Mesafe %20 • Sınıf %19 • Tempo %6 • Galop %3 • Ham Hız %2. "
-                "Hesapta yalnızca hedef koşu tarihinden önceki veriler kullanılır."
+                "Bu tablo doğrudan REYTİNG motorunun döndürdüğü bileşenleri gösterir. "
+                "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
+                "Hedef koşu gününün sonucu hesaba katılmaz."
             )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
