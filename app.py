@@ -5988,8 +5988,8 @@ else:
                 column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
             )
             st.caption(
-                "REYTİNG: Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Güncel Form %15 • Normalize Derece %5 • "
-                "Pist/Mesafe %20 • Sınıf %19 • Tempo %6 • Galop %3 • Ham Hız %2. "
+                "REYTİNG: Ortak Rakip+Kilo %35 • Kilo Uyumu %5 • Güncel Form %25 • "
+                "Pist/Mesafe %15 • Sınıf Uyumu %20. Toplam %100. "
                 "Hesapta yalnızca hedef koşu tarihinden önceki veriler kullanılır."
             )
 
@@ -6004,11 +6004,11 @@ else:
 
 st.markdown("---")
 st.markdown(
-    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %25 • Kilo Uyumu %5 • Form %15 • Normalize Derece %5 • "
-    f"Pist/Mesafe %20 • Sınıf %19 • Tempo %6 • Galop %3 • Ham Hız %2 • Seçili koşu: {race_number}. koşu",
+    f"**REYTİNG MOTORU:** Ortak Rakip+Kilo %35 • Kilo Uyumu %5 • Güncel Form %25 • "
+    f"Pist/Mesafe %15 • Sınıf Uyumu %20 • Toplam %100 • Seçili koşu: {race_number}. koşu",
 )
 st.caption(
-    "REYTİNG yalnızca yarış tarihinden önceki TJK geçmişi ve yarış öncesi galop verileriyle hesaplanır; aynı günkü sonuç REYTİNG'e girmez."
+    "REYTİNG yalnızca beş aktif bileşeni ve hedef yarış tarihinden önceki geçmiş yarışları kullanır; Normalize Derece, Galop/Hazırlık, Tempo ve Ham Hız puana katılmaz. Aynı günkü sonuç hesaba girmez."
 )
 
 # ============================================================
