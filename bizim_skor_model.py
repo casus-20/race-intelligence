@@ -109,7 +109,74 @@ def _class(r):return _norm(_first(r,["className","class","sinif","Sınıf","race
 def _city(r):return _norm(_first(r,["city","şehir","sehir","hipodrom"],""))
 def _name(r,keys):return _norm(_first(r,keys,""))
 def _history(h):return [r for r in h.get("_history",[]) if isinstance(r,dict)] if isinstance(h.get("_history",[]),list) else []
+
+def _history_before_target(rows, target_date):
+    """Return only races strictly before the target race date.
+
+    HARD RULE:
+      target = T
+      eligible history = race_date < T
+
+    Therefore:
+      - same-day race (T) is NEVER used
+      - future race (>T) is NEVER used
+      - previous-day race (T-1) IS used
+      - older races are IS used
+
+    If the target date cannot be parsed, return no history rather than
+    silently using unrestricted history.
+    """
+    td = _dt(target_date)
+    if td is None:
+        return []
+
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+
+        rd = _dt(_first(
+            r,
+            ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"],
+            None,
+        ))
+
+        # A historical record without a valid date cannot be proven to be
+        # older than the target race, so it is excluded.
+        if rd is None:
+            continue
+
+        if rd < td:
+            out.append(r)
+
+    return out
+
 def _workouts(h):return [r for r in h.get("_workouts",[]) if isinstance(r,dict)] if isinstance(h.get("_workouts",[]),list) else []
+
+
+def history_cutoff_diagnostic(horse, target_date):
+    """Return counts proving the strict target-date cutoff used by the model."""
+    all_rows = _history(horse)
+    eligible = _history_before_target(all_rows, target_date)
+    td = _dt(target_date)
+
+    same_or_future = 0
+    undated = 0
+    for r in all_rows:
+        rd = _dt(_first(r, ["date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi"], None))
+        if rd is None:
+            undated += 1
+        elif td is not None and rd >= td:
+            same_or_future += 1
+
+    return {
+        "target_date": td.isoformat() if td else None,
+        "total_history": len(all_rows),
+        "eligible_history": len(eligible),
+        "excluded_same_day_or_future": same_or_future,
+        "excluded_undated": undated,
+        "rule": "race_date < target_date",
+    }
 
 
 def _mean(xs):
@@ -203,11 +270,18 @@ def class_base_points(value):
 
 
 def finish_factor(place):
+    """Derece sonuç katsayısı:
+    1. -> 1.00, 2. -> 0.90, 3. -> 0.80,
+    4. -> 0.70, 5. -> 0.60, 6.+ -> 0.50.
+    """
     p = _place({"place": place})
-    if p is None: return None
+    if p is None:
+        return None
     p = int(p)
-    if p in FINISH_FACTOR: return FINISH_FACTOR[p]
-    if p >= 6: return .50
+    if p in FINISH_FACTOR:
+        return FINISH_FACTOR[p]
+    if p >= 6:
+        return 0.50
     return None
 
 
@@ -277,88 +351,118 @@ def score_guncel_form(prior):
     return max(0.0,min(100.0,100.0*sum(vals)/denom))
 
 
-def score_start_kulvar(prior,target):
-    """Start/Kulvar bileşeni: 0-50 puan.
+def score_start_kulvar(prior, target):
+    """Start/Kulvar: maksimum 50 puan.
 
-    Ağırlıklar:
-      %35 aynı kulvar geçmiş performansı
-      %25 aynı kulvar + benzer mesafe
-      %20 aynı kulvar + aynı pist
-      %10 koşudaki at sayısına göre kulvar avantajı
-      %10 güncellik
-
-    Yalnızca `prior` içindeki geçmiş yarışlar kullanılır; hedef yarış ve
-    hedef tarih sonrası kayıtlar bu fonksiyona sokulmaz.
+    %35 aynı kulvar geçmiş performansı
+    %25 aynı kulvar + ±200 m mesafe
+    %20 aynı kulvar + aynı pist
+    %10 bugünkü koşudaki at sayısına göre kulvar konumu
+    %10 güncellik
     """
-    post=_num(_first(target,["post","st","start","kulvar"],None))
-    if post is None: return 0.0
+    post = _num(_first(target, ["post", "st", "start", "kulvar"], None))
+    if post is None:
+        return 0.0
 
-    # Bugünkü koşudaki at sayısını mümkün olan alanlardan al.
-    field_size=_num(_first(target,["field_size","horse_count","at_sayisi","runner_count"],None))
-    if field_size is None:
-        horses=target.get("horses") if isinstance(target,dict) else None
-        if isinstance(horses,list): field_size=float(len(horses))
+    same_post = [
+        r for r in prior
+        if _num(_first(r, ["post", "st", "start", "kulvar"], None)) == post
+        and _place(r) is not None
+    ]
+    if not same_post:
+        return 0.0
 
-    rows=[r for r in prior
-          if _num(_first(r,["post","st","start","kulvar"],None))==post
-          and _place(r) is not None]
-    if not rows: return 0.0
+    target_dist = _dist(target)
+    target_surface = _surface(target)
 
-    target_dist=_dist(target)
-    target_surface=_surface(target)
+    # %35 — aynı kulvar geçmiş performansı
+    base = _rate_score(same_post) or 0.0
 
-    # 1) Aynı kulvar geçmiş performansı — %35
-    base=_rate_score(rows) or 0.0
+    # %25 — aynı kulvar + benzer mesafe
+    near = [
+        r for r in same_post
+        if target_dist is not None
+        and _dist(r) is not None
+        and abs(_dist(r) - target_dist) <= 200
+    ]
+    near_score = _rate_score(near) or 0.0
 
-    # 2) Aynı kulvar + benzer mesafe — %25
-    near_dist=[]
-    if target_dist is not None:
-        near_dist=[r for r in rows
-                   if _dist(r) is not None and abs(_dist(r)-target_dist)<=200]
-    distance_score=_rate_score(near_dist) if near_dist else base
-    distance_score=distance_score or 0.0
+    # %20 — aynı kulvar + aynı pist
+    same_surface = [
+        r for r in same_post
+        if target_surface and _surface(r) == target_surface
+    ]
+    surface_score = _rate_score(same_surface) or 0.0
 
-    # 3) Aynı kulvar + aynı pist — %20
-    same_surface=[r for r in rows if target_surface and _surface(r)==target_surface]
-    surface_score=_rate_score(same_surface) if same_surface else base
-    surface_score=surface_score or 0.0
-
-    # 4) Koşudaki at sayısına göre kulvar avantajı — %10.
-    # İç kulvarlar kısa/orta koşularda daha avantajlı kabul edilir;
-    # geniş alanlı koşularda kulvar etkisi nötrleştirilir. Bu bileşen
-    # yalnızca bugünkü kulvar ve saha büyüklüğünden türetilir.
-    if field_size is None or field_size<=1:
-        field_score=0.50
+    # %10 — bugünkü koşudaki at sayısına göre kulvar konumu
+    field_size = _num(_first(
+        target,
+        ["horse_count", "horseCount", "field_size", "fieldSize",
+         "at_sayisi", "atSayisi"],
+        None,
+    ))
+    if field_size is not None and field_size >= 2:
+        field_score = max(
+            0.0,
+            min(1.0, 1.0 - ((post - 1.0) / (field_size - 1.0))),
+        )
     else:
-        # Kulvarın saha içindeki göreli konumu: 1 en iç, N en dış.
-        relative=(post-1.0)/(field_size-1.0)
-        field_score=max(0.0,min(1.0,1.0-0.50*relative))
+        field_score = 0.0
 
-    # 5) Güncellik — %10. En yeni aynı kulvar yarışları daha etkili.
-    dated=[]
-    for r in rows:
-        d=_dt(_first(r,["date","tarih"],None))
-        if d is not None:
-            dated.append((d,r))
-    dated.sort(key=lambda x:x[0],reverse=True)
-    recency_weights=[1.00,.85,.70,.55,.40]
-    rec_vals=[]
-    for w,(_,r) in zip(recency_weights,dated[:5]):
-        ff=finish_factor(_place(r))
-        if ff is not None: rec_vals.append((w,ff))
-    if rec_vals:
-        recency_score=sum(w*ff for w,ff in rec_vals)/sum(w for w,_ in rec_vals)
-    else:
-        recency_score=base
+    # %10 — güncellik
+    target_date = _dt(_first(
+        target, ["date", "tarih", "Tarih"], None
+    ))
+    recency_values = []
+    recency_weights = []
 
-    total=(
-        0.35*base
-        +0.25*distance_score
-        +0.20*surface_score
-        +0.10*field_score
-        +0.10*recency_score
+    if target_date is not None:
+        for r in same_post:
+            rd = _dt(_first(
+                r,
+                ["date", "tarih", "Tarih", "raceDate",
+                 "race_date", "kosuTarihi"],
+                None,
+            ))
+            ff = finish_factor(_place(r))
+            if rd is None or ff is None:
+                continue
+
+            days = (target_date - rd).days
+            if days < 0:
+                continue
+
+            if days <= 30:
+                rw = 1.00
+            elif days <= 60:
+                rw = 0.90
+            elif days <= 90:
+                rw = 0.80
+            elif days <= 180:
+                rw = 0.65
+            elif days <= 365:
+                rw = 0.50
+            else:
+                rw = 0.30
+
+            recency_values.append(ff * rw)
+            recency_weights.append(rw)
+
+    recency_score = (
+        max(0.0, min(1.0, sum(recency_values) / sum(recency_weights)))
+        if recency_values and recency_weights
+        else 0.0
     )
-    return max(0.0,min(50.0,50.0*total))
+
+    normalized = (
+        0.35 * base
+        + 0.25 * near_score
+        + 0.20 * surface_score
+        + 0.10 * field_score
+        + 0.10 * recency_score
+    )
+
+    return max(0.0, min(50.0, 50.0 * normalized))
 
 
 def _current_values(horse,race):
@@ -368,7 +472,10 @@ def _current_values(horse,race):
         "condition":race.get("condition") or race.get("raceName") or (race.get("meta") or {}).get("detail",""),
         "date":race.get("date") or race.get("tarih"),
     }
-    prior=_history(horse)
+    # KRİTİK TARİH KURALI:
+    # Hedef koşunun yapıldığı gün kesinlikle kullanılmaz.
+    # Yalnızca bir gün önce ve daha eski yarışlar kullanılır.
+    prior=_history_before_target(_history(horse), target.get("date"))
     condition_total, groups=calculate_condition_score(prior)
     return {
         "kosu_sarti_uyumu": condition_total,
@@ -415,7 +522,7 @@ def calculate_bizim_ranking(horses,race):
                     "pist_mesafe":100,"pist_performansi":100,
                     "guncel_form":100,"start_kulvar":50,
                 },
-                "minimum_prior_races":0,
+                "minimum_prior_races":0, "history_cutoff":"strictly_before_target_date",
             }
         })
     results.sort(key=lambda x:x["score"],reverse=True)
