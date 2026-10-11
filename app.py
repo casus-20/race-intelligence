@@ -2880,11 +2880,28 @@ def _calculate_rating_for_race(
         # vermek yerine bileşeni eksik işaretle; veri toplama/enrichment
         # katmanı (_history / _workouts) gerçek kayıtları sağlar.
         own_history = _rating_history_before_target(horse, target_date)
-        if not any(
+        # Ortak rakip bulunamadığında bileşeni None bırakma: bu durum tek başına
+        # diğer geçmiş verilerin eksik olduğu anlamına gelmez. Aynı bileşen için
+        # açıkça tanımlı yedek hesap kullan: %65 güncel geçmiş performansı,
+        # %35 bugünkü kilo avantajı/uyumu. Ortak rakip gerçekten bulunduğunda
+        # yukarıda hesaplanan doğrudan karşılaştırma puanı aynen korunur.
+        _has_shared_opponent = any(
             _rating_shared_race_keys(horse, other, target_date)
             for other in horses if isinstance(other, dict) and other is not horse
-        ):
-            components["Ortak Rakip + Kilo"] = None
+        )
+        if not _has_shared_opponent:
+            _fallback_form = _rating_all_history_form(horse, target_date)
+            _fallback_weight = _rating_weight_score(horse, horses, target_date)
+            if _fallback_form is not None and _fallback_weight is not None:
+                components["Ortak Rakip + Kilo"] = round(
+                    0.65 * float(_fallback_form) + 0.35 * float(_fallback_weight), 2
+                )
+            elif _fallback_form is not None:
+                components["Ortak Rakip + Kilo"] = float(_fallback_form)
+            elif _fallback_weight is not None:
+                components["Ortak Rakip + Kilo"] = float(_fallback_weight)
+            else:
+                components["Ortak Rakip + Kilo"] = None
         if _rating_target_weight(horse) is None or not any(
             _rating_row_weight(r) is not None for r in own_history
         ):
