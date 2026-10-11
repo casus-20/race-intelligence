@@ -1193,23 +1193,35 @@ def get_horse_form(
 # GERÇEK VERİ ZENGİNLEŞTİRME
 # ============================================================
 
-@st.cache_data(ttl=10800, show_spinner=False)
 def load_horse_enrichment(
     at_id: str,
     horse_name: str,
+    target_date: Any = None,
+    target_city: str = "",
+    target_distance: Any = None,
+    target_surface: str = "",
+    target_class: str = "",
 ) -> Dict[str, Any]:
+    """TJK zenginleştirmesi: başarısız/boş yanıtları cache'leme."""
     try:
-        # Cache anahtarı yalnızca at kimliği + isimdir.
-        # Hız sürümünde gerçek TJK geçmişi doğrudan alınır;
-        # yarış parametreleri burada kullanılmaz.
-        return get_horse_enrichment(at_id, horse_name)
+        data = get_horse_enrichment(
+            at_id, horse_name,
+            target_date=target_date,
+            target_city=target_city,
+            target_distance=target_distance,
+            target_surface=target_surface,
+            target_class=target_class,
+        )
+        # Hata veya boş geçmiş döndüyse sonraki rerun'da yeniden TJK'ya sor.
+        # Başarılı yanıtlar Streamlit session_state içinde tutulur; başka koşuya
+        # ait bağlamın yanlışlıkla kullanılmasını engellemek için bağlam anahtarlı.
+        if isinstance(data, dict) and data.get("history"):
+            cache = st.session_state.setdefault("_tjk_enrichment_success", {})
+            cache_key = (str(at_id), str(horse_name), str(target_date), str(target_city), str(target_distance), str(target_surface), str(target_class))
+            cache[cache_key] = data
+        return data if isinstance(data, dict) else {"ok": False, "history": [], "workouts": [], "error": "TJK yanıt biçimi geçersiz."}
     except Exception as exc:
-        return {
-            "ok": False,
-            "history": [],
-            "workouts": [],
-            "error": str(exc),
-        }
+        return {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
 
 def enrich_race_horses(
@@ -1250,16 +1262,69 @@ def enrich_race_horses(
             return idx, item, name
 
         try:
-            data = load_horse_enrichment(str(at_id), name)
+            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
+        history = history if isinstance(history, list) else []
+        workouts = workouts if isinstance(workouts, list) else []
+
+        # İKİNCİ KONTROL: boş veya temel yarış alanları eksik geçmişte aynı atı
+        # yeniden sorgula. İkinci yanıttaki gerçek kayıtları ilk yanıtla birleştir;
+        # aynı yarış iki kez sayılmaz. Hiçbir alan/puan uydurulmaz.
+        def _history_key(row):
+            if not isinstance(row, dict):
+                return (str(row),)
+            return tuple(str(_first_value(row, keys, "") or "").strip().casefold() for keys in (
+                ["date", "tarih", "Tarih"], ["city", "hipodrom", "track", "pist"],
+                ["raceNo", "race_no", "kosuNo", "koşuNo"], ["distance", "mesafe"],
+                ["place", "sira", "Sıra", "finishPosition", "rank"], ["time", "derece", "finishTime"]
+            ))
+        def _history_needs_retry(rows):
+            if not rows:
+                return True
+            valid = [r for r in rows if isinstance(r, dict)]
+            if not valid:
+                return True
+            aliases = {
+                "date": ["date", "tarih", "Tarih"],
+                "place": ["place", "sira", "Sıra", "finishPosition", "finish_position", "rank"],
+                "distance": ["distance", "mesafe", "Distance"],
+                "class": ["condition", "conditionName", "className", "raceClass", "raceType", "kosu", "class"],
+                "weight": ["weight", "kilo", "Kilo", "carriedWeight", "carried_weight"],
+            }
+            # Yeniden sorgu, boş veya sınıf/sonuç/tarih alanları topluca eksikse yapılır.
+            missing = sum(not any(_first_value(r, keys) not in (None, "", "-") for r in valid for keys in [aliases[field]]) for field in aliases)
+            return missing >= 2
+        retry_note = ""
+        if _history_needs_retry(history):
+            try:
+                retry_data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
+                retry_history = retry_data.get("history", []) if isinstance(retry_data, dict) else []
+                retry_workouts = retry_data.get("workouts", []) if isinstance(retry_data, dict) else []
+                if isinstance(retry_history, list):
+                    merged = {_history_key(r): r for r in history if isinstance(r, dict)}
+                    for r in retry_history:
+                        if isinstance(r, dict):
+                            merged.setdefault(_history_key(r), r)
+                    history = list(merged.values())
+                if isinstance(retry_workouts, list):
+                    seen = {str(r) for r in workouts}
+                    workouts.extend(r for r in retry_workouts if str(r) not in seen)
+                if not history:
+                    retry_note = str((retry_data or {}).get("error") or "İkinci TJK kontrolünde de geçmiş kayıt dönmedi.")
+                data = retry_data if len(history) == len(retry_history or []) and isinstance(retry_data, dict) else (data if isinstance(data, dict) else {})
+            except Exception as retry_exc:
+                retry_note = f"İkinci TJK kontrolü başarısız: {retry_exc}"
+
         item["_at_id"] = str(at_id)
-        item["_history"] = history if isinstance(history, list) else []
-        item["_workouts"] = workouts if isinstance(workouts, list) else []
-        item["_enrichment_error"] = str(data.get("error") or "-") if isinstance(data, dict) else "-"
+        item["_history"] = history
+        item["_workouts"] = workouts
+        item["_history_retry_checked"] = True
+        item["_history_retry_note"] = retry_note
+        item["_enrichment_error"] = str(data.get("error") or retry_note or "-") if isinstance(data, dict) else (retry_note or "-")
         if isinstance(data, dict) and data.get("historySource"):
             item["_history_source"] = data.get("historySource")
 
@@ -1806,12 +1871,13 @@ def last_race_detail(horse: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _first_value(row: Dict[str, Any], keys: List[str]) -> Any:
+def _first_value(row: Dict[str, Any], keys: List[str], default: Any = "") -> Any:
+    """Return the first non-empty field; use default when none is present."""
     for key in keys:
         value = row.get(key)
         if value not in (None, ""):
             return value
-    return ""
+    return default
 
 
 def _html_real_table(df: pd.DataFrame, widths=None) -> None:
@@ -4365,6 +4431,47 @@ else:
     rating_results = calculate_rating_cached(_ranking_input, selected_race)
     rating_by_index = {item["horse_index"]: item for item in rating_results}
 
+    # REYTİNG TEŞHİS TABLOSU: gerçek motor ara puanlarını ve eksik bileşenleri gösterir.
+    # Yalnızca görüntüleme amaçlıdır; REYTİNG hesabını veya sıralamayı değiştirmez.
+    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=False):
+        _rating_debug_rows = []
+        _rating_component_names = [
+            "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
+            "Pist / Mesafe", "Sınıf Uyumu",
+        ]
+        for _ri, _rh in enumerate(_ranking_input):
+            if not isinstance(_rh, dict):
+                continue
+            _rr = rating_by_index.get(_ri)
+            _rc = _rr.get("components", {}) if isinstance(_rr, dict) else {}
+            _missing = [name for name in _rating_component_names if _rc.get(name) is None]
+            _rating_debug_rows.append({
+                "At No": get_horse_number(_rh, _ri + 1),
+                "At": get_horse_name(_rh),
+                "REYTİNG": _rr.get("score", "HESAPLANMADI") if isinstance(_rr, dict) else "HESAPLANMADI",
+                "Ortak Rakip + Kilo": _rc.get("Ortak Rakip + Kilo"),
+                "Kilo Uyumu": _rc.get("Kilo Uyumu"),
+                "Güncel Form": _rc.get("Güncel Form"),
+                "Pist / Mesafe": _rc.get("Pist / Mesafe"),
+                "Sınıf Uyumu": _rc.get("Sınıf Uyumu"),
+                "Kullanılan Bileşen": _rr.get("available_components", 0) if isinstance(_rr, dict) else 0,
+                "Kullanılan Ağırlık %": _rr.get("available_weight_pct", 0) if isinstance(_rr, dict) else 0,
+                "Eksik Bileşenler": ", ".join(_missing) if _missing else "Yok",
+                "Geçmiş Yarış Sayısı": len(_rating_history_before_target(_rh, selected_date)),
+                "Galop Kaydı": len(_rh.get("_workouts", [])) if isinstance(_rh.get("_workouts"), list) else 0,
+                "Veri Kaynağı": _rh.get("_history_source", "-"),
+                "Veri Hatası": _rh.get("_enrichment_error", "-"),
+            })
+        if _rating_debug_rows:
+            _rating_debug_df = pd.DataFrame(_rating_debug_rows)
+            st.dataframe(_rating_debug_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Bu tablo motorun mevcut hesaplamasını gösterir; hesaplama mantığını değiştirmez. "
+                "Boş bileşenler puana katılmamıştır; kullanılan ağırlık kalan bileşenler arasında yeniden dağıtılmıştır."
+            )
+        else:
+            st.warning("REYTİNG teşhisi için at verisi bulunamadı.")
+
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
     by_index = {item["horse_index"]: item for item in ranking}
@@ -5969,7 +6076,7 @@ else:
             )
             st.caption(summary)
 
-        with st.expander("📊 Puan kırılımını göster"):
+        with st.expander("📊 BİZİM SKOR — puan kırılımı", expanded=False):
             breakdown_rows = []
             for item in ranking:
                 horse = horses[item["horse_index"]]
@@ -5977,20 +6084,90 @@ else:
                     "Sıra": item["rank"],
                     "No": get_horse_number(horse, item["horse_index"] + 1),
                     "At": get_horse_name(horse),
-                    "Puan": item["score"],
+                    "BİZİM SKOR": item["score"],
                 }
-                row.update({k: round(v, 1) for k, v in item["components"].items()})
+                row.update({
+                    k: (round(float(v), 1) if isinstance(v, (int, float)) else v)
+                    for k, v in item.get("components", {}).items()
+                })
                 breakdown_rows.append(row)
             st.dataframe(
                 pd.DataFrame(breakdown_rows),
                 use_container_width=True,
                 hide_index=True,
-                column_config={"Puan": st.column_config.NumberColumn("Puan", format="%.2f")},
+                column_config={"BİZİM SKOR": st.column_config.NumberColumn("BİZİM SKOR", format="%.2f")},
             )
+            st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
+
+        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=True):
+            rating_breakdown_rows = []
+            # Bu tabloda yalnızca motorda gerçekten kullanılan beş bileşen gösterilir.
+            component_names = [
+                "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
+                "Pist / Mesafe", "Sınıf Uyumu",
+            ]
+            for rating_item in rating_results:
+                hi = rating_item["horse_index"]
+                horse = _ranking_input[hi] if hi < len(_ranking_input) else {}
+                comps = rating_item.get("components", {})
+                row = {
+                    "REYTİNG Sıra": rating_item.get("rank"),
+                    "No": get_horse_number(horse, hi + 1),
+                    "At": get_horse_name(horse),
+                    "REYTİNG": rating_item.get("score"),
+                }
+                for name in component_names:
+                    row[name] = comps.get(name)
+                row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
+                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
+                _history = _rating_history_before_target(horse, selected_date) if isinstance(horse, dict) else []
+                _class_aliases = [
+                    "className", "class_name", "class", "classType", "class_type",
+                    "raceClass", "race_class", "raceClassName", "race_class_name",
+                    "raceType", "race_type", "raceTypeName", "race_type_name",
+                    "raceCondition", "race_condition", "condition", "conditionName",
+                    "condition_name", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+                    "raceTitle", "race_title", "eventName", "event_name",
+                    "raceGroup", "race_group", "groupName", "group_name",
+                    "yarisTuru", "yaris_turu", "kosuTuru", "kosu_turu",
+                    "kosuAdi", "kosu_adi", "kosuSartiAdi", "kosu_sarti_adi",
+                    "raceName", "race_name", "kosu", "Koşu"
+                ]
+                _raw_classes = []
+                for _hr in _history:
+                    _cv = _rating_row_value(_hr, _class_aliases)
+                    if _cv not in (None, ""):
+                        _raw_classes.append(str(_cv))
+                row["Örnek geçmiş sınıf verisi"] = " | ".join(_raw_classes[:3]) if _raw_classes else "Bulunamadı"
+                # Gerçek TJK şemasını görmek için en yakın geçmiş kaydın alan adlarını ve değerlerini göster.
+                # Bu, yanlışlıkla sahip/antrenör adını sınıf olarak yorumlamayı engelleyen teşhis bilgisidir.
+                _first_history = _history[0] if _history and isinstance(_history[0], dict) else {}
+                _key_values = []
+                for _k, _v in _first_history.items():
+                    if isinstance(_v, (str, int, float, bool)) or _v is None:
+                        _key_values.append(f"{_k}={_v}")
+                    elif isinstance(_v, dict):
+                        _key_values.append(f"{_k}=<dict:{','.join(str(x) for x in list(_v.keys())[:12])}>")
+                    elif isinstance(_v, list):
+                        _key_values.append(f"{_k}=<list:{len(_v)}>")
+                row["İlk geçmiş kaydın alanları"] = " | ".join(_key_values[:70]) if _key_values else "Geçmiş kayıt yok"
+                row["Geçmiş kaynağı"] = horse.get("_history_source", "-") if isinstance(horse, dict) else "-"
+                row["Veri hatası"] = horse.get("_enrichment_error", "-") if isinstance(horse, dict) else "-"
+                row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
+                rating_breakdown_rows.append(row)
+            if rating_breakdown_rows:
+                st.dataframe(
+                    pd.DataFrame(rating_breakdown_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"REYTİNG": st.column_config.NumberColumn("REYTİNG", format="%.2f")},
+                )
+            else:
+                st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
             st.caption(
-                "REYTİNG: Ortak Rakip+Kilo %35 • Kilo Uyumu %5 • Güncel Form %25 • "
-                "Pist/Mesafe %15 • Sınıf Uyumu %20. Toplam %100. "
-                "Hesapta yalnızca hedef koşu tarihinden önceki veriler kullanılır."
+                "REYTİNG yalnızca tanımlı beş bileşeni kullanır. Bu tablo motorun kalan bileşenlerini gösterir. "
+                "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
+                "Hedef koşu gününün sonucu hesaba katılmaz."
             )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
