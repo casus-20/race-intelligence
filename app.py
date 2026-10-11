@@ -1202,7 +1202,21 @@ def load_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """TJK zenginleştirmesi: başarısız/boş yanıtları cache'leme."""
+    """TJK zenginleştirmesi: başarılı geçmişi bağlam anahtarıyla cache'le;
+    boş/hatalı yanıtları cache'leme ve sonraki rerun'da tekrar dene.
+    """
+    cache_key = (
+        str(at_id), str(horse_name), str(target_date), str(target_city),
+        str(target_distance), str(target_surface), str(target_class)
+    )
+    cache = st.session_state.setdefault("_tjk_enrichment_success", {})
+    cached = cache.get(cache_key)
+    # Yalnızca gerçek geçmiş içeren başarılı yanıtı kullan; boş yanıtı asla
+    # başarılı veri gibi saklama. Böylece her Streamlit rerun'ında TJK'ya
+    # tekrar tekrar yük binmez ve rate-limit kaynaklı eksik veri riski azalır.
+    if isinstance(cached, dict) and isinstance(cached.get("history"), list) and cached["history"]:
+        return cached
+
     try:
         data = get_horse_enrichment(
             at_id, horse_name,
@@ -1216,8 +1230,6 @@ def load_horse_enrichment(
         # Başarılı yanıtlar Streamlit session_state içinde tutulur; başka koşuya
         # ait bağlamın yanlışlıkla kullanılmasını engellemek için bağlam anahtarlı.
         if isinstance(data, dict) and data.get("history"):
-            cache = st.session_state.setdefault("_tjk_enrichment_success", {})
-            cache_key = (str(at_id), str(horse_name), str(target_date), str(target_city), str(target_distance), str(target_surface), str(target_class))
             cache[cache_key] = data
         return data if isinstance(data, dict) else {"ok": False, "history": [], "workouts": [], "error": "TJK yanıt biçimi geçersiz."}
     except Exception as exc:
