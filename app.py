@@ -4524,7 +4524,7 @@ else:
 
     # REYTİNG TEŞHİS TABLOSU: gerçek motor ara puanlarını ve eksik bileşenleri gösterir.
     # Yalnızca görüntüleme amaçlıdır; REYTİNG hesabını veya sıralamayı değiştirmez.
-    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=True):
+    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=False):
         _rating_debug_rows = []
         _rating_component_names = [
             "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
@@ -6191,7 +6191,7 @@ else:
             )
             st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
 
-        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=True):
+        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=False):
             rating_breakdown_rows = []
             # Bu tabloda yalnızca motorda gerçekten kullanılan beş bileşen gösterilir.
             component_names = [
