@@ -1071,6 +1071,15 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
 
                 nr = _normalize_history_row(row)
                 if nr and nr.get("date"):
+                    # TJK geçmiş tablosunda koşu numarası çoğu zaman ayrı bir
+                    # kolonda değil, "K. No-K. Adı" alanının başında gelir.
+                    # Bunu açık raceNo alanına da yaz; ortak yarış eşleştirmesi
+                    # her at için aynı koşuyu ayırt edebilsin.
+                    _race_label = str(nr.get("raceName") or "").strip()
+                    _race_match = re.match(r"^\\s*(\\d{1,2})\\s*[-.)]", _race_label)
+                    if _race_match and not nr.get("raceNo"):
+                        nr["raceNo"] = _race_match.group(1)
+                    nr.setdefault("_historySource", "TJK AtKosuBilgileri")
                     parsed.append(nr)
 
             if parsed:
@@ -1086,15 +1095,27 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
 def get_horse_history(
     at_id: Any,
     timeout: int = 45,
+    horse: str = "",
 ) -> Dict[str, Any]:
-    if at_id in (None, ""):
-        return {"ok": False, "history": [], "error": "atId yok"}
+    """At geçmişini önce kimlikle, kimlik yoksa/boş sonuçta at adıyla ara.
 
+    Programdaki bazı atlarda atId alanı boş veya hatalı olabiliyor. Worker'ın
+    /horsedata endpoint'i AtAdi/ATADI sorgularını desteklediğinden, bu durumda
+    da aynı TJK geçmiş toplama hattı kullanılır; at sessizce geçmişsiz bırakılmaz.
+    """
+    horse_name = normalize_text(horse)
     errors: List[str] = []
-    payloads = [
-        (API_HORSE, {"atId": str(at_id)}),
-        (API_HORSEDATA, {"atId": str(at_id), "horse": ""}),
-    ]
+    payloads = []
+    if at_id not in (None, ""):
+        payloads.extend([
+            (API_HORSE, {"atId": str(at_id)}),
+            (API_HORSEDATA, {"atId": str(at_id), "horse": horse_name}),
+        ])
+    if horse_name:
+        # ID yoksa veya kimlikli uçlar boş dönerse resmi TJK at adı sorgusu.
+        payloads.append((API_HORSEDATA, {"horse": horse_name}))
+    if not payloads:
+        return {"ok": False, "history": [], "error": "At kimliği ve adı yok"}
 
     for url, params in payloads:
         try:
@@ -1120,7 +1141,7 @@ def get_horse_history(
     # sayfasını dene. Böylece Worker'ın boş/önbellekli cevabı gerçek geçmişi
     # sıfırlayamaz.
     try:
-        direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25))
+        direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25)) if at_id not in (None, "") else []
         if direct:
             return {
                 "ok": True,
@@ -1178,10 +1199,12 @@ def get_horse_enrichment(
     errors: List[str] = []
 
     def fetch_history() -> Dict[str, Any]:
-        if at_id in (None, ""):
-            return {"ok": False, "history": [], "error": "atId yok"}
+        # AtId olmasa da at adıyla aynı TJK geçmiş sorgu zincirini çalıştır.
+        # At kimliği olmayan satırları burada erken kesmek bazı atları geçmişsiz bırakıyordu.
+        if at_id in (None, "") and not horse_name:
+            return {"ok": False, "history": [], "error": "At kimliği ve adı yok"}
         try:
-            return get_horse_history(at_id, timeout=timeout)
+            return get_horse_history(at_id, timeout=timeout, horse=horse_name)
         except Exception as exc:
             return {"ok": False, "history": [], "error": str(exc)}
 
@@ -1209,8 +1232,9 @@ def get_horse_enrichment(
     if not isinstance(workouts, list):
         workouts = []
 
-    # get_horse_history() zaten /horse -> /horsedata -> doğrudan TJK
-    # fallback zincirini kendi içinde tamamlar. Burada aynı zinciri ikinci
+    # get_horse_history() önce kimlikli /horse ve /horsedata uçlarını,
+    # ardından at adıyla /horsedata sorgusunu ve kimlik varsa doğrudan TJK'yı dener.
+    # Burada aynı zinciri ikinci
     # kez çalıştırmıyoruz. Galop endpointi de yalnızca bir kez sorgulanır.
     # Bu, özellikle çok atlı koşularda gereksiz HTTP çağrılarını ciddi azaltır.
 
