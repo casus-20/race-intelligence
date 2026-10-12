@@ -2304,7 +2304,16 @@ def _rating_history_before_target(
     target_date: Any = None,
 ) -> list[Dict[str, Any]]:
     """Sadece tarih < hedef tarih kayıtlarını döndürür."""
-    history = horse.get("_history", [])
+    # Veri zenginleştirme katmanının farklı sürümleri geçmişi farklı
+    # anahtarlarla bırakabiliyor. Önce uygulamanın standart _history alanı,
+    # boşsa diğer bilinen geçmiş alanları kullanılır.
+    history = horse.get("_history")
+    if not isinstance(history, list) or not history:
+        for _history_key in ("history", "horseHistory", "horse_history", "tjkHistory", "tjk_history", "pastRaces", "past_races"):
+            _candidate_history = horse.get(_history_key)
+            if isinstance(_candidate_history, list) and _candidate_history:
+                history = _candidate_history
+                break
     if not isinstance(history, list):
         return []
 
@@ -2484,11 +2493,11 @@ def _rating_shared_race_keys(
         return _rating_row_value(row, keys)
 
     def race_id(row: Dict[str, Any]) -> str:
-        v = get(row, ["raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key", "eventId", "event_id"])
+        v = get(row, ["raceId", "race_id", "raceID", "RaceId", "kosuId", "kosu_id", "KosuId", "raceKey", "race_key", "eventId", "event_id", "eventID", "event_id", "meetingRaceId", "meeting_race_id"])
         return str(v).strip() if v not in (None, "") else ""
 
     def race_no(row: Dict[str, Any]) -> str:
-        v = get(row, ["raceNo", "race_no", "kosuNo", "kosu_no", "raceNumber", "race_number", "kosuSirasi", "kosu_sirasi", "raceOrder", "race_order"])
+        v = get(row, ["raceNo", "race_no", "raceNO", "RaceNo", "kosuNo", "kosu_no", "KosuNo", "raceNumber", "race_number", "kosuSirasi", "kosu_sirasi", "raceOrder", "race_order", "raceIndex", "race_index", "kosu", "K. No"])
         if v in (None, ""):
             # Bazı TJK kayıtları koşu numarasını yalnızca "4 - NOCES" gibi
             # raceName alanının başında taşır.
@@ -2499,10 +2508,10 @@ def _rating_shared_race_keys(
         return m.group(0) if m else norm(v)
 
     def city(row: Dict[str, Any]) -> str:
-        return norm(get(row, ["city", "cityName", "city_name", "hipodrom", "hipodromAdi", "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name", "raceTrack", "race_track", "location", "venue"]))
+        return norm(get(row, ["city", "City", "cityName", "city_name", "sehir", "şehir", "hipodrom", "hipodromAdi", "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name", "raceTrack", "race_track", "location", "venue"]))
 
     def surface(row: Dict[str, Any]) -> str:
-        raw = norm(get(row, ["surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi", "trackSurface", "track_surface", "surfaceType", "surface_type", "trackType", "track_type", "trackCondition", "track_condition", "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"]))
+        raw = norm(get(row, ["surface", "Surface", "pist", "Pist", "pistAdi", "pist_adi", "trackSurface", "track_surface", "surfaceType", "surface_type", "trackType", "track_type", "trackCondition", "track_condition", "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"]))
         # Pist koşulu/numarası (ör. "Ç:Normal 3.3") temel pist türünü
         # değiştirmez. Burada yalnızca kum/çim/sentetik ayrımı kullanılır.
         if "sentetik" in raw or "synthetic" in raw:
