@@ -2408,9 +2408,13 @@ def _rating_weight_similarity(history_weight: float | None, target_weight: float
 
 def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
     """TJK geçmişindeki aynı koşuyu ID varsa ID ile, yoksa alanlarıyla eşleştirir."""
+    # resultId/result_id satır/at sonucu kimliği olabilir; çoğu TJK çıktısında
+    # her at için farklıdır. Ortak geçmiş yarışı eşleştirmesinde kullanılırsa
+    # aynı koşuda koşmuş atların anahtarları farklı olur ve bileşen hep None kalır.
+    # Yalnızca koşu düzeyindeki kimlikleri kullan.
     race_id = _rating_row_value(row, [
         "raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key",
-        "eventId", "event_id", "resultId", "result_id"
+        "eventId", "event_id"
     ])
     dt = _rating_row_date(row)
     city = str(_rating_row_value(row, [
