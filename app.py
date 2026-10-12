@@ -2456,20 +2456,23 @@ def _rating_shared_race_keys(
     h2: Dict[str, Any],
     target_date: Any,
 ) -> list[tuple[Dict[str, Any], Dict[str, Any]]]:
-    """Aynı geçmiş koşuyu, ID farklı/at-sonuç satırına özgü olsa da alanlarla eşleştirir.
+    """Eşleştirilen iki atın geçmişindeki aynı koşuyu bulur.
 
-    Öncelik: eşit koşu ID'si. ID eşleşmezse tarih + hipodrom + mesafe + pist
-    kontrol edilir; iki tarafta da koşu numarası varsa aynı olmalıdır. Koşu
-    numarası eksikse isim/sınıf alanlarıyla doğrulama yapılır. Hedef gün ve
-    tarih çözülemeyen kayıtlar _rating_history_before_target tarafından elenir.
+    TJK geçmişinde raceId kimi yanıtlarda koşu ID'si, kimi yanıtlarda sonuç
+    satırı ID'si olabildiğinden ID tek başına yeterli kabul edilmez. Tarih,
+    mesafe ve pist zorunludur; mevcutsa hipodrom ve koşu numarası da doğrulanır.
+    Koşu adı yalnızca ek bilgi olarak kullanılır, tek başına eşleşmeyi bozmaz.
+    Hedef gün ve tarihi çözülemeyen satırlar _rating_history_before_target ile elenir.
     """
     a = _rating_history_before_target(h1, target_date)
     b = _rating_history_before_target(h2, target_date)
     if not a or not b:
         return []
 
+    import unicodedata
+    import re
+
     def norm(value: Any) -> str:
-        import unicodedata
         s = str(value or "").strip().casefold()
         s = unicodedata.normalize("NFKD", s)
         s = "".join(ch for ch in s if not unicodedata.combining(ch))
@@ -2477,83 +2480,88 @@ def _rating_shared_race_keys(
         s = s.translate(table)
         return " ".join(s.split())
 
+    def get(row: Dict[str, Any], keys: list[str]) -> Any:
+        return _rating_row_value(row, keys)
+
     def race_id(row: Dict[str, Any]) -> str:
-        value = _rating_row_value(row, [
-            "raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key",
-            "eventId", "event_id"
-        ])
-        return str(value).strip() if value not in (None, "") else ""
+        v = get(row, ["raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key", "eventId", "event_id"])
+        return str(v).strip() if v not in (None, "") else ""
 
     def race_no(row: Dict[str, Any]) -> str:
-        value = _rating_row_value(row, [
-            "raceNo", "race_no", "kosuNo", "kosu_no", "raceNumber",
-            "race_number", "kosuSirasi", "kosu_sirasi", "raceOrder", "race_order"
-        ])
-        return str(value).strip() if value not in (None, "") else ""
-
-    def race_name(row: Dict[str, Any]) -> str:
-        value = _rating_row_value(row, [
-            "raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName",
-            "condition_name", "className", "class_name", "raceClass", "race_class",
-            "condition", "raceCondition", "race_condition", "raceType", "race_type"
-        ])
-        return norm(value)
+        v = get(row, ["raceNo", "race_no", "kosuNo", "kosu_no", "raceNumber", "race_number", "kosuSirasi", "kosu_sirasi", "raceOrder", "race_order"])
+        if v in (None, ""):
+            # Bazı TJK kayıtları koşu numarasını yalnızca "4 - NOCES" gibi
+            # raceName alanının başında taşır.
+            name = str(get(row, ["raceName", "race_name", "kosuAdi", "kosu_adi"]) or "")
+            m = re.match(r"^\s*(\d{1,2})\s*[-.)]", name)
+            return m.group(1) if m else ""
+        m = re.search(r"\d+", str(v))
+        return m.group(0) if m else norm(v)
 
     def city(row: Dict[str, Any]) -> str:
-        return norm(_rating_row_value(row, [
-            "city", "cityName", "city_name", "hipodrom", "hipodromAdi",
-            "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name",
-            "raceTrack", "race_track", "location", "venue"
-        ]))
+        return norm(get(row, ["city", "cityName", "city_name", "hipodrom", "hipodromAdi", "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name", "raceTrack", "race_track", "location", "venue"]))
 
-    def same_by_fields(ra: Dict[str, Any], rb: Dict[str, Any]) -> bool:
+    def surface(row: Dict[str, Any]) -> str:
+        raw = norm(get(row, ["surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi", "trackSurface", "track_surface", "surfaceType", "surface_type", "trackType", "track_type", "trackCondition", "track_condition", "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"]))
+        # Pist koşulu/numarası (ör. "Ç:Normal 3.3") temel pist türünü
+        # değiştirmez. Burada yalnızca kum/çim/sentetik ayrımı kullanılır.
+        if "sentetik" in raw or "synthetic" in raw:
+            return "sentetik"
+        if "çim" in raw or "cim" in raw or "grass" in raw:
+            return "cim"
+        if "kum" in raw or "dirt" in raw or raw.startswith("k:"):
+            return "kum"
+        if raw.startswith("ç:") or raw.startswith("c:"):
+            return "cim"
+        return raw
+
+    def same_base(ra: Dict[str, Any], rb: Dict[str, Any]) -> bool:
         da, db = _rating_row_date(ra), _rating_row_date(rb)
         xa, xb = _rating_distance(ra), _rating_distance(rb)
-        sa = norm(_rating_surface(_rating_row_value(ra, [
-            "surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi",
-            "trackSurface", "track_surface", "surfaceType", "surface_type",
-            "trackType", "track_type", "trackCondition", "track_condition",
-            "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"
-        ])))
-        sb = norm(_rating_surface(_rating_row_value(rb, [
-            "surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi",
-            "trackSurface", "track_surface", "surfaceType", "surface_type",
-            "trackType", "track_type", "trackCondition", "track_condition",
-            "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"
-        ])))
-        if da is None or db is None or da != db:
+        if da is None or db is None or da != db or xa is None or xb is None:
             return False
-        if xa is None or xb is None or abs(float(xa) - float(xb)) > 0.01:
+        if abs(float(xa) - float(xb)) > 0.01:
             return False
+        sa, sb = surface(ra), surface(rb)
         if not sa or not sb or sa != sb:
             return False
         ca, cb = city(ra), city(rb)
         if ca and cb and ca != cb:
             return False
         na, nb = race_no(ra), race_no(rb)
-        if na and nb:
-            return na == nb
-        # Koşu numarası yoksa aynı yarış adı/sınıfı iki tarafta da bulunmalı.
-        name_a, name_b = race_name(ra), race_name(rb)
-        return bool(name_a and name_b and name_a == name_b)
+        if na and nb and na != nb:
+            return False
+        return True
 
-    pairs = []
-    used_b = set()
-    for row_a in a:
-        id_a = race_id(row_a)
-        # 1) Sadece iki kayıtta da eşit olan yarış düzeyi ID'si doğrudan eşleşir.
-        candidates = [row_b for row_b in b if id_a and race_id(row_b) == id_a]
-        candidates = [row_b for row_b in candidates if id(row_b) not in used_b]
-        # 2) ID yoksa VEYA ID farklıysa kompozit alanlarla eşleştir.
+    # Önce kesin eşleşme anahtarları; sonuç-satırı ID'leri eşleşmiyorsa
+    # güvenilir alanlarla eşleşmeye geri dön.
+    pairs: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
+    used_b: set[int] = set()
+    for ra in a:
+        id_a = race_id(ra)
+        candidates = [rb for rb in b if id_a and race_id(rb) == id_a and id(rb) not in used_b and same_base(ra, rb)]
         if not candidates:
-            candidates = [
-                row_b for row_b in b
-                if id(row_b) not in used_b and same_by_fields(row_a, row_b)
-            ]
-        if candidates:
-            row_b = candidates[0]
-            used_b.add(id(row_b))
-            pairs.append((row_a, row_b))
+            candidates = [rb for rb in b if id(rb) not in used_b and same_base(ra, rb)]
+        if not candidates:
+            continue
+        # Aynı gün aynı hipodrom/mesafede birden fazla koşu varsa, koşu adı
+        # veya numarasıyla daralt. Tek aday varsa eksik/çeşitli adlandırma
+        # nedeniyle ortak koşuyu kaybetme.
+        if len(candidates) > 1:
+            rn = race_no(ra)
+            if rn:
+                narrowed = [rb for rb in candidates if race_no(rb) == rn]
+                if narrowed:
+                    candidates = narrowed
+            if len(candidates) > 1:
+                rname = norm(get(ra, ["raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName", "condition_name", "className", "class_name", "raceClass", "race_class", "condition", "raceCondition", "raceType", "race_type"]))
+                if rname:
+                    narrowed = [rb for rb in candidates if rname == norm(get(rb, ["raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName", "condition_name", "className", "class_name", "raceClass", "race_class", "condition", "raceCondition", "raceType", "race_type"]))]
+                    if narrowed:
+                        candidates = narrowed
+        rb = candidates[0]
+        used_b.add(id(rb))
+        pairs.append((ra, rb))
     return pairs
 
 def _rating_common_opponent_score(
