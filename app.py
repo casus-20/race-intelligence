@@ -101,7 +101,6 @@ if "selected_horse_no" not in st.session_state:
     st.session_state.selected_horse_no = None
 if "selected_horse_index" not in st.session_state:
     st.session_state.selected_horse_index = None
-    st.session_state["_selected_detail_fetch_key"] = None
 if "_selected_detail_fetch_key" not in st.session_state:
     st.session_state["_selected_detail_fetch_key"] = None
 if "_last_eid_click_token" not in st.session_state:
@@ -602,12 +601,11 @@ with btn2:
         st.session_state["analysis_mode"] = "Gerçek veri"
         st.session_state["real_analysis_requested"] = True
         st.session_state["real_analysis_done"] = False
-        st.session_state["rating_diag_panel_open"] = False
-        st.session_state["rating_active_panel_open"] = False
 with btn3:
     st.button(
         "🧠 MANUEL ANALİZ",
         key="manual_analysis_button_top",
+        help="Manuel mod yalnızca TJK programını gösterir; skor/REYTİNG için gerçek veri analizi gerekir.",
         use_container_width=True,
         on_click=_request_manual_analysis,
         type="secondary",
@@ -1250,44 +1248,43 @@ def enrich_race_horses(
 
     def one(idx_item):
         idx, item = idx_item
-        # TJK program parser'ları aynı kimliği farklı büyük/küçük harflerle
-        # döndürebiliyor. Özellikle atId/AtId/atID farkı, yalnızca bazı atların
-        # geçmişinin hiç çekilmemesine ve REYTİNG/GÜNCEL SINIF hücrelerinin boş
-        # kalmasına neden olur. Var olan alanlar korunur; yeni alias'lar eklenir.
         at_id = (
-            item.get("atId") or item.get("AtId") or item.get("ATID") or
-            item.get("atID") or item.get("at_id") or item.get("atid") or
-            item.get("horseId") or item.get("HorseId") or item.get("HORSEID") or
-            item.get("horseID") or item.get("horse_id") or item.get("horseid") or
-            item.get("horseKey") or item.get("HorseKey") or item.get("horse_key") or
-            item.get("idAt") or item.get("id_at") or item.get("id") or item.get("Id") or ""
+            item.get("atId") or item.get("at_id") or
+            item.get("horseId") or item.get("horse_id") or
+            item.get("horseKey") or item.get("horse_key") or
+            item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
-        if not at_id and not name:
+        if not at_id:
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK at kimliği ve adı bulunamadı; geçmiş çekilemedi."
+            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
             return idx, item, name
 
         try:
-            data = load_horse_enrichment(str(at_id or ""), name, target_date, target_city, target_distance, target_surface, target_class)
+            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
         history = data.get("history", []) if isinstance(data, dict) else []
         workouts = data.get("workouts", []) if isinstance(data, dict) else []
-        item["_at_id"] = str(at_id or "")
-        item["_history"] = history if isinstance(history, list) else []
-        item["_workouts"] = workouts if isinstance(workouts, list) else []
-        item["_enrichment_error"] = str(data.get("error") or "-") if isinstance(data, dict) else "-"
+        history = history if isinstance(history, list) else []
+        workouts = workouts if isinstance(workouts, list) else []
+
+        # tjk_fetch.get_horse_enrichment zaten /horse -> /horsedata -> doğrudan TJK
+        # sırasını dener; burada aynı kaynağı tekrar sorgulamıyoruz (ağ yükü ve rate limit).
+        retry_note = ""
+        if not history:
+            retry_note = str((data or {}).get("error") or "TJK geçmiş kayıt döndürmedi.") if isinstance(data, dict) else "TJK geçmiş kayıt döndürmedi."
+
+        item["_at_id"] = str(at_id)
+        item["_history"] = history
+        item["_workouts"] = workouts
+        item["_history_retry_checked"] = True
+        item["_history_retry_note"] = retry_note
+        item["_enrichment_error"] = str(data.get("error") or retry_note or "-") if isinstance(data, dict) else (retry_note or "-")
         if isinstance(data, dict) and data.get("historySource"):
             item["_history_source"] = data.get("historySource")
-        if isinstance(data, dict):
-            item["_history_attempts"] = data.get("historyAttempts", [])
-            item["_history_candidate_counts"] = data.get("historyCandidateCounts", [])
-            item["_workout_attempts"] = data.get("workoutAttempts", [])
-            item["_history_http_status"] = data.get("historyStatus")
-            item["_fallback_history_count"] = data.get("fallbackHistoryCount", 0)
 
         if isinstance(data, dict):
             for key in (
@@ -1323,7 +1320,7 @@ def enrich_race_horses(
             if not item.get("_tjk_total_earnings") and item.get("_history"):
                 total = 0.0
                 year_total = 0.0
-                current_year = date.today().year
+                current_year = (_rating_parse_date(target_date) or date.today()).year
                 for _hr in item.get("_history", []):
                     if not isinstance(_hr, dict):
                         continue
@@ -1669,91 +1666,39 @@ def _last_six_surface_data(horse: Dict[str, Any], target_date: Any = None) -> st
 
 
 def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index: int, target_date: Any = None, target_city_name: str = "") -> str:
-    """At isminin yanında aynı atın gerçek bitiriş sırasını gösterir.
+    """Analiz edilen yarışın TJK gerçek sonucunu bulur.
 
-    TJK sonuçları iç içe dict/list yapısında gelebilir. Tam at adı eşleşmesi
-    program numarası eşleşmesinden önce gelir. Derece/süre alanları sıra sayılmaz.
+    Bu gösterim BİZİM SKOR hesabına dahil değildir. Amaç yalnızca yarış
+    sonuçlandıktan sonra At İsmi'nin sonunda (1.), (2.) gibi sonucu göstermektir.
+    Bir at aynı gün normalde tek yarış koştuğu için, tarih + atın geçmişindeki
+    sonuç kaydı birincil eşleştirmedir; şehir/mesafe gibi alanlar yalnızca
+    destekleyici doğrulama olarak kullanılır.
     """
-    import unicodedata
-
-    def norm_name(value: Any) -> str:
-        value = unicodedata.normalize("NFKD", str(value or ""))
-        value = "".join(ch for ch in value if not unicodedata.combining(ch))
-        return re.sub(r"[^a-z0-9]", "", value.casefold())
-
-    def position(value: Any) -> int | None:
+    def _position(value: Any) -> int | None:
         if isinstance(value, dict):
-            keys = ("finishPosition", "finish_position", "sonucSira", "sonuc_sira",
-                    "bitirisSira", "bitiris_sira", "place", "sira", "Sıra", "S",
-                    "position", "rank", "finish", "result", "sonuc")
-            for key in keys:
-                if key in value and value.get(key) not in (None, "", "-"):
-                    result = position(value.get(key))
-                    if result is not None:
-                        return result
+            for k in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+                if value.get(k) not in (None, "", "-"):
+                    return _position(value.get(k))
             return None
         if value is None:
             return None
-        text = str(value).strip()
-        # Yalnızca sıra biçimleri: 2, 2., 2. sıra. 1.13.03 gibi süreleri reddet.
-        m = re.fullmatch(r"(\d{1,2})(?:\s*(?:\.|\.\s*sıra|\.\s*sira))?", text, re.I)
+        m = re.search(r"\d+", str(value).strip())
         if not m:
             return None
         try:
-            n = int(m.group(1))
+            n = int(m.group(0))
             return n if n > 0 else None
         except Exception:
             return None
 
-    def walk(obj: Any, depth: int = 0):
-        if depth > 8:
-            return
-        if isinstance(obj, dict):
-            yield obj
-            for value in obj.values():
-                if isinstance(value, (dict, list, tuple)):
-                    yield from walk(value, depth + 1)
-        elif isinstance(obj, (list, tuple)):
-            for value in obj:
-                if isinstance(value, (dict, list, tuple)):
-                    yield from walk(value, depth + 1)
-
-    name = norm_name(get_horse_name(horse))
-    no = str(get_horse_number(horse, horse_index + 1)).strip()
-    name_keys = ("horseName", "horse_name", "atAdi", "at_adi", "name", "horse", "at", "horseFullName")
-    no_keys = ("no", "numara", "horseNo", "horse_no", "horseNumber", "horse_number", "programNo", "program_no", "horseProgramNumber")
-    position_keys = ("finishPosition", "finish_position", "sonucSira", "sonuc_sira", "bitirisSira", "bitiris_sira", "place", "sira", "Sıra", "S", "position", "rank", "finish", "result", "sonuc")
-
-    # 1) Önce yarış nesnesinin tamamında ada göre tam eşleşme ara.
-    entries = list(walk(race))
-    for entry in entries:
-        entry_name = next((entry.get(k) for k in name_keys if entry.get(k) not in (None, "", "-")), "")
-        if name and norm_name(entry_name) == name:
-            pos = position({k: entry.get(k) for k in position_keys if k in entry})
-            if pos is not None:
-                return f"({pos}.)"
-
-    # 2) At nesnesinde açık sonuç alanı varsa kullan.
-    pos = position({k: horse.get(k) for k in position_keys if k in horse})
-    if pos is not None:
-        return f"({pos}.)"
-
-    # 3) İsim taşımayan sonuç kayıtlarında program numarasıyla eşleştir.
-    for entry in entries:
-        entry_name = next((entry.get(k) for k in name_keys if entry.get(k) not in (None, "", "-")), "")
-        entry_no = next((entry.get(k) for k in no_keys if entry.get(k) not in (None, "", "-")), None)
-        if not entry_name and entry_no is not None and str(entry_no).strip() == no:
-            pos = position({k: entry.get(k) for k in position_keys if k in entry})
-            if pos is not None:
-                return f"({pos}.)"
-
-    # 4) Bazı sonuçlar yalnızca atın geçmiş yarış kaydında bulunur.
-    def parse_date(value: Any):
+    def _parse_date(value: Any):
+        if value in (None, "", "-"):
+            return None
         if isinstance(value, datetime):
             return value.date()
         if isinstance(value, date):
             return value
-        text = str(value or "").strip()
+        text = str(value).strip()
         for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
             try:
                 return datetime.strptime(text[:10], fmt).date()
@@ -1761,26 +1706,63 @@ def _race_finish_label(horse: Dict[str, Any], race: Dict[str, Any], horse_index:
                 pass
         return None
 
-    target_dt = parse_date(target_date or race.get("date") or race.get("tarih") or race.get("Tarih"))
-    same_day = []
-    for row in horse.get("_history", []) if isinstance(horse.get("_history", []), list) else []:
-        if not isinstance(row, dict) or (target_dt and _rating_row_date(row) != target_dt):
-            continue
-        row_name = next(( _history_value(row, [k]) for k in name_keys if _history_value(row, [k]) not in (None, "", "-")), "")
-        if row_name and name and norm_name(row_name) != name:
-            continue
-        pos = position(_rating_row_value(row, list(position_keys)))
-        if pos is not None:
-            same_day.append(pos)
-    if len(same_day) == 1:
-        return f"({same_day[0]}.)"
+    # 1) Program sonucunda doğrudan sonuç varsa kullan.
+    for key in ("finish", "place", "sira", "S", "result", "sonuc", "position", "finishPosition", "finish_position", "rank"):
+        if horse.get(key) not in (None, "", "-"):
+            pos = _position(horse.get(key))
+            if pos is not None:
+                return f"({pos}.)"
 
+    # 2) Yarışın sonuç haritası varsa at numarasıyla eşleştir.
+    no = get_horse_number(horse, horse_index + 1)
+    for container in (race.get("results"), race.get("result"), race.get("resultMap"), race.get("result_map"), race.get("finish")):
+        if isinstance(container, dict):
+            for key in (no, str(no), horse.get("no"), horse.get("numara")):
+                if key in container:
+                    pos = _position(container.get(key))
+                    if pos is not None:
+                        return f"({pos}.)"
+
+    target_dt = _parse_date(target_date or race.get("date") or race.get("tarih") or race.get("Tarih"))
+    if target_dt is not None:
+        same_day = []
+        for row in horse.get("_history", []):
+            if not isinstance(row, dict):
+                continue
+            row_dt = _parse_date(row.get("date") or row.get("tarih") or row.get("Tarih"))
+            if row_dt != target_dt:
+                continue
+            pos = _position(row.get("place") or row.get("sira") or row.get("S") or row.get("finish") or row.get("position") or row.get("finishPosition") or row.get("rank"))
+            if pos is not None:
+                same_day.append((row, pos))
+
+        # En güçlü eşleşme: atın geçmişinde hedef tarihteki sonuç.
+        if same_day:
+            target_city = str(target_city_name or race.get("city") or race.get("hipodrom") or "").strip().lower()
+            target_distance = re.sub(r"\D", "", str(race.get("distance") or race.get("mesafe") or ""))
+            target_surface = str(race.get("surface") or race.get("pist") or "").strip().lower()
+            for row, pos in same_day:
+                row_city = str(row.get("city") or row.get("şehir") or row.get("sehir") or row.get("hipodrom") or "").strip().lower()
+                row_distance = re.sub(r"\D", "", str(row.get("distance") or row.get("mesafe") or row.get("msf") or ""))
+                row_surface = str(row.get("surface") or row.get("pist") or row.get("zemin") or "").strip().lower()
+                city_ok = not target_city or not row_city or target_city in row_city or row_city in target_city
+                distance_ok = not target_distance or not row_distance or target_distance == row_distance
+                surface_ok = not target_surface or not row_surface or target_surface in row_surface or row_surface in target_surface
+                if city_ok and distance_ok and surface_ok:
+                    return f"({pos}.)"
+            # Aynı gün için tek sonuç varsa diğer alanlar eksik olsa bile kabul et.
+            if len(same_day) == 1:
+                return f"({same_day[0][1]}.)"
+
+    # Koşmaz/çekildi bilgisi varsa göster.
     status_text = " ".join(str(horse.get(k, "")) for k in ("name", "horse", "horseName", "status", "durum", "note", "aciklama"))
+    try:
+        status_text += " " + str(get_horse_equipment(horse))
+    except Exception:
+        pass
     if re.search(r"koşmaz|kosmaz|çekildi|cekildi|start almaz", status_text, re.I):
         return "(Koşmaz)"
     return ""
-
-
 
 
 def last_race_display(horse: Dict[str, Any]) -> str:
@@ -2152,7 +2134,7 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# REYTİNG — AKTİF BİLEŞENLİ, TARİH-SIZDIRMALI MOTOR
+# REYTİNG — 5 BİLEŞENLİ, TARİH-SIZDIRMAZ MOTOR
 # ============================================================
 # REYTİNG yalnızca hedef koşunun tarihinden ÖNCEKİ gerçek TJK geçmişini
 # kullanır. Hedef koşunun kendisi, aynı günkü sonuçlar veya gelecekteki
@@ -2162,10 +2144,8 @@ def _history_class_text(row: Dict[str, Any]) -> str:
 #   Ortak rakip + kilo farkı  %35
 #   Kilo uyumu               %5
 #   Güncel form              %25
-# #   Pist / mesafe            %15
+#   Pist / mesafe            %15
 #   Sınıf uyumu              %20
-#   Tempo                     %6
-# #   Ham hız                   %2
 #
 # REYTİNG yalnızca tanımlı beş bileşeni kullanır.
 # Kalan bileşenlerin ağırlıkları, mevcut veri bulunurluğuna göre normalize edilir.
@@ -2306,16 +2286,7 @@ def _rating_history_before_target(
     target_date: Any = None,
 ) -> list[Dict[str, Any]]:
     """Sadece tarih < hedef tarih kayıtlarını döndürür."""
-    # Veri zenginleştirme katmanının farklı sürümleri geçmişi farklı
-    # anahtarlarla bırakabiliyor. Önce uygulamanın standart _history alanı,
-    # boşsa diğer bilinen geçmiş alanları kullanılır.
-    history = horse.get("_history")
-    if not isinstance(history, list) or not history:
-        for _history_key in ("history", "horseHistory", "horse_history", "tjkHistory", "tjk_history", "pastRaces", "past_races"):
-            _candidate_history = horse.get(_history_key)
-            if isinstance(_candidate_history, list) and _candidate_history:
-                history = _candidate_history
-                break
+    history = horse.get("_history", [])
     if not isinstance(history, list):
         return []
 
@@ -2419,13 +2390,9 @@ def _rating_weight_similarity(history_weight: float | None, target_weight: float
 
 def _rating_row_race_key(row: Dict[str, Any]) -> tuple:
     """TJK geçmişindeki aynı koşuyu ID varsa ID ile, yoksa alanlarıyla eşleştirir."""
-    # resultId/result_id satır/at sonucu kimliği olabilir; çoğu TJK çıktısında
-    # her at için farklıdır. Ortak geçmiş yarışı eşleştirmesinde kullanılırsa
-    # aynı koşuda koşmuş atların anahtarları farklı olur ve bileşen hep None kalır.
-    # Yalnızca koşu düzeyindeki kimlikleri kullan.
     race_id = _rating_row_value(row, [
         "raceId", "race_id", "kosuId", "kosu_id", "raceKey", "race_key",
-        "eventId", "event_id"
+        "eventId", "event_id", "resultId", "result_id"
     ])
     dt = _rating_row_date(row)
     city = str(_rating_row_value(row, [
@@ -2467,119 +2434,51 @@ def _rating_shared_race_keys(
     h2: Dict[str, Any],
     target_date: Any,
 ) -> list[tuple[Dict[str, Any], Dict[str, Any]]]:
-    """Eşleştirilen iki atın geçmişindeki aynı koşuyu bulur.
-
-    TJK geçmişinde raceId kimi yanıtlarda koşu ID'si, kimi yanıtlarda sonuç
-    satırı ID'si olabildiğinden ID tek başına yeterli kabul edilmez. Tarih,
-    mesafe ve pist zorunludur; mevcutsa hipodrom ve koşu numarası da doğrulanır.
-    Koşu adı yalnızca ek bilgi olarak kullanılır, tek başına eşleşmeyi bozmaz.
-    Hedef gün ve tarihi çözülemeyen satırlar _rating_history_before_target ile elenir.
-    """
+    """Aynı geçmiş yarışı yanlış pozitif üretmeden eşleştirir."""
     a = _rating_history_before_target(h1, target_date)
     b = _rating_history_before_target(h2, target_date)
-    if not a or not b:
-        return []
+    idx = {}
+    for row in b:
+        idx.setdefault(_rating_row_race_key(row), []).append(row)
 
-    import unicodedata
-    import re
-
-    def norm(value: Any) -> str:
-        s = str(value or "").strip().casefold()
-        s = unicodedata.normalize("NFKD", s)
-        s = "".join(ch for ch in s if not unicodedata.combining(ch))
-        table = str.maketrans({"ı":"i", "ş":"s", "ğ":"g", "ü":"u", "ö":"o", "ç":"c"})
-        s = s.translate(table)
-        return " ".join(s.split())
-
-    def get(row: Dict[str, Any], keys: list[str]) -> Any:
-        return _rating_row_value(row, keys)
-
-    def race_id(row: Dict[str, Any]) -> str:
-        v = get(row, ["raceId", "race_id", "raceID", "RaceId", "kosuId", "kosu_id", "KosuId", "raceKey", "race_key", "eventId", "event_id", "eventID", "event_id", "meetingRaceId", "meeting_race_id"])
-        return str(v).strip() if v not in (None, "") else ""
-
-    def race_no(row: Dict[str, Any]) -> str:
-        v = get(row, ["raceNo", "race_no", "raceNO", "RaceNo", "kosuNo", "kosu_no", "KosuNo", "raceNumber", "race_number", "kosuSirasi", "kosu_sirasi", "raceOrder", "race_order", "raceIndex", "race_index", "kosu", "K. No"])
-        if v in (None, ""):
-            # Bazı TJK kayıtları koşu numarasını yalnızca "4 - NOCES" gibi
-            # raceName alanının başında taşır.
-            name = str(get(row, ["raceName", "race_name", "kosuAdi", "kosu_adi"]) or "")
-            m = re.match(r"^\s*(\d{1,2})\s*[-.)]", name)
-            return m.group(1) if m else ""
-        m = re.search(r"\d+", str(v))
-        return m.group(0) if m else norm(v)
-
-    def city(row: Dict[str, Any]) -> str:
-        return norm(get(row, ["city", "City", "cityName", "city_name", "sehir", "şehir", "hipodrom", "hipodromAdi", "hipodrom_adi", "hippodrome", "hippodromeName", "hippodrome_name", "raceTrack", "race_track", "location", "venue"]))
-
-    def surface(row: Dict[str, Any]) -> str:
-        raw = norm(get(row, ["surface", "Surface", "pist", "Pist", "pistAdi", "pist_adi", "trackSurface", "track_surface", "surfaceType", "surface_type", "trackType", "track_type", "trackCondition", "track_condition", "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"]))
-        # Pist koşulu/numarası (ör. "Ç:Normal 3.3") temel pist türünü
-        # değiştirmez. Burada yalnızca kum/çim/sentetik ayrımı kullanılır.
-        if "sentetik" in raw or "synthetic" in raw:
-            return "sentetik"
-        if "çim" in raw or "cim" in raw or "grass" in raw:
-            return "cim"
-        if "kum" in raw or "dirt" in raw or raw.startswith("k:"):
-            return "kum"
-        if raw.startswith("ç:") or raw.startswith("c:"):
-            return "cim"
-        return raw
-
-    def same_base(ra: Dict[str, Any], rb: Dict[str, Any]) -> bool:
-        da, db = _rating_row_date(ra), _rating_row_date(rb)
-        xa, xb = _rating_distance(ra), _rating_distance(rb)
-        if da is None or db is None or da != db or xa is None or xb is None:
-            return False
-        if abs(float(xa) - float(xb)) > 0.01:
-            return False
-        sa, sb = surface(ra), surface(rb)
-        if not sa or not sb or sa != sb:
-            return False
-        ca, cb = city(ra), city(rb)
-        if ca and cb and ca != cb:
-            return False
-        na, nb = race_no(ra), race_no(rb)
-        if na and nb and na != nb:
-            return False
-        return True
-
-    # Önce kesin eşleşme anahtarları; sonuç-satırı ID'leri eşleşmiyorsa
-    # güvenilir alanlarla eşleşmeye geri dön.
-    pairs: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
-    used_b: set[int] = set()
-    for ra in a:
-        id_a = race_id(ra)
-        candidates = [rb for rb in b if id_a and race_id(rb) == id_a and id(rb) not in used_b and same_base(ra, rb)]
-        if not candidates:
-            candidates = [rb for rb in b if id(rb) not in used_b and same_base(ra, rb)]
-        if not candidates:
-            continue
-        # Aynı gün aynı hipodrom/mesafede birden fazla koşu varsa, koşu adı
-        # veya numarasıyla daralt. Tek aday varsa eksik/çeşitli adlandırma
-        # nedeniyle ortak koşuyu kaybetme.
-        if len(candidates) > 1:
-            rn = race_no(ra)
-            if rn:
-                narrowed = [rb for rb in candidates if race_no(rb) == rn]
-                if narrowed:
-                    candidates = narrowed
-            if len(candidates) > 1:
-                rname = norm(get(ra, ["raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName", "condition_name", "className", "class_name", "raceClass", "race_class", "condition", "raceCondition", "raceType", "race_type"]))
-                if rname:
-                    narrowed = [rb for rb in candidates if rname == norm(get(rb, ["raceName", "race_name", "kosuAdi", "kosu_adi", "conditionName", "condition_name", "className", "class_name", "raceClass", "race_class", "condition", "raceCondition", "raceType", "race_type"]))]
-                    if narrowed:
-                        candidates = narrowed
-        rb = candidates[0]
-        used_b.add(id(rb))
-        pairs.append((ra, rb))
+    pairs = []
+    used = set()
+    for row_a in a:
+        key_a = _rating_row_race_key(row_a)
+        candidates = list(idx.get(key_a, []))
+        # ID yoksa yarış adı farklı/eksik gelebilir. Ancak tarih, hipodrom,
+        # mesafe, pist ve varsa koşu numarası uyumlu olmalı.
+        if not candidates and key_a and key_a[0] == "fields":
+            _, dt_a, city_a, dist_a, surface_a, no_a, _name_a = key_a
+            if dt_a and dist_a != "" and surface_a:
+                for key_b, rows_b in idx.items():
+                    if not key_b or key_b[0] != "fields":
+                        continue
+                    _, dt_b, city_b, dist_b, surface_b, no_b, _name_b = key_b
+                    if (dt_a != dt_b or dist_a != dist_b or surface_a != surface_b):
+                        continue
+                    if city_a and city_b and city_a != city_b:
+                        continue
+                    if no_a and no_b and no_a != no_b:
+                        continue
+                    # Yarış adı her iki tarafta varsa farklı isimli koşuları eşleştirme.
+                    if _name_a and _name_b and _name_a != _name_b:
+                        continue
+                    candidates.extend(rows_b)
+        for row_b in candidates:
+            pair_key = (id(row_a), id(row_b))
+            if pair_key in used:
+                continue
+            used.add(pair_key)
+            pairs.append((row_a, row_b))
+            break
     return pairs
 
 def _rating_common_opponent_score(
     horse: Dict[str, Any],
     horses: List[Dict[str, Any]],
     target_date: Any,
-) -> float | None:
+) -> float:
     """Bugünkü alandaki rakiplerle geçmişteki ortak yarışları karşılaştırır."""
     target_no = str(horse.get("_at_id") or horse.get("atId") or id(horse))
     values = []
@@ -2605,10 +2504,8 @@ def _rating_common_opponent_score(
             score = max(0.0, min(100.0, score))
             values.append((score, _rating_recency_factor(own_row, target_date)))
 
-    # Gercek ortak gecmis yarisi yoksa puan URETME.
-    # 50.0 gibi varsayilan puan, veri varmis izlenimi yaratir ve REYTING'i bozar.
     if not values:
-        return None
+        return 50.0
 
     return max(0.0, min(100.0,
         sum(v * w for v, w in values) / sum(w for _, w in values)
@@ -2752,90 +2649,51 @@ def _rating_distance_component(
     target_distance: float | None,
     target_surface: str,
     target_date: Any,
-) -> float | None:
-    """Pist/mesafe puanı: tek uygun geçmiş yarışla da hesaplanır.
-
-    Önce aynı pist ve hedef mesafedeki geçmiş yarışlar kullanılır. Bu mesafede
-    kayıt yoksa aynı pistte hedef mesafenin +/-100 m aralığına bakılır.
-    Hedef tarihten önceki kayıtlar _rating_history_before_target tarafından
-    filtrelenir. Derece alanı zorunlu değildir; sonuç, pist, mesafe ve diğer
-    bileşen verileri mevcutsa tek yarıştan da puan hesaplanabilir.
-    """
+) -> float:
+    """Pist/mesafe = %35 mesafe + %30 pist + %20 benzer kilo + %15 güncellik."""
     history = _rating_history_before_target(horse, target_date)
-    if not history or target_distance is None:
-        return None
-
-    surface_target = _rating_surface(target_surface)
-    same_surface = []
-    for row in history:
-        row_surface = _rating_surface(_rating_row_value(row, [
-            "surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi",
-            "trackSurface", "track_surface", "surfaceType", "surface_type",
-            "trackType", "track_type", "trackCondition", "track_condition",
-            "pistDurumu", "pist_durumu", "yuzey", "yüzey"
-        ]))
-        dist = _rating_distance(row)
-        if surface_target and row_surface == surface_target and dist is not None:
-            same_surface.append((row, dist))
-
-    exact = [(row, dist) for row, dist in same_surface if abs(dist - target_distance) <= 0.01]
-    candidates = exact if exact else [
-        (row, dist) for row, dist in same_surface
-        if abs(dist - target_distance) <= 100
-    ]
-    if not candidates:
-        return None
+    if not history:
+        return 50.0
 
     target_weight = _rating_target_weight(horse)
-    distance_vals, finish_vals, weight_vals, recency_vals = [], [], [], []
-    for row, dist in candidates:
+    surface_target = _rating_surface(target_surface)
+
+    distance_vals = []
+    surface_vals = []
+    weight_vals = []
+    recency_vals = []
+
+    for row in history:
         rec = _rating_recency_factor(row, target_date)
-        distance_vals.append((_rating_distance_proximity(dist, target_distance), rec))
-        place = _rating_place_number(_rating_row_value(row, [
-            "place", "sira", "Sıra", "S", "finishPosition", "finish_position", "rank"
-        ]))
-        if place is not None:
-            finish_vals.append((_rating_finish_points(place), rec))
+        dist = _rating_distance(row)
         rw = _rating_row_weight(row)
-        if rw is not None and target_weight is not None:
-            weight_vals.append((_rating_weight_similarity(rw, target_weight), rec))
+        row_surface = _rating_surface(_rating_row_value(row, [
+            "surface", "pist", "Pist", "Surface", "trackSurface", "track_surface"
+        ]))
+
+        distance_vals.append((_rating_distance_proximity(dist, target_distance), rec))
+
+        if surface_target and row_surface == surface_target:
+            surface_vals.append((_rating_finish_points(_first_value(
+                row, ["place", "sira", "Sıra", "S"]
+            )), rec))
+
+        weight_vals.append((_rating_weight_similarity(rw, target_weight), rec))
         recency_vals.append((rec * 100.0, 1.0))
 
-    def weighted(vals):
-        return sum(v*w for v, w in vals) / sum(w for _, w in vals) if vals else None
+    def weighted(vals, default=50.0):
+        if not vals:
+            return default
+        return sum(v*w for v,w in vals) / sum(w for _,w in vals)
 
-    # Ağırlıklar yalnız mevcut gerçek alt veriler arasında normalize edilir.
-    sub = [(weighted(distance_vals), 0.35), (weighted(finish_vals), 0.30),
-           (weighted(weight_vals), 0.20), (weighted(recency_vals), 0.15)]
-    available = [(value, weight) for value, weight in sub if value is not None]
-    if not available:
-        return None
-    total = sum(weight for _, weight in available)
-    return max(0.0, min(100.0, sum(value * weight for value, weight in available) / total))
+    m = weighted(distance_vals)
+    p = weighted(surface_vals, 50.0)
+    k = weighted(weight_vals)
+    g = weighted(recency_vals)
 
-
-
-def _rating_time_seconds(value: Any) -> float | None:
-    if value is None:
-        return None
-    s = str(value).strip().replace(",", ".")
-    if not s or s == "-":
-        return None
-
-    # 2:18.34 / 2.18.34 / 2'18"34
-    m = re.search(r"^(\d+)[\.:'](\d{1,2})[\.:](\d{1,2})$", s)
-    if m:
-        a, b, c = map(int, m.groups())
-        return a * 60.0 + b + c / (100.0 if len(m.group(3)) == 2 else 10.0)
-
-    m = re.search(r"^(\d+):(\d{1,2})(?:\.(\d+))?$", s)
-    if m:
-        a = int(m.group(1)); b = int(m.group(2))
-        frac = float("0." + (m.group(3) or "0"))
-        return a * 60.0 + b + frac
-
-    return None
-
+    return max(0.0, min(100.0,
+        0.35*m + 0.30*p + 0.20*k + 0.15*g
+    ))
 
 def _rating_class_group(value: Any) -> str:
     s = str(value or "").strip().lower()
@@ -2858,15 +2716,18 @@ def _rating_class_group(value: Any) -> str:
         return "MAIDEN"
     return ""
 
-_RATING_CLASS_BASE = {
-    "G1": 100.0, "A1": 95.0, "G2": 90.0, "A2": 90.0, "G3": 80.0, "A3": 80.0,
-    "KV24": 90.0, "KV18": 80.0, "KV9": 70.0, "KV8": 70.0, "KV7": 60.0, "KV6": 60.0,
-    "H24": 90.0, "H23": 85.0, "H22": 80.0, "H21": 70.0, "H20": 75.0,
-    "H19": 70.0, "H18": 65.0, "H17": 60.0, "H16": 50.0, "H15": 40.0,
-    "H14": 30.0, "H13": 20.0,
-    "S27": 15.0, "S19": 25.0, "S5": 50.0, "S4": 40.0, "S3": 30.0,
-    "S2": 20.0, "S1": 10.0, "MAIDEN": 10.0,
-}
+# Sınıf puan tablosu BİZİM SKOR motoruyla ORTAKTIR (tek kaynak).
+_RATING_CLASS_BASE = dict(_BIZIM_MODULE.CLASS_BASE)
+
+
+def _rating_class_base(group: str) -> float | None:
+    if not group:
+        return None
+    if group in _RATING_CLASS_BASE:
+        return float(_RATING_CLASS_BASE[group])
+    v = _BIZIM_MODULE.class_base_points(group)
+    return float(v) if v else None
+
 
 def _rating_class_value(row: Dict[str, Any]) -> float | None:
     """Geçmiş koşu sınıfını yalnız sınıf/koşu türü alanlarından çıkarır."""
@@ -2899,7 +2760,7 @@ def _rating_class_value(row: Dict[str, Any]) -> float | None:
     base = None
     for raw in values:
         group = _rating_class_group(raw)
-        candidate = _RATING_CLASS_BASE.get(group)
+        candidate = _rating_class_base(group)
         if candidate is None:
             candidate = _class_level_from_text(raw)
         if candidate is not None:
@@ -2914,7 +2775,7 @@ def _rating_class_value(row: Dict[str, Any]) -> float | None:
     ]))
     if place is None:
         return base * 0.50
-    return base * _RATING_FINISH_FACTOR.get(place, 0.50)
+    return base * (_BIZIM_MODULE.finish_factor(place) or 0.20)
 
 def _rating_target_class_value(race: Dict[str, Any]) -> float:
     raw = _rating_row_value(race, [
@@ -2923,8 +2784,9 @@ def _rating_target_class_value(race: Dict[str, Any]) -> float:
         "raceTypeName", "race_type_name", "raceName", "race_name", "kosu", "Koşu", "class"
     ]) or get_race_condition(race)
     group = _rating_class_group(raw)
-    if group in _RATING_CLASS_BASE:
-        return _RATING_CLASS_BASE[group]
+    _gb = _rating_class_base(group)
+    if _gb is not None:
+        return _gb
     lv = _class_level_from_text(raw)
     return lv if lv is not None else 50.0
 
@@ -2951,31 +2813,6 @@ def _rating_class_score(
     # Geçmiş sınıf seviyesi bugünkü seviyeye ne kadar yakınsa o kadar yüksek.
     similarity = max(0.0, 100.0 - abs(hist - target))
     return max(0.0, min(100.0, 0.55*similarity + 0.45*hist))
-
-def _rating_style_value(row: Dict[str, Any]) -> str:
-    text = str(_rating_row_value(row, [
-        "style", "runningStyle", "running_style", "runningStyleName",
-        "running_style_name", "raceStyle", "race_style", "koşuStili",
-        "kosuStili", "stili", "stil", "position", "pozisyon",
-        "racePosition", "race_position", "earlyPosition", "early_position"
-    ]) or "").lower()
-    if any(x in text for x in ("önde", "onde", "lider", "front")): return "front"
-    if any(x in text for x in ("takip", "lideri takip", "stalker")): return "stalker"
-    if any(x in text for x in ("orta", "middle")): return "middle"
-    if any(x in text for x in ("bekle", "closer", "close", "sprint")): return "closer"
-    return ""
-
-def _rating_infer_style(history: list[Dict[str, Any]]) -> str:
-    # Tüm geçmiş yarışlarda kayıtlı stil aranır; son 6 ile sınırlandırılmaz.
-    for row in history:
-        s = _rating_style_value(row)
-        if s:
-            return s
-    return ""
-
-
-
-
 
 def _calculate_rating_for_race(
     horses: List[Dict[str, Any]],
@@ -3009,13 +2846,10 @@ def _calculate_rating_for_race(
         # vermek yerine bileşeni eksik işaretle; veri toplama/enrichment
         # katmanı (_history / _workouts) gerçek kayıtları sağlar.
         own_history = _rating_history_before_target(horse, target_date)
-        # Ortak rakip üzerinden karşılaştırma yoksa bu bileşen eksiktir.
-        # Güncel form/kilo puanını buraya kopyalamak aynı veriyi iki kez sayar.
-        _has_shared_opponent = any(
+        if not any(
             _rating_shared_race_keys(horse, other, target_date)
             for other in horses if isinstance(other, dict) and other is not horse
-        )
-        if not _has_shared_opponent:
+        ):
             components["Ortak Rakip + Kilo"] = None
         if _rating_target_weight(horse) is None or not any(
             _rating_row_weight(r) is not None for r in own_history
@@ -3026,26 +2860,11 @@ def _calculate_rating_for_race(
             for r in own_history
         ):
             components["Güncel Form"] = None
-        # Pist/Mesafe kullanılabilirliği, puan fonksiyonuyla aynı kesin kurala bağlıdır:
-        # aynı pistte önce tam mesafe; yoksa yalnızca +/-100 m. Derece alanı şart değildir.
-        _target_surface_norm = _rating_surface(target_surface)
-        _target_distance_num = _number(target_distance)
-        _matching_track_distance = []
-        if _target_surface_norm and _target_distance_num is not None:
-            for _hist_row in own_history:
-                _hist_surface = _rating_surface(_rating_row_value(_hist_row, [
-                    "surface", "pist", "Pist", "Surface", "pistAdi", "pist_adi",
-                    "trackSurface", "track_surface", "surfaceType", "surface_type",
-                    "trackType", "track_type", "trackCondition", "track_condition",
-                    "pistDurumu", "pist_durumu", "yuzey", "yüzey", "zemin", "Zemin"
-                ]))
-                _hist_distance = _rating_distance(_hist_row)
-                if _hist_surface == _target_surface_norm and _hist_distance is not None:
-                    _matching_track_distance.append(float(_hist_distance))
-        _has_track_distance = any(abs(d - _target_distance_num) <= 0.01 for d in _matching_track_distance)
-        if not _has_track_distance:
-            _has_track_distance = any(abs(d - _target_distance_num) <= 100 for d in _matching_track_distance)
-        if not _has_track_distance:
+        if not any(
+            _rating_distance(r) is not None
+            and _rating_surface(_rating_row_value(r, ["surface", "pist", "Pist", "Surface", "trackSurface", "track_surface", "surfaceType", "surface_type", "trackType", "track_type"])) == _rating_surface(target_surface)
+            for r in own_history
+        ):
             components["Pist / Mesafe"] = None
         if not any(_rating_class_value(r) is not None for r in own_history):
             components["Sınıf Uyumu"] = None
@@ -3466,8 +3285,8 @@ def _su_history_row_match(
         scores["race_type"] * 0.30
         + scores["class"] * 0.30
         + scores["distance"] * 0.20
-        + scores["weight"] * 0.5
-        + scores["hp"] * 0.5
+        + scores["weight"] * 0.05
+        + scores["hp"] * 0.05
         + scores["finish"] * 0.10
     )
 
@@ -3898,7 +3717,7 @@ if not isinstance(
 # Program özeti races tanımlandıktan sonra gösterilir.
 st.sidebar.markdown(
     f"<div class='sidebar-program-status'>"
-    f"{selected_city} — {selected_date.strftime('%d/%m/%Y')} — "
+    f"{_html.escape(str(selected_city))} — {selected_date.strftime('%d/%m/%Y')} — "
     f"{len(races)} koşu bulundu.<br>"
     f"<b>✓ {len(races)} koşu • "
     f"{sum(len(r.get('horses', [])) for r in races if isinstance(r, dict))} at verisi alındı</b>"
@@ -4406,9 +4225,6 @@ else:
 
     # GERÇEK VERİYLE ANALİZ — yalnızca kullanıcı butona bastığında çalışır.
     if st.session_state.get("real_analysis_requested"):
-        # Analiz sırasında her iki REYTİNG ayrıntı panelini zorunlu kapalı tut.
-        st.session_state["rating_diag_panel_open"] = False
-        st.session_state["rating_active_panel_open"] = False
         real_status = st.status(
             f"🔄 TJK gerçek verileri indiriliyor ve işleniyor... 0/{len(horses)} at",
             expanded=True,
@@ -4522,60 +4338,51 @@ else:
             st.warning("Gerçek analiz tamamlandı fakat TJK koşu geçmişi 0 geldi. Worker /api/tjk/horse yanıtı kontrol edilmeli.")
 
     # BİZİM SKOR ile REYTİNG birbirinden tamamen ayrıdır.
-    # REYTİNG kendi 9 faktörlü motoruyla, yalnızca hedef tarihten önceki
+    # REYTİNG kendi 5 bileşenli motoruyla, yalnızca hedef tarihten önceki
     # gerçek geçmişi kullanarak hesaplanır.
     rating_results = calculate_rating_cached(_ranking_input, selected_race)
     rating_by_index = {item["horse_index"]: item for item in rating_results}
 
     # REYTİNG TEŞHİS TABLOSU: gerçek motor ara puanlarını ve eksik bileşenleri gösterir.
     # Yalnızca görüntüleme amaçlıdır; REYTİNG hesabını veya sıralamayı değiştirmez.
-    # Bu panel native expander yerine açıkça kullanıcı tıklamasıyla kontrol edilir.
-    _diag_open = bool(st.session_state.get("rating_diag_panel_open", False))
-    if st.button(
-        ("▼ " if _diag_open else "▶ ") + "🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler",
-        key="rating_diag_panel_toggle",
-        use_container_width=True,
-    ):
-        st.session_state["rating_diag_panel_open"] = not _diag_open
-    if st.session_state.get("rating_diag_panel_open", False):
-            _rating_debug_rows = []
-            _rating_component_names = [
-                "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
-                "Pist / Mesafe", "Sınıf Uyumu",
-            ]
-            for _ri, _rh in enumerate(_ranking_input):
-                if not isinstance(_rh, dict):
-                    continue
-                _rr = rating_by_index.get(_ri)
-                _rc = _rr.get("components", {}) if isinstance(_rr, dict) else {}
-                _missing = [name for name in _rating_component_names if _rc.get(name) is None]
-                _rating_debug_rows.append({
-                    "At No": get_horse_number(_rh, _ri + 1),
-                    "At": get_horse_name(_rh),
-                    "REYTİNG": _rr.get("score", "HESAPLANMADI") if isinstance(_rr, dict) else "HESAPLANMADI",
-                    "Ortak Rakip + Kilo": _rc.get("Ortak Rakip + Kilo"),
-                    "Kilo Uyumu": _rc.get("Kilo Uyumu"),
-                    "Güncel Form": _rc.get("Güncel Form"),
-                    "Pist / Mesafe": _rc.get("Pist / Mesafe"),
-                    "Sınıf Uyumu": _rc.get("Sınıf Uyumu"),
-                    "Kullanılan Bileşen": _rr.get("available_components", 0) if isinstance(_rr, dict) else 0,
-                    "Kullanılan Ağırlık %": _rr.get("available_weight_pct", 0) if isinstance(_rr, dict) else 0,
-                    "Eksik Bileşenler": ", ".join(_missing) if _missing else "Yok",
-                    "Geçmiş Yarış Sayısı": len(_rating_history_before_target(_rh, selected_date)),
-                    "Galop Kaydı": len(_rh.get("_workouts", [])) if isinstance(_rh.get("_workouts"), list) else 0,
-                    "Veri Kaynağı": _rh.get("_history_source", "-"),
-                    "Veri Hatası": _rh.get("_enrichment_error", "-"),
-                    "Yedek geçmiş kaydı": _rh.get("_fallback_history_count", 0),
-                })
-            if _rating_debug_rows:
-                _rating_debug_df = pd.DataFrame(_rating_debug_rows)
-                st.dataframe(_rating_debug_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    "Bu tablo motorun mevcut hesaplamasını gösterir; hesaplama mantığını değiştirmez. "
-                    "Boş bileşenler puana katılmamıştır; kullanılan ağırlık kalan bileşenler arasında yeniden dağıtılmıştır."
-                )
-            else:
-                st.warning("REYTİNG teşhisi için at verisi bulunamadı.")
+    with st.expander("🔎 REYTİNG BİLEŞEN TEŞHİSİ — ara puanlar ve eksik veriler", expanded=False):
+        _rating_debug_rows = []
+        _rating_component_names = [
+            "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
+            "Pist / Mesafe", "Sınıf Uyumu",
+        ]
+        for _ri, _rh in enumerate(_ranking_input):
+            if not isinstance(_rh, dict):
+                continue
+            _rr = rating_by_index.get(_ri)
+            _rc = _rr.get("components", {}) if isinstance(_rr, dict) else {}
+            _missing = [name for name in _rating_component_names if _rc.get(name) is None]
+            _rating_debug_rows.append({
+                "At No": get_horse_number(_rh, _ri + 1),
+                "At": get_horse_name(_rh),
+                "REYTİNG": _rr.get("score", "HESAPLANMADI") if isinstance(_rr, dict) else "HESAPLANMADI",
+                "Ortak Rakip + Kilo": _rc.get("Ortak Rakip + Kilo"),
+                "Kilo Uyumu": _rc.get("Kilo Uyumu"),
+                "Güncel Form": _rc.get("Güncel Form"),
+                "Pist / Mesafe": _rc.get("Pist / Mesafe"),
+                "Sınıf Uyumu": _rc.get("Sınıf Uyumu"),
+                "Kullanılan Bileşen": _rr.get("available_components", 0) if isinstance(_rr, dict) else 0,
+                "Kullanılan Ağırlık %": _rr.get("available_weight_pct", 0) if isinstance(_rr, dict) else 0,
+                "Eksik Bileşenler": ", ".join(_missing) if _missing else "Yok",
+                "Geçmiş Yarış Sayısı": len(_rating_history_before_target(_rh, selected_date)),
+                "Galop Kaydı": len(_rh.get("_workouts", [])) if isinstance(_rh.get("_workouts"), list) else 0,
+                "Veri Kaynağı": _rh.get("_history_source", "-"),
+                "Veri Hatası": _rh.get("_enrichment_error", "-"),
+            })
+        if _rating_debug_rows:
+            _rating_debug_df = pd.DataFrame(_rating_debug_rows)
+            st.dataframe(_rating_debug_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Bu tablo motorun mevcut hesaplamasını gösterir; hesaplama mantığını değiştirmez. "
+                "Boş bileşenler puana katılmamıştır; kullanılan ağırlık kalan bileşenler arasında yeniden dağıtılmıştır."
+            )
+        else:
+            st.warning("REYTİNG teşhisi için at verisi bulunamadı.")
 
     # Analiz sonucu horse_index üzerinden eşlenir.
     # Böylece TJK at numarası (No) ile analiz sırası (Sıra) birbirine karışmaz.
@@ -4633,7 +4440,7 @@ else:
         # GÜNCEL SINIF gerçek TJK geçmişindeki son yarışların sınıf seviyesinden hesaplanır.
         current_class_result = calculate_guncel_sinif(horse, selected_date, selected_race)
         current_class = current_class_result["display"]
-        # REYTİNG ayrı 9 faktörlü motorun sonucudur.
+        # REYTİNG ayrı 5 bileşenli motorun sonucudur.
         rating_result = rating_by_index.get(horse_index, {})
         rating_score = rating_result.get("score", "—")
 
@@ -6096,10 +5903,11 @@ else:
                 f"🐎 {get_horse_number(selected_horse, 0)} - {get_horse_name(selected_horse)}"
             )
 
+            _sire, _dam = _split_origin(get_horse_origin(selected_horse))
             st.markdown("<div class='selected-horse-card'>"
-                        f"<div class='selected-horse-name'>{get_horse_name(selected_horse)}</div>"
-                        f"<div class='selected-horse-origin'>{_split_origin(get_horse_origin(selected_horse))[0]}"
-                        f"<br>{_split_origin(get_horse_origin(selected_horse))[1]}</div>"
+                        f"<div class='selected-horse-name'>{_html.escape(get_horse_name(selected_horse))}</div>"
+                        f"<div class='selected-horse-origin'>{_html.escape(_sire)}"
+                        f"<br>{_html.escape(_dam)}</div>"
                         "</div>", unsafe_allow_html=True)
 
             tab_all, tab_first, tab_stats, tab_work = st.tabs([
@@ -6154,8 +5962,8 @@ else:
                     {"Gösterge":"1.'lik", "Değer":first},
                     {"Gösterge":"2.'lik", "Değer":second},
                     {"Gösterge":"3.'lük", "Değer":third},
-                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_prize * 1.20)},
-                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_prize * 1.20)},
+                    {"Gösterge":"Kazanç", "Değer":_format_tl(total_earnings(selected_horse) or total_prize)},
+                    {"Gösterge":f"{selected_date.year} Kazancı", "Değer":_format_tl(year_earnings(selected_horse, selected_date.year) or year_prize)},
                 ])
                 st.dataframe(stat_rows, use_container_width=True, hide_index=True, column_config={
                     "Gösterge": st.column_config.TextColumn("Gösterge", width=220),
@@ -6204,96 +6012,76 @@ else:
             )
             st.caption("Bu tablo yalnızca BİZİM SKOR motoruna aittir; REYTİNG puanlarını açıklamaz.")
 
-        # Bu panel yalnızca başlığına tıklanınca görünür; analiz çalışırken kapatılır.
-        _active_rating_open = bool(st.session_state.get("rating_active_panel_open", False))
-        if st.button(
-            ("▼ " if _active_rating_open else "▶ ") + "🎯 REYTİNG — aktif bileşen puanları",
-            key="rating_active_panel_toggle",
-            use_container_width=True,
-        ):
-            st.session_state["rating_active_panel_open"] = not _active_rating_open
-        if st.session_state.get("rating_active_panel_open", False):
-                rating_breakdown_rows = []
-                # Bu tabloda yalnızca motorda gerçekten kullanılan beş bileşen gösterilir.
-                component_names = [
-                    "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
-                    "Pist / Mesafe", "Sınıf Uyumu",
+        with st.expander("🎯 REYTİNG — aktif bileşen puanları", expanded=True):
+            rating_breakdown_rows = []
+            # Bu tabloda yalnızca motorda gerçekten kullanılan beş bileşen gösterilir.
+            component_names = [
+                "Ortak Rakip + Kilo", "Kilo Uyumu", "Güncel Form",
+                "Pist / Mesafe", "Sınıf Uyumu",
+            ]
+            for rating_item in rating_results:
+                hi = rating_item["horse_index"]
+                horse = _ranking_input[hi] if hi < len(_ranking_input) else {}
+                comps = rating_item.get("components", {})
+                row = {
+                    "REYTİNG Sıra": rating_item.get("rank"),
+                    "No": get_horse_number(horse, hi + 1),
+                    "At": get_horse_name(horse),
+                    "REYTİNG": rating_item.get("score"),
+                }
+                for name in component_names:
+                    row[name] = comps.get(name)
+                row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
+                row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
+                _history = _rating_history_before_target(horse, selected_date) if isinstance(horse, dict) else []
+                _class_aliases = [
+                    "className", "class_name", "class", "classType", "class_type",
+                    "raceClass", "race_class", "raceClassName", "race_class_name",
+                    "raceType", "race_type", "raceTypeName", "race_type_name",
+                    "raceCondition", "race_condition", "condition", "conditionName",
+                    "condition_name", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
+                    "raceTitle", "race_title", "eventName", "event_name",
+                    "raceGroup", "race_group", "groupName", "group_name",
+                    "yarisTuru", "yaris_turu", "kosuTuru", "kosu_turu",
+                    "kosuAdi", "kosu_adi", "kosuSartiAdi", "kosu_sarti_adi",
+                    "raceName", "race_name", "kosu", "Koşu"
                 ]
-                for rating_item in rating_results:
-                    hi = rating_item["horse_index"]
-                    horse = _ranking_input[hi] if hi < len(_ranking_input) else {}
-                    comps = rating_item.get("components", {})
-                    row = {
-                        "REYTİNG Sıra": rating_item.get("rank"),
-                        "No": get_horse_number(horse, hi + 1),
-                        "At": get_horse_name(horse),
-                        "REYTİNG": rating_item.get("score"),
-                    }
-                    for name in component_names:
-                        row[name] = comps.get(name)
-                    row["Kullanılan bileşen"] = rating_item.get("available_components", 0)
-                    row["Kullanılan ağırlık %"] = rating_item.get("available_weight_pct", 0)
-                    _history = _rating_history_before_target(horse, selected_date) if isinstance(horse, dict) else []
-                    _class_aliases = [
-                        "className", "class_name", "class", "classType", "class_type",
-                        "raceClass", "race_class", "raceClassName", "race_class_name",
-                        "raceType", "race_type", "raceTypeName", "race_type_name",
-                        "raceCondition", "race_condition", "condition", "conditionName",
-                        "condition_name", "kosuSinifi", "kosu_sinifi", "sinif", "Sınıf",
-                        "raceTitle", "race_title", "eventName", "event_name",
-                        "raceGroup", "race_group", "groupName", "group_name",
-                        "yarisTuru", "yaris_turu", "kosuTuru", "kosu_turu",
-                        "kosuAdi", "kosu_adi", "kosuSartiAdi", "kosu_sarti_adi",
-                        "raceName", "race_name", "kosu", "Koşu"
-                    ]
-                    _raw_classes = []
-                    for _hr in _history:
-                        _cv = _rating_row_value(_hr, _class_aliases)
-                        if _cv not in (None, ""):
-                            _raw_classes.append(str(_cv))
-                    row["Örnek geçmiş sınıf verisi"] = " | ".join(_raw_classes[:3]) if _raw_classes else "Bulunamadı"
-                    # Gerçek TJK şemasını görmek için en yakın geçmiş kaydın alan adlarını ve değerlerini göster.
-                    # Bu, yanlışlıkla sahip/antrenör adını sınıf olarak yorumlamayı engelleyen teşhis bilgisidir.
-                    _first_history = _history[0] if _history and isinstance(_history[0], dict) else {}
-                    _key_values = []
-                    for _k, _v in _first_history.items():
-                        if isinstance(_v, (str, int, float, bool)) or _v is None:
-                            _key_values.append(f"{_k}={_v}")
-                        elif isinstance(_v, dict):
-                            _key_values.append(f"{_k}=<dict:{','.join(str(x) for x in list(_v.keys())[:12])}>")
-                        elif isinstance(_v, list):
-                            _key_values.append(f"{_k}=<list:{len(_v)}>")
-                    row["İlk geçmiş kaydın alanları"] = " | ".join(_key_values[:70]) if _key_values else "Geçmiş kayıt yok"
-                    row["Geçmiş kaynağı"] = horse.get("_history_source", "-") if isinstance(horse, dict) else "-"
-                    row["Veri hatası"] = horse.get("_enrichment_error", "-") if isinstance(horse, dict) else "-"
-                    row["TJK HTTP durumu"] = horse.get("_history_http_status", "-") if isinstance(horse, dict) else "-"
-                    row["TJK sorgu denemeleri"] = " | ".join(
-                        f"HTTP {x.get('status', '?')}: {x.get('parsedCount', x.get('count', 0))} kayıt — {x.get('source', x.get('url', '?'))}"
-                        + (f" — HATA: {x.get('error')}" if x.get('error') else "")
-                        for x in (horse.get("_history_attempts", []) if isinstance(horse, dict) else [])
-                        if isinstance(x, dict)
-                    ) or "Worker deneme ayrıntısı gelmedi"
-                    row["TJK aday kayıt sayıları"] = " | ".join(
-                        f"{x.get('count', 0)} kayıt: {x.get('source', '?')}"
-                        for x in (horse.get("_history_candidate_counts", []) if isinstance(horse, dict) else [])
-                        if isinstance(x, dict)
-                    ) or "-"
-                    row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
-                    rating_breakdown_rows.append(row)
-                if rating_breakdown_rows:
-                    st.dataframe(
-                        pd.DataFrame(rating_breakdown_rows),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={"REYTİNG": st.column_config.NumberColumn("REYTİNG", format="%.2f")},
-                    )
-                else:
-                    st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
-                st.caption(
-                    "REYTİNG yalnızca tanımlı beş bileşeni kullanır. Bu tablo motorun kalan bileşenlerini gösterir. "
-                    "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
-                    "Hedef koşu gününün sonucu hesaba katılmaz."
+                _raw_classes = []
+                for _hr in _history:
+                    _cv = _rating_row_value(_hr, _class_aliases)
+                    if _cv not in (None, ""):
+                        _raw_classes.append(str(_cv))
+                row["Örnek geçmiş sınıf verisi"] = " | ".join(_raw_classes[:3]) if _raw_classes else "Bulunamadı"
+                # Gerçek TJK şemasını görmek için en yakın geçmiş kaydın alan adlarını ve değerlerini göster.
+                # Bu, yanlışlıkla sahip/antrenör adını sınıf olarak yorumlamayı engelleyen teşhis bilgisidir.
+                _first_history = _history[0] if _history and isinstance(_history[0], dict) else {}
+                _key_values = []
+                for _k, _v in _first_history.items():
+                    if isinstance(_v, (str, int, float, bool)) or _v is None:
+                        _key_values.append(f"{_k}={_v}")
+                    elif isinstance(_v, dict):
+                        _key_values.append(f"{_k}=<dict:{','.join(str(x) for x in list(_v.keys())[:12])}>")
+                    elif isinstance(_v, list):
+                        _key_values.append(f"{_k}=<list:{len(_v)}>")
+                row["İlk geçmiş kaydın alanları"] = " | ".join(_key_values[:70]) if _key_values else "Geçmiş kayıt yok"
+                row["Geçmiş kaynağı"] = horse.get("_history_source", "-") if isinstance(horse, dict) else "-"
+                row["Veri hatası"] = horse.get("_enrichment_error", "-") if isinstance(horse, dict) else "-"
+                row["Eksik bileşenler"] = ", ".join(name for name in component_names if comps.get(name) is None) or "Yok"
+                rating_breakdown_rows.append(row)
+            if rating_breakdown_rows:
+                st.dataframe(
+                    pd.DataFrame(rating_breakdown_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"REYTİNG": st.column_config.NumberColumn("REYTİNG", format="%.2f")},
                 )
+            else:
+                st.warning("REYTİNG sonucu oluşmadı; hedef tarihten önceki geçmiş yarış verisi kontrol edilmeli.")
+            st.caption(
+                "REYTİNG yalnızca tanımlı beş bileşeni kullanır. Bu tablo motorun kalan bileşenlerini gösterir. "
+                "Boş bileşenler puana katılmaz; kalan ağırlıklar yeniden dağıtılır. "
+                "Hedef koşu gününün sonucu hesaba katılmaz."
+            )
 
     agf_values = [get_horse_agf(h) for h in horses if isinstance(h, dict)]
     if agf_values and all(v == "-" for v in agf_values):
