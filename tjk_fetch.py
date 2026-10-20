@@ -1,9 +1,28 @@
 import requests
 import re
 from datetime import date, datetime
+from html.parser import HTMLParser
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor
-import threading
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Bağlantı havuzu + otomatik yeniden deneme (geçici 429/5xx hatalarında backoff).
+_SESSION = requests.Session()
+_SESSION.mount(
+    "https://",
+    HTTPAdapter(
+        pool_connections=10,
+        pool_maxsize=20,
+        max_retries=Retry(
+            total=2,
+            backoff_factor=0.6,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET",),
+            raise_on_status=False,
+        ),
+    ),
+)
 
 
 # =========================================================
@@ -41,26 +60,6 @@ CITY_IDS = {
 # =========================================================
 # YARDIMCI FONKSİYONLAR
 # =========================================================
-
-# =========================================================
-# HTTP CONNECTION POOL
-# =========================================================
-# Her worker thread kendi requests.Session nesnesini kullanır.
-# Böylece TCP/TLS bağlantıları mümkün olduğunca yeniden kullanılır;
-# veri şeması ve analiz mantığı değişmez.
-_SESSION_LOCAL = threading.local()
-
-def _get_http_session() -> requests.Session:
-    session = getattr(_SESSION_LOCAL, "session", None)
-    if session is None:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Race-Intelligence-Streamlit/34",
-            "Accept": "application/json,text/plain,*/*",
-        })
-        _SESSION_LOCAL.session = session
-    return session
-
 
 def normalize_text(value: Any) -> str:
     if value is None:
@@ -149,7 +148,7 @@ def fetch_worker(
     }
 
     try:
-        response = _get_http_session().get(
+        response = _SESSION.get(
             API_DATA,
             params=params,
             timeout=timeout,
@@ -622,83 +621,11 @@ def get_city_id(city: str) -> int:
 
 
 
-def _canonical_city_name(value: Any) -> str:
-    """Worker cevabındaki hipodrom adını resmi şehir adına çevirir."""
-    s = normalize_text(value)
-    s = re.sub(r"\s+Hipodromu\s*$", "", s, flags=re.I)
-    key = (s.lower().replace("ı", "i").replace("ş", "s")
-           .replace("ğ", "g").replace("ü", "u").replace("ö", "o")
-           .replace("ç", "c"))
-    aliases = {
-        "ankara": "Ankara", "kocaeli": "Kocaeli", "istanbul": "İstanbul",
-        "bursa": "Bursa", "izmir": "İzmir", "adana": "Adana",
-        "elazig": "Elazığ", "diyarbakir": "Diyarbakır",
-        "sanliurfa": "Şanlıurfa", "antalya": "Antalya",
-    }
-    return aliases.get(key, s)
-
-
-def _worker_result_matches_target(data: Dict[str, Any], target_date: str, requested_city: str) -> bool:
-    """Bir Worker cevabının gerçekten istenen tarih ve hipodroma ait olduğunu doğrular."""
-    if not isinstance(data, dict) or not data.get("ok", False):
-        return False
-
-    races = data.get("races")
-    if not isinstance(races, list) or not races:
-        return False
-
-    returned_date = data.get("date") or data.get("targetDate") or data.get("programDate")
-    if returned_date:
-        try:
-            if normalize_date(returned_date) != target_date:
-                return False
-        except Exception:
-            return False
-    else:
-        # Tarih bilgisi yoksa, yanlış tarih programını doğru kabul etme.
-        return False
-
-    returned_city = data.get("city") or data.get("hippodrome") or data.get("hipodrom")
-    if not returned_city:
-        return False
-
-    return _canonical_city_name(returned_city) == _canonical_city_name(requested_city)
-
-
-def get_active_cities(date_value: Any) -> List[str]:
-    """Yalnızca seçilen TARİH ve aynı HİPODROM doğrulaması geçen şehirleri döndürür.
-
-    Burada tahmin, sabit liste veya sayfa başlığı kullanılmaz. Her şehir için
-    mevcut Worker'ın kendi program cevabı alınır; cevaptaki tarih + şehir +
-    yarış listesi birlikte doğrulanır. Böylece örneğin Diyarbakır programı
-    Elazığ olarak kabul edilemez ve başka tarihin programı aktif sayılamaz.
-    """
-    target = normalize_date(date_value)
-    results: Dict[str, bool] = {}
-
-    def check(item):
-        city, _city_id = item
-        try:
-            data = fetch_worker(target, city, timeout=45)
-            return city, _worker_result_matches_target(data, target, city)
-        except Exception:
-            return city, False
-
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(check, item) for item in CITY_IDS.items()]
-        for future in futures:
-            city, ok = future.result()
-            results[city] = ok
-
-    # CITY_IDS sırası sabit kalsın; app.py'nin mevcut davranışı değişmesin.
-    return [city for city in CITY_IDS if results.get(city, False)]
-
-
 def worker_health() -> Dict[str, Any]:
 
     try:
 
-        response = _get_http_session().get(
+        response = _SESSION.get(
             API_HEALTH,
             timeout=15,
             headers={
@@ -739,7 +666,7 @@ def _worker_json(
     params: Dict[str, Any],
     timeout: int = 45,
 ) -> Dict[str, Any]:
-    response = _get_http_session().get(
+    response = _SESSION.get(
         url,
         params=params,
         timeout=timeout,
@@ -890,16 +817,26 @@ def _money_to_float(value: Any) -> float:
         return 0.0
 
 
-def _earnings_from_history(history: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _earnings_from_history(
+    history: List[Dict[str, Any]],
+    year_value: Any = None,
+) -> Dict[str, Any]:
+    """Toplam ve yıllık kazanç. Yıl, hedef yarışın yılıdır (verilmezse bugünün yılı)."""
     total = 0.0
     year = 0.0
-    current_year = date.today().year
+    target_year = None
+    if year_value not in (None, ""):
+        m = re.search(r"(20\d{2})", normalize_date(year_value))
+        if m:
+            target_year = m.group(1)
+    if target_year is None:
+        target_year = str(date.today().year)
     for row in history:
         prize = _first_nonempty(row, _HISTORY_KEYS["prize"], "")
         amount = _money_to_float(prize)
         total += amount
         ds = str(_first_nonempty(row, _HISTORY_KEYS["date"], ""))
-        if str(current_year) in ds:
+        if re.search(r"(?<!\d)" + target_year + r"(?!\d)", ds):
             year += amount
     return {"total": total if total > 0 else None, "year": year if year > 0 else None}
 
@@ -929,50 +866,51 @@ def _merge_history(primary: List[Dict[str, Any]], fallback: List[Dict[str, Any]]
 
 
 class _TJKTableParser:
-    """TJK HTML tablosunu stdlib ile parse eder; BeautifulSoup gerektirmez."""
+    """TJK HTML tablosunu stdlib ile parse eder; iç içe tabloları güvenle atlar."""
+
     def __init__(self):
-        from html.parser import HTMLParser
         self.rows = []
-        self._row = None
-        self._cell = None
-        self._buf = []
-        self._href = ""
 
     def feed(self, html_text: str):
-        from html.parser import HTMLParser
         outer = self
+        state = {"row": None, "cell": None, "depth": 0}
 
         class P(HTMLParser):
             def handle_starttag(self, tag, attrs):
                 tag = tag.lower()
+                if tag == "table":
+                    state["depth"] += 1
+                if state["depth"] > 1:      # iç içe tablo: yok say
+                    return
                 if tag == "tr":
-                    outer._row = []
-                elif tag in ("td", "th") and outer._row is not None:
-                    outer._cell = {"text": [], "href": ""}
-                    outer._buf = []
-                elif tag == "a" and outer._cell is not None:
+                    state["row"] = []
+                elif tag in ("td", "th") and state["row"] is not None:
+                    state["cell"] = {"text": [], "href": ""}
+                elif tag == "a" and state["cell"] is not None:
                     for k, v in attrs:
                         if k.lower() == "href":
-                            outer._cell["href"] = v or ""
+                            state["cell"]["href"] = v or ""
 
             def handle_data(self, data):
-                if outer._cell is not None:
-                    outer._cell["text"].append(data)
+                if state["depth"] <= 1 and state["cell"] is not None:
+                    state["cell"]["text"].append(data)
 
             def handle_endtag(self, tag):
                 tag = tag.lower()
-                if tag in ("td", "th") and outer._cell is not None and outer._row is not None:
-                    txt = " ".join("".join(outer._cell["text"]).split())
-                    outer._row.append((txt, outer._cell.get("href", "")))
-                    outer._cell = None
-                elif tag == "tr" and outer._row is not None:
-                    if outer._row:
-                        outer.rows.append(outer._row)
-                    outer._row = None
+                if tag == "table":
+                    state["depth"] = max(0, state["depth"] - 1)
+                    return
+                if state["depth"] > 1:
+                    return
+                if tag in ("td", "th") and state["cell"] is not None and state["row"] is not None:
+                    txt = " ".join("".join(state["cell"]["text"]).split())
+                    state["row"].append((txt, state["cell"].get("href", "")))
+                    state["cell"] = None
+                elif tag == "tr" and state["row"] is not None:
+                    if state["row"]:
+                        outer.rows.append(state["row"])
+                    state["row"] = None
 
-        # HTMLParser.feed() None döndürür; gerçek satırlar self.rows içindedir.
-        # Eski kod feed() dönüşünü rows olarak aldığı için rows=None oluyor ve
-        # doğrudan TJK fallback'i hiç parse edilemiyordu.
         P(convert_charrefs=True).feed(html_text or "")
         return self.rows
 
@@ -1002,19 +940,19 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
         x = re.sub(r"[^a-z0-9]+", "", x)
         return x
 
+    # norm_header tüm noktalama/boşlukları siler: "K. No-K. Adı" -> "knokadi"
     header_alias = {
         "tarih": "date", "sehir": "city", "msf": "distance", "mesafe": "distance",
         "pist": "surface", "s": "place", "derece": "time", "siklet": "weight",
         "taki": "equipment", "jokey": "jockey", "st": "post", "gny": "odds",
-        "grup": "group", "knokko": "raceName", "kno-kadi": "raceName",
-        "kno-kadi": "raceName", "kcins": "raceType", "ant": "trainer",
-        "ant": "trainer", "sahip": "owner", "hp": "hp", "ikramiye": "prize",
-        "s20": "l20",
+        "grup": "group", "knokadi": "raceName", "kosuadi": "raceName",
+        "kcins": "raceType", "ant": "trainer", "antrenor": "trainer",
+        "sahip": "owner", "hp": "hp", "ikramiye": "prize", "s20": "l20",
     }
 
     for url in urls:
         try:
-            response = _get_http_session().get(
+            response = _SESSION.get(
                 url,
                 timeout=timeout,
                 headers={
@@ -1071,15 +1009,6 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
 
                 nr = _normalize_history_row(row)
                 if nr and nr.get("date"):
-                    # TJK geçmiş tablosunda koşu numarası çoğu zaman ayrı bir
-                    # kolonda değil, "K. No-K. Adı" alanının başında gelir.
-                    # Bunu açık raceNo alanına da yaz; ortak yarış eşleştirmesi
-                    # her at için aynı koşuyu ayırt edebilsin.
-                    _race_label = str(nr.get("raceName") or "").strip()
-                    _race_match = re.match(r"^\\s*(\\d{1,2})\\s*[-.)]", _race_label)
-                    if _race_match and not nr.get("raceNo"):
-                        nr["raceNo"] = _race_match.group(1)
-                    nr.setdefault("_historySource", "TJK AtKosuBilgileri")
                     parsed.append(nr)
 
             if parsed:
@@ -1095,27 +1024,15 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
 def get_horse_history(
     at_id: Any,
     timeout: int = 45,
-    horse: str = "",
 ) -> Dict[str, Any]:
-    """At geçmişini önce kimlikle, kimlik yoksa/boş sonuçta at adıyla ara.
+    if at_id in (None, ""):
+        return {"ok": False, "history": [], "error": "atId yok"}
 
-    Programdaki bazı atlarda atId alanı boş veya hatalı olabiliyor. Worker'ın
-    /horsedata endpoint'i AtAdi/ATADI sorgularını desteklediğinden, bu durumda
-    da aynı TJK geçmiş toplama hattı kullanılır; at sessizce geçmişsiz bırakılmaz.
-    """
-    horse_name = normalize_text(horse)
     errors: List[str] = []
-    payloads = []
-    if at_id not in (None, ""):
-        payloads.extend([
-            (API_HORSE, {"atId": str(at_id)}),
-            (API_HORSEDATA, {"atId": str(at_id), "horse": horse_name}),
-        ])
-    if horse_name:
-        # ID yoksa veya kimlikli uçlar boş dönerse resmi TJK at adı sorgusu.
-        payloads.append((API_HORSEDATA, {"horse": horse_name}))
-    if not payloads:
-        return {"ok": False, "history": [], "error": "At kimliği ve adı yok"}
+    payloads = [
+        (API_HORSE, {"atId": str(at_id)}),
+        (API_HORSEDATA, {"atId": str(at_id), "horse": ""}),
+    ]
 
     for url, params in payloads:
         try:
@@ -1141,7 +1058,7 @@ def get_horse_history(
     # sayfasını dene. Böylece Worker'ın boş/önbellekli cevabı gerçek geçmişi
     # sıfırlayamaz.
     try:
-        direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25)) if at_id not in (None, "") else []
+        direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25))
         if direct:
             return {
                 "ok": True,
@@ -1199,12 +1116,10 @@ def get_horse_enrichment(
     errors: List[str] = []
 
     def fetch_history() -> Dict[str, Any]:
-        # AtId olmasa da at adıyla aynı TJK geçmiş sorgu zincirini çalıştır.
-        # At kimliği olmayan satırları burada erken kesmek bazı atları geçmişsiz bırakıyordu.
-        if at_id in (None, "") and not horse_name:
-            return {"ok": False, "history": [], "error": "At kimliği ve adı yok"}
+        if at_id in (None, ""):
+            return {"ok": False, "history": [], "error": "atId yok"}
         try:
-            return get_horse_history(at_id, timeout=timeout, horse=horse_name)
+            return get_horse_history(at_id, timeout=timeout)
         except Exception as exc:
             return {"ok": False, "history": [], "error": str(exc)}
 
@@ -1217,7 +1132,6 @@ def get_horse_enrichment(
             return {"ok": False, "workouts": [], "error": str(exc)}
 
     # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
-    # Her istek kendi thread-local HTTP session bağlantı havuzunu kullanır.
     with ThreadPoolExecutor(max_workers=2) as executor:
         history_future = executor.submit(fetch_history)
         workout_future = executor.submit(fetch_workouts)
@@ -1232,30 +1146,18 @@ def get_horse_enrichment(
     if not isinstance(workouts, list):
         workouts = []
 
-    # get_horse_history() önce kimlikli /horse ve /horsedata uçlarını,
-    # ardından at adıyla /horsedata sorgusunu ve kimlik varsa doğrudan TJK'yı dener.
-    # Burada aynı zinciri ikinci
-    # kez çalıştırmıyoruz. Galop endpointi de yalnızca bir kez sorgulanır.
-    # Bu, özellikle çok atlı koşularda gereksiz HTTP çağrılarını ciddi azaltır.
+    # get_horse_history zaten /horse -> /horsedata -> doğrudan TJK sırasıyla dener.
+    # Burada aynı kaynakları TEKRAR sorgulamıyoruz (eski sürüm bir at için 10'a
+    # kadar ağ isteği üretiyordu). Galop için tek bir yeniden deneme yeterlidir.
+    if not workouts and horse_name:
+        retry = fetch_workouts()
+        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
+            workouts = retry.get("workouts") or []
+        if not workouts and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"workouts: {retry.get('error')}")
 
     if not history and isinstance(history_data, dict) and history_data.get("error"):
         errors.append(f"horse: {history_data.get('error')}")
-    if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
-        errors.append(f"workouts: {workout_data.get('error')}")
-
-    # Worker boş dönerse, Streamlit sunucusundan TJK'nın gerçek at geçmişini
-    # doğrudan sorgula. Bu yalnızca Worker geçmişi gerçekten boşsa çalışır.
-    if not history and at_id not in (None, ""):
-        try:
-            direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25))
-            if direct:
-                history = direct
-                history_data = dict(history_data or {})
-                history_data["history"] = history
-                history_data["historyCount"] = len(history)
-                history_data["earnings"] = _earnings_from_history(history)
-        except Exception as exc:
-            errors.append(f"direct TJK history: {exc}")
 
     errors = list(dict.fromkeys(errors))
 
@@ -1277,8 +1179,11 @@ def get_horse_enrichment(
             result["atId"] = history_data.get("atId")
     if "earnings" not in result:
         result["earnings"] = {"total": None, "year": None}
+    elif isinstance(result.get("earnings"), dict) and target_date is not None:
+        # Worker yıllık kazancı bugünün yılına göre verir; hedef yıl farklıysa yeniden hesapla.
+        result["earnings"]["year"] = _earnings_from_history(history, target_date).get("year")
     if isinstance(result.get("earnings"), dict):
-        derived = _earnings_from_history(history)
+        derived = _earnings_from_history(history, target_date)
         if result["earnings"].get("total") in (None, "", 0, 0.0):
             result["earnings"]["total"] = derived.get("total")
         if result["earnings"].get("year") in (None, "", 0, 0.0):
