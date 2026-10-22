@@ -1248,28 +1248,26 @@ def enrich_race_horses(
 
     def one(idx_item):
         idx, item = idx_item
-        # TJK yanıtlarında kimlik alanı farklı büyük/küçük harflerle gelebilir.
-        # At numarası (no/numara) asla TJK AtId yerine kullanılmaz.
-        at_id = next((item.get(k) for k in (
-            "atId", "AtId", "ATID", "atID", "atid", "at_id",
-            "horseId", "HorseId", "HORSEID", "horseID", "horseid", "horse_id",
-            "horseKey", "HorseKey", "horse_key", "idAt", "id_at",
-            "tjkAtId", "tjk_at_id", "Id", "id"
-        ) if item.get(k) not in (None, "", 0, "0")), "")
+        # TJK aynı alanı farklı casing ile döndürebilir; yalnızca kimlik
+        # alanlarını kontrol et. At numarası/start numarası kimlik yerine kullanılmaz.
+        at_id = (
+            item.get("atId") or item.get("AtId") or item.get("ATID") or
+            item.get("atID") or item.get("at_id") or item.get("atid") or
+            item.get("horseId") or item.get("HorseId") or item.get("HORSEID") or
+            item.get("horseID") or item.get("horse_id") or item.get("horseid") or
+            item.get("horseKey") or item.get("HorseKey") or item.get("horse_key") or
+            item.get("idAt") or item.get("id_at") or
+            item.get("id") or item.get("Id") or ""
+        )
         name = get_horse_name(item)
         if not at_id:
-            item["_at_id"] = ""
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = (
-                "TJK program kaydında gerçek at kimliği (atId) yok. "
-                "At numarası kimlik olarak kullanılmadı; Worker'a boş kimlikle istek gönderilmedi."
-            )
+            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
             return idx, item, name
 
-        item["_at_id"] = str(at_id).strip()
         try:
-            data = load_horse_enrichment(str(at_id).strip(), name, target_date, target_city, target_distance, target_surface, target_class)
+            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
