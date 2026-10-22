@@ -5480,8 +5480,9 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    # BİZİM SKOR / REYTİNG: hücre zeminini doldurmadan kalın renkli çerçeve.
-    # GÜNCEL SINIF: mevcut daire ve renk kuralları aynen korunur.
+    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
+    # Her sütunda ilk 5 değer koyu yeşilden açık yeşile renklendirilir.
+    # GÜNCEL SINIF farkında negatif değer kırmızı, pozitif değer mavi yazılır.
     _score_circle_renderer = JsCode(r"""
     class ScoreCircleRenderer {
         init(params) {
@@ -5624,48 +5625,56 @@ else:
                 }
             }
 
+            const circle = document.createElement('span');
+            circle.textContent = String(params.value);
+            circle.style.display = 'inline-flex';
+            circle.style.alignItems = 'center';
+            circle.style.justifyContent = 'center';
             const scoreText = String(params.value == null ? '' : params.value);
             const digits = scoreText.replace(/[^0-9]/g, '').length;
-            const mark = document.createElement('span');
-            mark.textContent = scoreText;
-            mark.style.display = 'inline-flex';
-            mark.style.alignItems = 'center';
-            mark.style.justifyContent = 'center';
-            mark.style.boxSizing = 'border-box';
-            mark.style.fontWeight = '950';
-            mark.style.fontVariantNumeric = 'tabular-nums';
-            mark.style.lineHeight = '1.15';
-            mark.style.whiteSpace = 'nowrap';
+            const fontSize = digits >= 6 ? 13 : (digits >= 5 ? 14 : 15);
+            circle.style.minWidth = (digits >= 6 ? '82px' : (digits >= 5 ? '76px' : '68px'));
+            circle.style.padding = '7px 9px';
+            circle.style.height = 'auto';
+            circle.style.boxSizing = 'border-box';
+            circle.style.border = '3px solid ' + border;
+            circle.style.borderRadius = '7px';
+            circle.style.color = fg;
+            circle.style.fontWeight = '900';
+            circle.style.fontSize = fontSize + 'px';
+            circle.style.lineHeight = '1.15';
+            circle.style.textAlign = 'center';
+            circle.style.whiteSpace = 'nowrap';
+            circle.style.boxShadow = 'none';
 
-            if (field === 'BİZİM SKOR' || field === 'REYTİNG') {
-                // Sadece çerçeve renkli: hücrenin içi ve yazının arkası şeffaf.
-                // Puan renk sıralaması yukarıdaki mevcut kurallarla aynı kalır.
-                mark.style.padding = '5px 9px';
-                mark.style.minWidth = '66px';
-                mark.style.border = '3px solid ' + border;
-                mark.style.borderRadius = '7px';
-                mark.style.background = 'transparent';
-                mark.style.color = border;
-                mark.style.fontSize = (digits >= 6 ? 15 : 16) + 'px';
-                mark.style.boxShadow = 'none';
+            // İstenen görünüm: yalnızca BİZİM SKOR'da çerçevenin içi,
+            // mevcut sıralama renkleriyle tamamen doldurulur.
+            // REYTİNG çerçeve görünümünde kalır; GÜNCEL SINIF'ın
+            // mevcut renk ve daire kuralları değiştirilmez.
+            if (field === 'BİZİM SKOR') {
+                circle.style.background = bg;
+                circle.style.color = fg;
+                circle.style.borderRadius = '7px';
+                circle.style.minWidth = (digits >= 6 ? '92px' : (digits >= 5 ? '84px' : '74px'));
+                circle.style.padding = '8px 10px';
+            } else if (field === 'REYTİNG') {
+                circle.style.background = 'transparent';
+                circle.style.borderWidth = '3px';
+                circle.style.color = fg;
             } else {
-                // GÜNCEL SINIF görünümü ve renklendirmesi önceki haliyle korunur.
-                const diameter = digits >= 6 ? 64 : (digits >= 5 ? 58 : (digits >= 4 ? 52 : 46));
-                const fontSize = digits >= 6 ? 10 : (digits >= 5 ? 11 : (digits >= 4 ? 12 : 13));
-                mark.style.width = diameter + 'px';
-                mark.style.height = diameter + 'px';
-                mark.style.minWidth = diameter + 'px';
-                mark.style.maxWidth = diameter + 'px';
-                mark.style.borderRadius = '50%';
-                mark.style.background = bg;
-                mark.style.border = '2px solid ' + border;
-                mark.style.color = fg;
-                mark.style.fontSize = fontSize + 'px';
-                mark.style.textAlign = 'center';
-                mark.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
+                // GÜNCEL SINIF'ın eski dairesel görünümü ve dolgu renkleri korunur.
+                circle.style.width = '46px';
+                circle.style.height = '46px';
+                circle.style.minWidth = '46px';
+                circle.style.maxWidth = '46px';
+                circle.style.padding = '0';
+                circle.style.borderRadius = '50%';
+                circle.style.background = bg;
+                circle.style.fontSize = '13px';
+                circle.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
             }
 
-            root.appendChild(mark);
+            root.appendChild(circle);
             this.eGui = root;
         }
         refresh(params) { return false; }
