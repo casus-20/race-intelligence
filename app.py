@@ -5480,7 +5480,7 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
+    # BİZİM SKOR / REYTİNG: aynı renk sıralamasıyla hücre dolgulu çerçeve; GÜNCEL SINIF dairesel.
     # Her sütunda ilk 5 değer koyu yeşilden açık yeşile renklendirilir.
     # GÜNCEL SINIF farkında negatif değer kırmızı, pozitif değer mavi yazılır.
     _score_circle_renderer = JsCode(r"""
@@ -5609,72 +5609,68 @@ else:
                 }
             }
 
-            // REYTİNG: mevcut yeşil ilk 5 görünümü korunur.
+            // REYTİNG, BİZİM SKOR ile aynı renk sıralamasını kullanır:
+            // en yüksek 4 mavi, en düşük 3 kırmızı, kalanlar sarı.
             else if (field === 'REYTİNG') {
                 const sorted = values.slice().sort(function(a,b){ return b-a; });
-                const rank = sorted.indexOf(value) + 1;
-                if (rank <= 5) {
-                    const greens = ['#0b5d2a','#167a3d','#299653','#4caf6b','#79c98b'];
-                    bg = greens[rank - 1] || greens[4];
-                    border = '#0a4d24';
+                const rankHigh = sorted.indexOf(value) + 1;
+                const sortedAsc = values.slice().sort(function(a,b){ return a-b; });
+                const rankLow = sortedAsc.indexOf(value) + 1;
+                if (rankHigh <= Math.min(4, sorted.length)) {
+                    const blues = ['#063b73','#0a4f96','#1769aa','#4b8fc9'];
+                    bg = blues[rankHigh - 1] || blues[3];
+                    border = '#052f5f';
+                    fg = '#ffffff';
+                } else if (rankLow <= Math.min(3, sorted.length)) {
+                    const reds = ['#8b0000','#b22222','#dc4b4b'];
+                    bg = reds[rankLow - 1] || reds[2];
+                    border = '#6f0000';
                     fg = '#ffffff';
                 } else {
-                    bg = '#f3c84b';
-                    border = '#d6a900';
+                    const ratio = sorted.length > 1 ? (rankHigh - 1) / (sorted.length - 1) : 0.5;
+                    bg = ratio < 0.5 ? '#f7d774' : '#f1bd3a';
+                    border = '#c99618';
                     fg = '#111111';
                 }
             }
 
-            const circle = document.createElement('span');
-            circle.textContent = String(params.value);
-            circle.style.display = 'inline-flex';
-            circle.style.alignItems = 'center';
-            circle.style.justifyContent = 'center';
             const scoreText = String(params.value == null ? '' : params.value);
             const digits = scoreText.replace(/[^0-9]/g, '').length;
             const fontSize = digits >= 6 ? 13 : (digits >= 5 ? 14 : 15);
-            circle.style.minWidth = (digits >= 6 ? '82px' : (digits >= 5 ? '76px' : '68px'));
-            circle.style.padding = '7px 9px';
-            circle.style.height = 'auto';
-            circle.style.boxSizing = 'border-box';
-            circle.style.border = '3px solid ' + border;
-            circle.style.borderRadius = '7px';
-            circle.style.color = fg;
-            circle.style.fontWeight = '900';
-            circle.style.fontSize = fontSize + 'px';
-            circle.style.lineHeight = '1.15';
-            circle.style.textAlign = 'center';
-            circle.style.whiteSpace = 'nowrap';
-            circle.style.boxShadow = 'none';
-
-            // İstenen görünüm: yalnızca BİZİM SKOR'da çerçevenin içi,
-            // mevcut sıralama renkleriyle tamamen doldurulur.
-            // REYTİNG çerçeve görünümünde kalır; GÜNCEL SINIF'ın
-            // mevcut renk ve daire kuralları değiştirilmez.
-            if (field === 'BİZİM SKOR') {
-                circle.style.background = bg;
-                circle.style.color = fg;
-                circle.style.borderRadius = '7px';
-                circle.style.minWidth = (digits >= 6 ? '92px' : (digits >= 5 ? '84px' : '74px'));
-                circle.style.padding = '8px 10px';
-            } else if (field === 'REYTİNG') {
-                circle.style.background = 'transparent';
-                circle.style.borderWidth = '3px';
-                circle.style.color = fg;
+            const isScoreCell = field === 'BİZİM SKOR' || field === 'REYTİNG';
+            const badge = document.createElement('span');
+            badge.textContent = scoreText;
+            badge.style.display = 'flex';
+            badge.style.alignItems = 'center';
+            badge.style.justifyContent = 'center';
+            badge.style.boxSizing = 'border-box';
+            badge.style.background = bg;
+            badge.style.border = '3px solid ' + border;
+            badge.style.color = fg;
+            badge.style.fontWeight = '900';
+            badge.style.fontSize = fontSize + 'px';
+            badge.style.lineHeight = '1';
+            badge.style.textAlign = 'center';
+            badge.style.whiteSpace = 'nowrap';
+            badge.style.overflow = 'hidden';
+            badge.style.textOverflow = 'clip';
+            badge.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
+            if (isScoreCell) {
+                // Puan renkleri dikdörtgen hücre alanını doldurur; GÜNCEL SINIF dairesi korunur.
+                badge.style.width = '100%';
+                badge.style.height = '100%';
+                badge.style.minHeight = '30px';
+                badge.style.borderRadius = '4px';
+                root.style.padding = '1px 2px';
             } else {
-                // GÜNCEL SINIF'ın eski dairesel görünümü ve dolgu renkleri korunur.
-                circle.style.width = '46px';
-                circle.style.height = '46px';
-                circle.style.minWidth = '46px';
-                circle.style.maxWidth = '46px';
-                circle.style.padding = '0';
-                circle.style.borderRadius = '50%';
-                circle.style.background = bg;
-                circle.style.fontSize = '13px';
-                circle.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
+                const diameter = digits >= 6 ? 64 : (digits >= 5 ? 58 : (digits >= 4 ? 52 : 46));
+                badge.style.width = diameter + 'px';
+                badge.style.height = diameter + 'px';
+                badge.style.minWidth = diameter + 'px';
+                badge.style.maxWidth = diameter + 'px';
+                badge.style.borderRadius = '50%';
             }
-
-            root.appendChild(circle);
+            root.appendChild(badge);
             this.eGui = root;
         }
         refresh(params) { return false; }
