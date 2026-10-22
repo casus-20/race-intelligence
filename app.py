@@ -1248,15 +1248,10 @@ def enrich_race_horses(
 
     def one(idx_item):
         idx, item = idx_item
-        # TJK aynı alanı farklı casing ile döndürebilir; yalnızca kimlik
-        # alanlarını kontrol et. At numarası/start numarası kimlik yerine kullanılmaz.
         at_id = (
-            item.get("atId") or item.get("AtId") or item.get("ATID") or
-            item.get("atID") or item.get("at_id") or item.get("atid") or
-            item.get("horseId") or item.get("HorseId") or item.get("HORSEID") or
-            item.get("horseID") or item.get("horse_id") or item.get("horseid") or
-            item.get("horseKey") or item.get("HorseKey") or item.get("horse_key") or
-            item.get("idAt") or item.get("id_at") or
+            item.get("atId") or item.get("at_id") or
+            item.get("horseId") or item.get("horse_id") or
+            item.get("horseKey") or item.get("horse_key") or
             item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
@@ -5635,16 +5630,23 @@ else:
             circle.style.display = 'inline-flex';
             circle.style.alignItems = 'center';
             circle.style.justifyContent = 'center';
-            circle.style.width = '42px';
-            circle.style.height = '42px';
-            circle.style.minWidth = '42px';
+            // Uzun puanlar daire dışına taşmasın: genişlik ve yazı boyutu
+            // değer uzunluğuna göre ayarlanır; sütun genişliği de buna uyar.
+            const scoreText = String(params.value == null ? '' : params.value);
+            const digits = scoreText.replace(/[^0-9]/g, '').length;
+            const diameter = digits >= 6 ? 64 : (digits >= 5 ? 58 : (digits >= 4 ? 52 : 46));
+            const fontSize = digits >= 6 ? 10 : (digits >= 5 ? 11 : (digits >= 4 ? 12 : 13));
+            circle.style.width = diameter + 'px';
+            circle.style.height = diameter + 'px';
+            circle.style.minWidth = diameter + 'px';
+            circle.style.maxWidth = diameter + 'px';
             circle.style.borderRadius = '50%';
             circle.style.boxSizing = 'border-box';
             circle.style.background = bg;
             circle.style.border = '2px solid ' + border;
             circle.style.color = fg;
             circle.style.fontWeight = '900';
-            circle.style.fontSize = '13px';
+            circle.style.fontSize = fontSize + 'px';
             circle.style.lineHeight = '1';
             circle.style.textAlign = 'center';
             circle.style.whiteSpace = 'nowrap';
@@ -5658,9 +5660,9 @@ else:
     }
     """)
 
-    gb.configure_column("BİZİM SKOR", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
+    gb.configure_column("BİZİM SKOR", width=120, minWidth=110, cellRenderer=_score_circle_renderer,
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
-    gb.configure_column("REYTİNG", width=105, minWidth=90, cellRenderer=_score_circle_renderer,
+    gb.configure_column("REYTİNG", width=120, minWidth=110, cellRenderer=_score_circle_renderer,
                         cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     # GÜNCEL SINIF sıralaması: negatiflerde 0'a en yakın negatiften başlayarak,
     # ardından daha düşük negatifler; sonra 0 ve pozitifler küçükten büyüğe.
