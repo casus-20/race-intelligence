@@ -227,7 +227,12 @@ CLASS_BASE = {
     "MAIDEN": 10, "AÇIK": 90,
 }
 
-FINISH_FACTOR = {1: 1.00, 2: .80, 3: .65, 4: .50, 5: .35}
+FINISH_FACTOR = {
+    1: 1.00, 2: 0.95, 3: 0.90, 4: 0.85, 5: 0.80,
+    6: 0.70, 7: 0.65, 8: 0.60, 9: 0.55, 10: 0.50,
+    11: 0.45, 12: 0.40, 13: 0.35, 14: 0.30, 15: 0.25,
+    16: 0.20, 17: 0.15, 18: 0.10,
+}
 
 
 def normalize_race_group(value):
@@ -294,13 +299,20 @@ def finish_factor(place):
     p = int(p)
     if p in FINISH_FACTOR:
         return FINISH_FACTOR[p]
-    return .20
+    # 18. sıra ve sonrası için katsayı taban seviyede tutulur.
+    return 0.10 if p > 18 else None
 
 
 # ------------------------------------------------------------
 # Bileşenler
 # ------------------------------------------------------------
 def _condition_group_scores(prior):
+    """Her geçmiş koşunun sınıf taban puanını bitiriş katsayısıyla çarpar.
+
+    Aynı koşu grubundaki yarışların ortalaması alınmaz; tüm geçerli geçmiş
+    yarışların katkıları toplanır. Hedef tarih filtresi _current_values içinde
+    uygulanır.
+    """
     groups = {}
     for r in prior:
         group = normalize_race_group(_class(r))
@@ -309,24 +321,17 @@ def _condition_group_scores(prior):
         if not group or base <= 0 or ff is None:
             continue
         groups.setdefault(group, []).append(base * ff)
-    return {g: sum(v) / len(v) for g, v in groups.items() if v}
+    return {g: sum(v) for g, v in groups.items() if v}
 
 
 def calculate_condition_score(prior, today_condition=""):
-    """0-100. Grup ortalamalarının, bugünkü sınıfa yakınlıkla ağırlıklı ortalaması."""
-    avgs = _condition_group_scores(prior)
-    if not avgs:
-        return 0.0, avgs
-    today_base = class_base_points(today_condition)
-    num = den = 0.0
-    for g, avg in avgs.items():
-        if today_base > 0:
-            w = max(0.25, 1.0 - abs(class_base_points(g) - today_base) / 100.0)
-        else:
-            w = 1.0
-        num += avg * w
-        den += w
-    return max(0.0, min(100.0, num / den)), avgs
+    """Koşu şartı uyumu: tüm geçerli geçmiş yarışların sınıf puanları toplamı.
+
+    Bilerek ortalama alınmaz ve 0-100 aralığına kırpılmaz; toplam puan
+    geçmiş yarış sayısıyla artabilir.
+    """
+    sums = _condition_group_scores(prior)
+    return sum(sums.values()), sums
 
 
 def _distance_coeff(diff):
@@ -334,13 +339,13 @@ def _distance_coeff(diff):
     if diff <= 0:
         return 1.00
     if diff <= 100:
-        return .85
+        return .95
     if diff <= 200:
-        return .70
+        return .90
     if diff <= 300:
-        return .55
+        return .85
     if diff <= 400:
-        return .40
+        return .80
     return None
 
 
@@ -383,7 +388,7 @@ def score_pist_performansi(prior, target):
 
 def score_guncel_form(prior):
     rows = sorted(prior, key=lambda r: (_row_date(r) or date.min), reverse=True)[:6]
-    weights = [1.00, .90, .80, .70, .60, .50]
+    weights = [1.00, .95, .90, .85, .80, .75]
     vals, used = [], []
     for w, r in zip(weights, rows):
         ff = finish_factor(_place(r))
@@ -395,22 +400,6 @@ def score_guncel_form(prior):
     return max(0.0, min(100.0, 100.0 * sum(vals) / sum(used)))
 
 
-def score_start_kulvar(prior, target):
-    post = _num(_first(target, ["post", "st", "start", "kulvar"], None))
-    if post is None:
-        return 0.0
-    rows = [r for r in prior
-            if _num(_first(r, ["post", "st", "start", "kulvar"], None)) == post
-            and _place(r) is not None]
-    if not rows:
-        return 0.0
-    return max(0.0, min(50.0, 50.0 * (_rate_score(rows) or 0.0)))
-
-
-def _horse_post(horse):
-    """Atın BUGÜNKÜ start (kulvar) numarası. '5 DS' gibi değerlerden sayıyı alır."""
-    v = _first(horse, ["st", "St", "post", "start", "kulvar"], None)
-    return _num(v)
 
 
 def _current_values(horse, race):
@@ -420,8 +409,6 @@ def _current_values(horse, race):
         "distance": race.get("distance") or meta.get("distance"),
         "condition": race.get("condition") or race.get("raceName") or meta.get("detail", ""),
         "date": race.get("date") or race.get("tarih"),
-        # Bugünkü atın kulvarı (eski sürümde yarış sözlüğünden okunduğu için hep 0 çıkıyordu)
-        "post": _horse_post(horse),
     }
     target_date = _dt(target.get("date"))
     if target_date is not None:
@@ -437,7 +424,6 @@ def _current_values(horse, race):
         "pist_mesafe": score_pist_mesafe(prior, target),
         "pist_performansi": score_pist_performansi(prior, target),
         "guncel_form": score_guncel_form(prior),
-        "start_kulvar": score_start_kulvar(prior, target),
     }
 
 
@@ -458,7 +444,6 @@ def calculate_bizim_ranking(horses, race):
             "02_pist_mesafe": round(vals["pist_mesafe"], 2),
             "03_pist_performansi": round(vals["pist_performansi"], 2),
             "06_guncel_form": round(vals["guncel_form"], 2),
-            "14_start_kulvar": round(vals["start_kulvar"], 2),
         }
         score = round(sum(components.values()), 2)
         results.append({
@@ -468,11 +453,10 @@ def calculate_bizim_ranking(horses, race):
             "model": {
                 "method": "fixed_rule_no_learning",
                 "learning": False,
-                "max_total": 450,
+                "max_total": None,
                 "fixed_components": {
-                    "kosu_sarti_uyumu": 100, "pist_mesafe": 100,
+                    "kosu_sarti_uyumu": "unbounded", "pist_mesafe": 100,
                     "pist_performansi": 100, "guncel_form": 100,
-                    "start_kulvar": 50,
                 },
                 "minimum_prior_races": 0,
             },
