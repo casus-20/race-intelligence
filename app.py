@@ -1248,21 +1248,28 @@ def enrich_race_horses(
 
     def one(idx_item):
         idx, item = idx_item
-        at_id = (
-            item.get("atId") or item.get("at_id") or
-            item.get("horseId") or item.get("horse_id") or
-            item.get("horseKey") or item.get("horse_key") or
-            item.get("id") or item.get("Id") or ""
-        )
+        # TJK yanıtlarında kimlik alanı farklı büyük/küçük harflerle gelebilir.
+        # At numarası (no/numara) asla TJK AtId yerine kullanılmaz.
+        at_id = next((item.get(k) for k in (
+            "atId", "AtId", "ATID", "atID", "atid", "at_id",
+            "horseId", "HorseId", "HORSEID", "horseID", "horseid", "horse_id",
+            "horseKey", "HorseKey", "horse_key", "idAt", "id_at",
+            "tjkAtId", "tjk_at_id", "Id", "id"
+        ) if item.get(k) not in (None, "", 0, "0")), "")
         name = get_horse_name(item)
         if not at_id:
+            item["_at_id"] = ""
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
+            item["_enrichment_error"] = (
+                "TJK program kaydında gerçek at kimliği (atId) yok. "
+                "At numarası kimlik olarak kullanılmadı; Worker'a boş kimlikle istek gönderilmedi."
+            )
             return idx, item, name
 
+        item["_at_id"] = str(at_id).strip()
         try:
-            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
+            data = load_horse_enrichment(str(at_id).strip(), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
