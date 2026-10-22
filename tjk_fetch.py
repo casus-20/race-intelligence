@@ -465,12 +465,15 @@ def normalize_horse(horse: Dict[str, Any]) -> Dict[str, Any]:
     # Gerçek TJK at kimliğini standartlaştır.
     # ÖNEMLİ: program numarası (no) hiçbir zaman atId yerine kullanılmaz.
     at_id = (
-        result.get("atId") or result.get("AtId") or result.get("ATID")
-        or result.get("AtID") or result.get("atID") or result.get("at_id")
-        or result.get("horseId") or result.get("HorseId") or result.get("horseID")
-        or result.get("horse_id") or result.get("horseKey") or result.get("horse_key")
-        or result.get("tjkHorseId") or result.get("tjk_horse_id")
-        or result.get("id") or result.get("Id") or ""
+        result.get("atId")
+        or result.get("at_id")
+        or result.get("horseId")
+        or result.get("horse_id")
+        or result.get("horseKey")
+        or result.get("horse_key")
+        or result.get("id")
+        or result.get("Id")
+        or ""
     )
     if at_id not in (None, ""):
         result["atId"] = str(at_id)
@@ -1083,79 +1086,59 @@ def _direct_tjk_history(at_id: str, timeout: int = 25) -> List[Dict[str, Any]]:
 def get_horse_history(
     at_id: Any,
     timeout: int = 45,
-    horse_name: str = "",
 ) -> Dict[str, Any]:
-    """Geçmişi önce hafif /horse, ardından geçerli parametreli fallback'lerle alır.
-
-    /horsedata endpointi hem atId hem horse istediği için isim boşken çağrılmaz;
-    bu, her at için kesin HTTP 400 üreten eski isteği ortadan kaldırır.
-    Başarılı bulunan geçmiş hiçbir boş/başarısız cevapla ezilmez.
-    """
     if at_id in (None, ""):
         return {"ok": False, "history": [], "error": "atId yok"}
 
     errors: List[str] = []
-    at_id_text = str(at_id).strip()
-    name = normalize_text(horse_name)
-    fallback_workouts: List[Dict[str, Any]] = []
+    payloads = [
+        (API_HORSE, {"atId": str(at_id)}),
+        (API_HORSEDATA, {"atId": str(at_id), "horse": ""}),
+    ]
 
-    # 1) Hafif ve öncelikli Worker endpointi.
-    try:
-        data = _worker_json(API_HORSE, {"atId": at_id_text}, timeout=timeout)
-        history = _extract_history_payload(data)
-        if history:
-            result = dict(data) if isinstance(data, dict) else {}
-            result.update({"ok": True, "history": history, "historyCount": len(history)})
-            result.setdefault("historySource", "Worker /api/tjk/horse")
-            result["earnings"] = {**(result.get("earnings") if isinstance(result.get("earnings"), dict) else {}), **{
-                k: v for k, v in _earnings_from_history(history).items()
-                if v is not None and not (isinstance(result.get("earnings"), dict) and result["earnings"].get(k))
-            }}
-            return result
-        errors.append(f"{API_HORSE}: history boş")
-    except Exception as exc:
-        errors.append(f"{API_HORSE}: {exc}")
+    for url, params in payloads:
+        try:
+            data = _worker_json(url, params, timeout=timeout)
+            history = _extract_history_payload(data)
+            if history:
+                earnings = {}
+                if isinstance(data.get("earnings"), dict):
+                    earnings.update(data.get("earnings") or {})
+                derived = _earnings_from_history(history)
+                earnings.setdefault("total", derived.get("total"))
+                earnings.setdefault("year", derived.get("year"))
+                result = dict(data)
+                result["history"] = history
+                result["historyCount"] = len(history)
+                result["earnings"] = earnings
+                return result
+            errors.append(f"{url}: history boş")
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
 
-    # 2) Direct TJK fallback. It is used before the heavier multi-page Worker route.
+    # Worker iki endpointte de geçmiş veremiyorsa doğrudan TJK AtKosuBilgileri
+    # sayfasını dene. Böylece Worker'ın boş/önbellekli cevabı gerçek geçmişi
+    # sıfırlayamaz.
     try:
-        direct = _direct_tjk_history(at_id_text, timeout=min(timeout, 25))
+        direct = _direct_tjk_history(str(at_id), timeout=min(timeout, 25))
         if direct:
             return {
-                "ok": True, "history": direct, "historyCount": len(direct),
+                "ok": True,
+                "history": direct,
+                "historyCount": len(direct),
                 "earnings": _earnings_from_history(direct),
-                "historySource": "TJK AtKosuBilgileri (direct fallback)", "atId": at_id_text,
+                "historySource": "TJK AtKosuBilgileri (direct fallback)",
             }
         errors.append("direct TJK: geçmiş boş")
     except Exception as exc:
         errors.append(f"direct TJK: {exc}")
 
-    # 3) Son fallback: sadece at adı biliniyorsa /horsedata çağır.
-    if name:
-        try:
-            data = _worker_json(API_HORSEDATA, {"atId": at_id_text, "horse": name}, timeout=timeout)
-            history = _extract_history_payload(data)
-            if history:
-                result = dict(data) if isinstance(data, dict) else {}
-                result.update({"ok": True, "history": history, "historyCount": len(history)})
-                result.setdefault("historySource", "Worker /api/tjk/horsedata fallback")
-                result.setdefault("earnings", _earnings_from_history(history))
-                result["workouts"] = data.get("workouts", []) if isinstance(data.get("workouts", []), list) else []
-                return result
-            fallback_workouts = data.get("workouts", []) if isinstance(data.get("workouts", []), list) else []
-            if fallback_workouts:
-                # Geçmiş bulunmasa da gerçek galop kayıtlarını kaybetme.
-                return {"ok": True, "history": [], "historyCount": 0,
-                        "workouts": fallback_workouts, "workoutCount": len(fallback_workouts),
-                        "error": f"{API_HORSEDATA}: geçmiş boş", "atId": at_id_text}
-            errors.append(f"{API_HORSEDATA}: geçmiş ve galop boş")
-        except Exception as exc:
-            errors.append(f"{API_HORSEDATA}: {exc}")
-    else:
-        errors.append("/horsedata fallback at adı olmadığı için atlandı")
-
-    return {"ok": False, "history": [], "historyCount": 0,
-            "workouts": fallback_workouts, "workoutCount": len(fallback_workouts),
-            "error": " | ".join(errors)}
+    return {
+        "ok": False,
+        "history": [],
+        "historyCount": 0,
+        "error": " | ".join(errors),
+    }
 
 
 def get_horse_workouts(
@@ -1198,7 +1181,7 @@ def get_horse_enrichment(
         if at_id in (None, ""):
             return {"ok": False, "history": [], "error": "atId yok"}
         try:
-            return get_horse_history(at_id, timeout=timeout, horse_name=horse_name)
+            return get_horse_history(at_id, timeout=timeout)
         except Exception as exc:
             return {"ok": False, "history": [], "error": str(exc)}
 
@@ -1220,41 +1203,16 @@ def get_horse_enrichment(
 
     history = _extract_history_payload(history_data) if isinstance(history_data, dict) else []
     workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
-    if not workouts and isinstance(history_data, dict):
-        workouts = history_data.get("workouts", []) or []
 
     if not isinstance(history, list):
         history = []
     if not isinstance(workouts, list):
         workouts = []
 
-    # Yalnızca eksik veri varsa tek bir birleşik fallback çağrısı yap.
-    # At adı ve atId ikisi de gönderilir; boş parametreyle HTTP 400 oluşturulmaz.
-    # Fallback boş dönerse mevcut iyi veri korunur, dolu dönerse geçmişler birleştirilir.
-    if (not history or not workouts) and at_id not in (None, "") and horse_name:
-        try:
-            fallback = _worker_json(
-                API_HORSEDATA,
-                {"atId": str(at_id).strip(), "horse": horse_name},
-                timeout=timeout,
-            )
-            fallback_history = _extract_history_payload(fallback)
-            fallback_workouts = fallback.get("workouts", []) if isinstance(fallback, dict) else []
-            if not isinstance(fallback_workouts, list):
-                fallback_workouts = []
-            if fallback_history:
-                history = _merge_history(history, fallback_history)
-                if isinstance(history_data, dict):
-                    history_data = dict(history_data)
-                    history_data["history"] = history
-                    history_data["historyCount"] = len(history)
-                    history_data.setdefault("historySource", "Worker /api/tjk/horsedata fallback")
-            if fallback_workouts:
-                workouts = fallback_workouts
-            if not fallback_history and not fallback_workouts:
-                errors.append("horsedata fallback: geçmiş ve galop boş")
-        except Exception as exc:
-            errors.append(f"horsedata fallback: {exc}")
+    # get_horse_history() zaten /horse -> /horsedata -> doğrudan TJK
+    # fallback zincirini kendi içinde tamamlar. Burada aynı zinciri ikinci
+    # kez çalıştırmıyoruz. Galop endpointi de yalnızca bir kez sorgulanır.
+    # Bu, özellikle çok atlı koşularda gereksiz HTTP çağrılarını ciddi azaltır.
 
     if not history and isinstance(history_data, dict) and history_data.get("error"):
         errors.append(f"horse: {history_data.get('error')}")
