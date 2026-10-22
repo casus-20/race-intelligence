@@ -707,73 +707,81 @@ def get_horse_enrichment(
     target_surface: str = "",
     target_class: str = "",
 ) -> Dict[str, Any]:
-    """Gerçek TJK geçmişi ve galoplarını alır; boş/eksik kimlikle horsedata çağırmaz."""
+    """
+    Mevcut uygulama mimarisini bozmadan gerçek koşu geçmişi ve galop verisini
+    hafif Worker endpointlerinden alır.
+
+    ÖNEMLİ:
+    Eski sürüm önce /horsedata çağırıyordu. Bu endpoint tek at için birden
+    fazla TJK sayfası taradığı için Worker 503/resource-limit oluşturabiliyordu.
+    Burada doğrudan mevcut /horse ve /workouts endpointleri kullanılır.
+    target_* parametreleri uygulama ile geriye dönük uyumluluk için korunur.
+    """
     horse_name = normalize_text(horse)
-    at_id_text = str(at_id).strip() if at_id not in (None, "", 0, "0") else ""
     errors: List[str] = []
-    data: Dict[str, Any] = {}
-    history: List[Dict[str, Any]] = []
-    workouts: List[Dict[str, Any]] = []
 
-    # Birleşik endpoint sadece iki zorunlu parametre de gerçekten varsa çağrılır.
-    if at_id_text and horse_name:
+    def fetch_history() -> Dict[str, Any]:
+        if at_id in (None, ""):
+            return {"ok": False, "history": [], "error": "atId yok"}
         try:
-            data = _worker_json(
-                API_HORSEDATA,
-                {
-                    "atId": at_id_text,
-                    "horse": horse_name,
-                    "origin": "Race Intelligence",
-                },
-                timeout=timeout,
-            )
-            if isinstance(data.get("history"), list):
-                history = data["history"]
-            if isinstance(data.get("workouts"), list):
-                workouts = data["workouts"]
+            return get_horse_history(at_id, timeout=timeout)
         except Exception as exc:
-            errors.append(f"horsedata: {exc}")
-    elif not at_id_text:
-        errors.append("TJK geçmişi için atId bulunamadı; günlük programdaki at kimliği alanı kontrol edilmeli.")
-    elif not horse_name:
-        errors.append("Galop/at verisi için at adı boş.")
+            return {"ok": False, "history": [], "error": str(exc)}
 
-    # Birleşik endpoint başarısızsa yalnızca geçerli parametrelerle ayrı endpointlere dön.
-    if not history and at_id_text:
+    def fetch_workouts() -> Dict[str, Any]:
+        if not horse_name:
+            return {"ok": False, "workouts": [], "error": "At adı yok"}
         try:
-            h = get_horse_history(at_id_text, timeout=timeout)
-            if isinstance(h.get("history"), list):
-                history = h["history"]
-            if not history and h.get("error"):
-                errors.append(f"horse: {h['error']}")
+            return get_horse_workouts(horse_name, timeout=timeout)
         except Exception as exc:
-            errors.append(f"horse: {exc}")
+            return {"ok": False, "workouts": [], "error": str(exc)}
+
+    # Tek at seçildiğinde iki hafif endpoint aynı anda çalışır.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        history_future = executor.submit(fetch_history)
+        workout_future = executor.submit(fetch_workouts)
+        history_data = history_future.result()
+        workout_data = workout_future.result()
+
+    history = history_data.get("history", []) if isinstance(history_data, dict) else []
+    workouts = workout_data.get("workouts", []) if isinstance(workout_data, dict) else []
+
+    if not isinstance(history, list):
+        history = []
+    if not isinstance(workouts, list):
+        workouts = []
+
+    # Sadece boş kalan tarafı bir kez tekrar dene.
+    if not history and at_id not in (None, ""):
+        retry = fetch_history()
+        if isinstance(retry, dict) and isinstance(retry.get("history"), list):
+            history = retry.get("history") or []
+        if not history and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"horse: {retry.get('error')}")
 
     if not workouts and horse_name:
-        try:
-            w = get_horse_workouts(horse_name, timeout=timeout)
-            if isinstance(w.get("workouts"), list):
-                workouts = w["workouts"]
-            if not workouts and w.get("error"):
-                errors.append(f"workouts: {w['error']}")
-        except Exception as exc:
-            errors.append(f"workouts: {exc}")
+        retry = fetch_workouts()
+        if isinstance(retry, dict) and isinstance(retry.get("workouts"), list):
+            workouts = retry.get("workouts") or []
+        if not workouts and isinstance(retry, dict) and retry.get("error"):
+            errors.append(f"workouts: {retry.get('error')}")
+
+    if not history and isinstance(history_data, dict) and history_data.get("error"):
+        errors.append(f"horse: {history_data.get('error')}")
+    if not workouts and isinstance(workout_data, dict) and workout_data.get("error"):
+        errors.append(f"workouts: {workout_data.get('error')}")
+
+    errors = list(dict.fromkeys(errors))
 
     result: Dict[str, Any] = {
         "ok": bool(history or workouts),
-        "atId": at_id_text,
-        "horse": horse_name,
-        "history": history if isinstance(history, list) else [],
-        "workouts": workouts if isinstance(workouts, list) else [],
+        "history": history,
+        "workouts": workouts,
         "historyCount": len(history),
         "workoutCount": len(workouts),
     }
-    if isinstance(data, dict):
-        for key in ("historySource", "historyStatus", "workoutSource", "workoutStatus", "historyAttempts", "workoutAttempts", "errors"):
-            if key in data:
-                result[key] = data[key]
     if errors:
-        result["error"] = " | ".join(dict.fromkeys(errors))
+        result["error"] = " | ".join(errors)
     return result
 
 # =========================================================
