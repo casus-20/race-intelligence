@@ -1249,10 +1249,10 @@ def enrich_race_horses(
     def one(idx_item):
         idx, item = idx_item
         at_id = (
-            item.get("atId") or item.get("AtId") or item.get("ATID") or item.get("AtID") or item.get("atID") or
-            item.get("at_id") or item.get("horseId") or item.get("HorseId") or item.get("horseID") or
-            item.get("horse_id") or item.get("horseKey") or item.get("horse_key") or
-            item.get("tjkHorseId") or item.get("tjk_horse_id") or item.get("id") or item.get("Id") or ""
+            item.get("atId") or item.get("at_id") or
+            item.get("horseId") or item.get("horse_id") or
+            item.get("horseKey") or item.get("horse_key") or
+            item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
         if not at_id:
@@ -1271,8 +1271,8 @@ def enrich_race_horses(
         history = history if isinstance(history, list) else []
         workouts = workouts if isinstance(workouts, list) else []
 
-        # tjk_fetch.get_horse_enrichment boş geçmiş/galop için geçerli at adıyla
-        # kontrollü fallback dener; burada aynı endpointi ikinci kez çağırmıyoruz.
+        # tjk_fetch.get_horse_enrichment zaten /horse -> /horsedata -> doğrudan TJK
+        # sırasını dener; burada aynı kaynağı tekrar sorgulamıyoruz (ağ yükü ve rate limit).
         retry_note = ""
         if not history:
             retry_note = str((data or {}).get("error") or "TJK geçmiş kayıt döndürmedi.") if isinstance(data, dict) else "TJK geçmiş kayıt döndürmedi."
@@ -5480,68 +5480,203 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    # BİZİM SKOR ve REYTİNG: renk hücrenin tamamına uygulanır; daire renderer kullanılmaz.
-    # Renk sıralaması mevcut mantığı korur, yalnızca gösterim biçimi değişir.
-    _score_cell_style = JsCode(r"""
-    function(params) {
-        const field = params.colDef.field;
-        const raw = params.value;
-        const value = Number(String(raw == null ? '' : raw).replace('+','').replace(',', '.'));
-        const base = {textAlign:'center', fontWeight:'950', fontSize:'15px', padding:'4px 5px',
-                      lineHeight:'1.15', fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap'};
-        if (raw === null || raw === undefined || raw === '' || !isFinite(value)) {
-            base.backgroundColor = '#e5e7eb'; base.color = '#4b5563'; return base;
-        }
-        const values = [];
-        if (params.api) params.api.forEachNodeAfterFilterAndSort(function(node) {
-            if (!node.data) return;
-            const n = Number(String(node.data[field] == null ? '' : node.data[field]).replace('+','').replace(',', '.'));
-            if (isFinite(n)) values.push(n);
-        });
-        let bg = '#f3c84b', fg = '#111827';
-        if (field === 'BİZİM SKOR') {
-            const desc = values.slice().sort((x,y)=>y-x);
-            const asc = values.slice().sort((x,y)=>x-y);
-            const highRank = desc.indexOf(value) + 1;
-            const lowRank = asc.indexOf(value) + 1;
-            const blues = ['#063b73','#0a4f96','#1769aa','#4b8fc9'];
-            const reds = ['#8b0000','#b22222','#dc4b4b'];
-            if (highRank <= Math.min(4, desc.length)) { bg = blues[highRank-1] || blues[3]; fg = '#ffffff'; }
-            else if (lowRank <= Math.min(3, asc.length)) { bg = reds[lowRank-1] || reds[2]; fg = '#ffffff'; }
-            else { bg = '#f3c84b'; fg = '#111827'; }
-        } else if (field === 'REYTİNG') {
-            const desc = values.slice().sort((x,y)=>y-x);
-            const rank = desc.indexOf(value) + 1;
-            const greens = ['#0b5d2a','#167a3d','#299653','#4caf6b','#79c98b'];
-            if (rank <= 5) { bg = greens[rank-1] || greens[4]; fg = '#ffffff'; }
-            else { bg = '#f3c84b'; fg = '#111827'; }
-        }
-        base.backgroundColor = bg; base.color = fg;
-        base.borderBottom = '1px solid rgba(100,120,140,.25)';
-        return base;
-    }
-    """)
-    gb.configure_column("BİZİM SKOR", width=125, minWidth=118, cellStyle=_score_cell_style,
-                        valueFormatter=JsCode("function(p){return p.value == null ? '—' : (typeof p.value === 'number' ? p.value.toLocaleString('tr-TR',{maximumFractionDigits:2}) : String(p.value));}"))
-    gb.configure_column("REYTİNG", width=112, minWidth=105, cellStyle=_score_cell_style,
-                        valueFormatter=JsCode("function(p){return p.value == null ? '—' : (typeof p.value === 'number' ? p.value.toLocaleString('tr-TR',{maximumFractionDigits:2}) : String(p.value));}"))
-    # GÜNCEL SINIF dairesel gösterimi ve sıralama kuralı aynen korunur.
+    # BİZİM SKOR / REYTİNG: hücre zeminini doldurmadan kalın renkli çerçeve.
+    # GÜNCEL SINIF: mevcut daire ve renk kuralları aynen korunur.
     _score_circle_renderer = JsCode(r"""
     class ScoreCircleRenderer {
         init(params) {
             const root = document.createElement('div');
-            root.style.width='100%'; root.style.height='100%'; root.style.display='flex';
-            root.style.alignItems='center'; root.style.justifyContent='center'; root.style.overflow='hidden';
-            const text = document.createElement('span');
-            text.textContent = params.value == null ? '' : String(params.value);
-            text.style.fontSize='14px'; text.style.fontWeight='900'; text.style.color='#111827';
-            text.style.whiteSpace='nowrap'; text.style.padding='2px 5px';
-            root.appendChild(text); this.eGui=root;
+            root.style.width = '100%';
+            root.style.height = '100%';
+            root.style.display = 'flex';
+            root.style.alignItems = 'center';
+            root.style.justifyContent = 'center';
+            root.style.boxSizing = 'border-box';
+            root.style.overflow = 'hidden';
+
+            const value = Number(String(params.value == null ? '' : params.value).replace('+',''));
+            if (!isFinite(value) || !params.api) {
+                const plain = document.createElement('span');
+                plain.textContent = params.value == null ? '' : String(params.value);
+                plain.style.fontWeight = '900';
+                plain.style.fontSize = '13px';
+                root.appendChild(plain);
+                this.eGui = root;
+                return;
+            }
+
+            const field = params.colDef.field;
+            const values = [];
+            params.api.forEachNodeAfterFilterAndSort(function(node) {
+                if (!node.data) return;
+                const x = Number(String(node.data[field] == null ? '' : node.data[field]).replace('+',''));
+                if (isFinite(x)) values.push(x);
+            });
+
+            let bg = '#f3c84b';
+            let fg = '#111111';
+            let border = '#d6a900';
+
+            // ------------------------------------------------------------
+            // BİZİM SKOR: en yüksek 4 mavi tonları, en düşük 3 kırmızı tonları,
+            // ortadakiler sarı tonları. Mavi/kırmızı yazı beyaz, sarı siyah.
+            // ------------------------------------------------------------
+            if (field === 'BİZİM SKOR') {
+                const sorted = values.slice().sort(function(a,b){ return b-a; });
+                const idx = sorted.indexOf(value);
+                const rankHigh = idx + 1;
+                const sortedAsc = values.slice().sort(function(a,b){ return a-b; });
+                const rankLow = sortedAsc.indexOf(value) + 1;
+
+                if (rankHigh <= Math.min(4, sorted.length)) {
+                    const blues = ['#063b73','#0a4f96','#1769aa','#4b8fc9'];
+                    bg = blues[rankHigh - 1] || blues[3];
+                    border = '#052f5f';
+                    fg = '#ffffff';
+                } else if (rankLow <= Math.min(3, sorted.length)) {
+                    const reds = ['#8b0000','#b22222','#dc4b4b'];
+                    bg = reds[rankLow - 1] || reds[2];
+                    border = '#6f0000';
+                    fg = '#ffffff';
+                } else {
+                    const ratio = sorted.length > 1 ? idx / (sorted.length - 1) : 0.5;
+                    bg = ratio < 0.5 ? '#f7d774' : '#f1bd3a';
+                    border = '#c99618';
+                    fg = '#111111';
+                }
+            }
+
+            // ------------------------------------------------------------
+            // GÜNCEL SINIF:
+            // Negatiflerde 0'a en yakın ilk 4 kırmızı tonları,
+            // en düşük/uzak 3 negatif mor tonları, ortadakiler sarı.
+            // Pozitiflerde en düşük 4 kırmızı, en yüksek 3 mor,
+            // ortadakiler sarı. Kırmızı/mor yazı beyaz.
+            // ------------------------------------------------------------
+            else if (field === 'GÜNCEL SINIF') {
+                if (value < 0) {
+                    const neg = values.filter(function(x){ return x < 0; }).sort(function(a,b){ return b-a; });
+                    const pos = values.filter(function(x){ return x > 0; }).sort(function(a,b){ return a-b; });
+                    const rankNearZero = neg.indexOf(value) + 1;
+                    const rankMostNegative = neg.slice().sort(function(a,b){ return a-b; }).indexOf(value) + 1;
+
+                    // NEGATİF GÜNCEL SINIF: 0'a en yakın ilk 3 değer yeşil tonları.
+                    // Diğer mevcut renk kuralları aynen korunur.
+                    if (rankNearZero <= Math.min(3, neg.length)) {
+                        const greens = ['#0b5d2a','#2f8f4e','#6fbd7f'];
+                        bg = greens[rankNearZero - 1] || greens[2];
+                        border = '#08451f';
+                        fg = '#ffffff';
+                    } else if (rankNearZero === 4) {
+                        const red = '#e34b4b';
+                        bg = red;
+                        border = '#720000';
+                        fg = '#ffffff';
+                    } else if (rankMostNegative <= Math.min(3, neg.length)) {
+                        const purples = ['#3b0a57','#5a1875','#7b3f98'];
+                        bg = purples[rankMostNegative - 1] || purples[2];
+                        border = '#2d0642';
+                        fg = '#ffffff';
+                    } else {
+                        bg = '#f3c84b';
+                        border = '#d6a900';
+                        fg = '#111111';
+                    }
+                } else if (value > 0) {
+                    const pos = values.filter(function(x){ return x > 0; }).sort(function(a,b){ return a-b; });
+                    const rankLow = pos.indexOf(value) + 1;
+                    const rankHigh = pos.slice().sort(function(a,b){ return b-a; }).indexOf(value) + 1;
+                    if (rankLow <= Math.min(4, pos.length)) {
+                        const reds = ['#8b0000','#a91515','#c92a2a','#e34b4b'];
+                        bg = reds[rankLow - 1] || reds[3];
+                        border = '#720000';
+                        fg = '#ffffff';
+                    } else if (rankHigh <= Math.min(3, pos.length)) {
+                        const purples = ['#3b0a57','#5a1875','#7b3f98'];
+                        bg = purples[rankHigh - 1] || purples[2];
+                        border = '#2d0642';
+                        fg = '#ffffff';
+                    } else {
+                        bg = '#f3c84b';
+                        border = '#d6a900';
+                        fg = '#111111';
+                    }
+                } else {
+                    bg = '#f3c84b';
+                    border = '#d6a900';
+                    fg = '#111111';
+                }
+            }
+
+            // REYTİNG: mevcut yeşil ilk 5 görünümü korunur.
+            else if (field === 'REYTİNG') {
+                const sorted = values.slice().sort(function(a,b){ return b-a; });
+                const rank = sorted.indexOf(value) + 1;
+                if (rank <= 5) {
+                    const greens = ['#0b5d2a','#167a3d','#299653','#4caf6b','#79c98b'];
+                    bg = greens[rank - 1] || greens[4];
+                    border = '#0a4d24';
+                    fg = '#ffffff';
+                } else {
+                    bg = '#f3c84b';
+                    border = '#d6a900';
+                    fg = '#111111';
+                }
+            }
+
+            const scoreText = String(params.value == null ? '' : params.value);
+            const digits = scoreText.replace(/[^0-9]/g, '').length;
+            const mark = document.createElement('span');
+            mark.textContent = scoreText;
+            mark.style.display = 'inline-flex';
+            mark.style.alignItems = 'center';
+            mark.style.justifyContent = 'center';
+            mark.style.boxSizing = 'border-box';
+            mark.style.fontWeight = '950';
+            mark.style.fontVariantNumeric = 'tabular-nums';
+            mark.style.lineHeight = '1.15';
+            mark.style.whiteSpace = 'nowrap';
+
+            if (field === 'BİZİM SKOR' || field === 'REYTİNG') {
+                // Sadece çerçeve renkli: hücrenin içi ve yazının arkası şeffaf.
+                // Puan renk sıralaması yukarıdaki mevcut kurallarla aynı kalır.
+                mark.style.padding = '5px 9px';
+                mark.style.minWidth = '66px';
+                mark.style.border = '3px solid ' + border;
+                mark.style.borderRadius = '7px';
+                mark.style.background = 'transparent';
+                mark.style.color = border;
+                mark.style.fontSize = (digits >= 6 ? 15 : 16) + 'px';
+                mark.style.boxShadow = 'none';
+            } else {
+                // GÜNCEL SINIF görünümü ve renklendirmesi önceki haliyle korunur.
+                const diameter = digits >= 6 ? 64 : (digits >= 5 ? 58 : (digits >= 4 ? 52 : 46));
+                const fontSize = digits >= 6 ? 10 : (digits >= 5 ? 11 : (digits >= 4 ? 12 : 13));
+                mark.style.width = diameter + 'px';
+                mark.style.height = diameter + 'px';
+                mark.style.minWidth = diameter + 'px';
+                mark.style.maxWidth = diameter + 'px';
+                mark.style.borderRadius = '50%';
+                mark.style.background = bg;
+                mark.style.border = '2px solid ' + border;
+                mark.style.color = fg;
+                mark.style.fontSize = fontSize + 'px';
+                mark.style.textAlign = 'center';
+                mark.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
+            }
+
+            root.appendChild(mark);
+            this.eGui = root;
         }
         refresh(params) { return false; }
         getGui() { return this.eGui; }
     }
     """)
+
+    gb.configure_column("BİZİM SKOR", width=120, minWidth=110, cellRenderer=_score_circle_renderer,
+                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
+    gb.configure_column("REYTİNG", width=120, minWidth=110, cellRenderer=_score_circle_renderer,
+                        cellStyle=JsCode("function(params){return {textAlign:'center',padding:'1px 0'};}"))
     # GÜNCEL SINIF sıralaması: negatiflerde 0'a en yakın negatiften başlayarak,
     # ardından daha düşük negatifler; sonra 0 ve pozitifler küçükten büyüğe.
     # Örnek: -1, -5, -7, -8, +1, +3, +20
