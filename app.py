@@ -1255,14 +1255,17 @@ def enrich_race_horses(
             item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
-        if not at_id:
+        # Bazı TJK program satırlarında atId eksik gelebilir. At adı mevcutsa
+        # zenginleştirmeyi erken kesme; tjk_fetch adı kullanarak galop/geçmiş
+        # için yedek /horsedata sorgusunu deneyebilir.
+        if not at_id and not name:
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
+            item["_enrichment_error"] = "TJK program kaydında at kimliği ve adı bulunamadı."
             return idx, item, name
 
         try:
-            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
+            data = load_horse_enrichment(str(at_id or ""), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
@@ -1277,7 +1280,7 @@ def enrich_race_horses(
         if not history:
             retry_note = str((data or {}).get("error") or "TJK geçmiş kayıt döndürmedi.") if isinstance(data, dict) else "TJK geçmiş kayıt döndürmedi."
 
-        item["_at_id"] = str(at_id)
+        item["_at_id"] = str(at_id or data.get("atId") or "")
         item["_history"] = history
         item["_workouts"] = workouts
         item["_history_retry_checked"] = True
