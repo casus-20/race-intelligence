@@ -144,8 +144,13 @@ def _dt(v):
 
 
 def _row_date(r):
-    return _dt(_first(r, ["date", "tarih", "Tarih", "raceDate", "race_date",
-                          "kosuTarihi", "runDate", "run_date"], None))
+    return _dt(_first(r, [
+        "date", "tarih", "Tarih", "raceDate", "race_date", "race_date_local",
+        "raceDateLocal", "dateLocal", "kosuTarihi", "kosuTarihiLocal",
+        "runDate", "run_date", "startDate", "start_date", "raceDay", "race_day",
+        "yarisTarihi", "yaris_tarihi", "eventDate", "event_date",
+        "eventDateLocal", "meetingDate", "meeting_date", "dateOfRace", "date_of_race"
+    ], None))
 
 
 def _place(r):
