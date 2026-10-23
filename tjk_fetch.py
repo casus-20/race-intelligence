@@ -1233,36 +1233,6 @@ def get_horse_enrichment(
         except Exception as exc:
             errors.append(f"direct TJK history: {exc}")
 
-    # Hedef at için hafif endpointler boş dönerse, daha kapsamlı TJK
-    # zenginleştirme endpointini bir kez dene. Özellikle atId eksik olan veya
-    # belirli atlarda hafif endpointin kayıt bulamadığı durumları kurtarır.
-    if (not history or not workouts) and horse_name:
-        try:
-            fallback_params = {
-                "atId": str(at_id or ""),
-                "horse": horse_name,
-                "date": normalize_date(target_date) if target_date is not None else "",
-                "city": normalize_text(target_city),
-                "distance": normalize_text(target_distance),
-                "surface": normalize_text(target_surface),
-                "raceClass": normalize_text(target_class),
-            }
-            fallback = _worker_json(API_HORSEDATA, fallback_params, timeout=max(timeout, 45))
-            if not history:
-                fallback_history = _extract_history_payload(fallback)
-                if fallback_history:
-                    history = fallback_history
-                    history_data = dict(history_data or {})
-                    history_data["history"] = history
-                    history_data["historyCount"] = len(history)
-                    history_data["historySource"] = fallback.get("historySource") or fallback.get("source") or "api/tjk/horsedata fallback"
-                    if fallback.get("atId"):
-                        history_data["atId"] = fallback.get("atId")
-            if not workouts and isinstance(fallback.get("workouts"), list):
-                workouts = fallback["workouts"]
-        except Exception as exc:
-            errors.append(f"horsedata fallback: {exc}")
-
     errors = list(dict.fromkeys(errors))
 
     # Worker /api/tjk/horse artık resmi kazanç ve hangi TJK kaynağının
