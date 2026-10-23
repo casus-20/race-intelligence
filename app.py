@@ -1255,17 +1255,14 @@ def enrich_race_horses(
             item.get("id") or item.get("Id") or ""
         )
         name = get_horse_name(item)
-        # Bazı TJK program satırlarında atId eksik gelebilir. At adı mevcutsa
-        # zenginleştirmeyi erken kesme; tjk_fetch adı kullanarak galop/geçmiş
-        # için yedek /horsedata sorgusunu deneyebilir.
-        if not at_id and not name:
+        if not at_id:
             item["_history"] = []
             item["_workouts"] = []
-            item["_enrichment_error"] = "TJK program kaydında at kimliği ve adı bulunamadı."
+            item["_enrichment_error"] = "TJK program kaydında atId bulunamadı."
             return idx, item, name
 
         try:
-            data = load_horse_enrichment(str(at_id or ""), name, target_date, target_city, target_distance, target_surface, target_class)
+            data = load_horse_enrichment(str(at_id), name, target_date, target_city, target_distance, target_surface, target_class)
         except Exception as exc:
             data = {"ok": False, "history": [], "workouts": [], "error": str(exc)}
 
@@ -1280,7 +1277,7 @@ def enrich_race_horses(
         if not history:
             retry_note = str((data or {}).get("error") or "TJK geçmiş kayıt döndürmedi.") if isinstance(data, dict) else "TJK geçmiş kayıt döndürmedi."
 
-        item["_at_id"] = str(at_id or data.get("atId") or "")
+        item["_at_id"] = str(at_id)
         item["_history"] = history
         item["_workouts"] = workouts
         item["_history_retry_checked"] = True
@@ -2303,17 +2300,16 @@ def _rating_history_before_target(
             continue
         row_dt = _rating_parse_date(_history_value(row, [
             "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
-            "race_date_local", "raceDateLocal", "dateLocal", "runDate", "run_date",
-            "kosuTarihiLocal", "startDate", "start_date", "raceDay", "race_day",
-            "yarisTarihi", "yaris_tarihi", "eventDate", "event_date",
-            "eventDateLocal", "meetingDate", "meeting_date", "dateOfRace", "date_of_race"
+            "race_date_local", "runDate", "run_date", "kosuTarihiLocal",
+            "startDate", "start_date", "raceDay", "race_day", "yarisTarihi",
+            "yaris_tarihi", "kosuTarihiLocal", "eventDate", "event_date"
         ]))
         # Tarih çözülemeyen kayıt, veri sızıntısını önlemek için kullanılmaz.
         if row_dt is not None and row_dt < target_dt:
             out.append(row)
 
     out.sort(key=lambda r: _rating_row_date(r) or date.min, reverse=True)
-    # En yeni 10 uygun geçmiş koşu; hedef gün ve sonrası yukarıda elendi.
+    # Yalnızca REYTİNG geçmişi: hedef tarihten önceki en güncel 10 kayıt.
     return out[:10]
 
 def _rating_surface(value: Any) -> str:
@@ -2827,22 +2823,7 @@ def _calculate_rating_for_race(
     target_distance = _number(race.get("distance"))
     target_surface = display_value(race.get("surface"), "")
     results = []
-
-    # REYTİNG'e özel geçmiş kopyası: hedef tarihten önceki en güncel en fazla
-    # 10 koşu kullanılır. 1-9 geçmiş koşusu olan atlarda mevcut koşuların hepsi
-    # korunur. Orijinal at verisine dokunulmadığı için diğer tablolar/model etkilenmez.
-    rating_horses = []
-    for source_horse in horses:
-        if not isinstance(source_horse, dict):
-            rating_horses.append(source_horse)
-            continue
-        rating_horse = dict(source_horse)
-        rating_horse["_history"] = _rating_history_before_target(
-            source_horse, target_date
-        )[:10]
-        rating_horses.append(rating_horse)
-
-    for idx, horse in enumerate(rating_horses):
+    for idx, horse in enumerate(horses):
         if not isinstance(horse, dict):
             continue
 
@@ -2853,8 +2834,8 @@ def _calculate_rating_for_race(
             continue
 
         components = {
-            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, rating_horses, target_date),
-            "Kilo Uyumu": _rating_weight_score(horse, rating_horses, target_date),
+            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
+            "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
             "Güncel Form": _rating_all_history_form(horse, target_date),
             "Pist / Mesafe": _rating_distance_component(
                 horse, target_distance, target_surface, target_date
@@ -2868,7 +2849,7 @@ def _calculate_rating_for_race(
         own_history = _rating_history_before_target(horse, target_date)
         if not any(
             _rating_shared_race_keys(horse, other, target_date)
-            for other in rating_horses if isinstance(other, dict) and other is not horse
+            for other in horses if isinstance(other, dict) and other is not horse
         ):
             components["Ortak Rakip + Kilo"] = None
         if _rating_target_weight(horse) is None or not any(
