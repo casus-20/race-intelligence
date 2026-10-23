@@ -2308,8 +2308,10 @@ def _rating_history_before_target(
         if row_dt is not None and row_dt < target_dt:
             out.append(row)
 
+    # REYTİNG yalnızca hedef tarihten önceki en güncel 10 koşuyu kullanır.
+    # Sıralama yeni tarihten eskiye doğrudur; hedef günün koşusu dahil edilmez.
     out.sort(key=lambda r: _rating_row_date(r) or date.min, reverse=True)
-    return out
+    return out[:10]
 
 def _rating_surface(value: Any) -> str:
     try:
@@ -2822,22 +2824,7 @@ def _calculate_rating_for_race(
     target_distance = _number(race.get("distance"))
     target_surface = display_value(race.get("surface"), "")
     results = []
-
-    # REYTİNG için her atın hedef yarıştan önceki en güncel en fazla 10
-    # koşusunu kullan. Atın geçmişi 1-9 koşuysa mevcut koşuların tamamı kalır.
-    # Kopya sözlük kullanılır; asıl at verisi ve BİZİM SKOR geçmişi değişmez.
-    rating_horses = []
-    for source_horse in horses:
-        if not isinstance(source_horse, dict):
-            rating_horses.append(source_horse)
-            continue
-        rating_horse = dict(source_horse)
-        rating_horse["_history"] = _rating_history_before_target(
-            source_horse, target_date
-        )[:10]
-        rating_horses.append(rating_horse)
-
-    for idx, horse in enumerate(rating_horses):
+    for idx, horse in enumerate(horses):
         if not isinstance(horse, dict):
             continue
 
@@ -2848,7 +2835,7 @@ def _calculate_rating_for_race(
             continue
 
         components = {
-            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, rating_horses, target_date),
+            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
             "Güncel Form": _rating_all_history_form(horse, target_date),
             "Pist / Mesafe": _rating_distance_component(
@@ -2863,7 +2850,7 @@ def _calculate_rating_for_race(
         own_history = _rating_history_before_target(horse, target_date)
         if not any(
             _rating_shared_race_keys(horse, other, target_date)
-            for other in rating_horses if isinstance(other, dict) and other is not horse
+            for other in horses if isinstance(other, dict) and other is not horse
         ):
             components["Ortak Rakip + Kilo"] = None
         if _rating_target_weight(horse) is None or not any(
