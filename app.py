@@ -2300,16 +2300,18 @@ def _rating_history_before_target(
             continue
         row_dt = _rating_parse_date(_history_value(row, [
             "date", "tarih", "Tarih", "raceDate", "race_date", "kosuTarihi",
-            "race_date_local", "runDate", "run_date", "kosuTarihiLocal",
-            "startDate", "start_date", "raceDay", "race_day", "yarisTarihi",
-            "yaris_tarihi", "kosuTarihiLocal", "eventDate", "event_date"
+            "race_date_local", "raceDateLocal", "dateLocal", "runDate", "run_date",
+            "kosuTarihiLocal", "startDate", "start_date", "raceDay", "race_day",
+            "yarisTarihi", "yaris_tarihi", "eventDate", "event_date",
+            "eventDateLocal", "meetingDate", "meeting_date", "dateOfRace", "date_of_race"
         ]))
         # Tarih çözülemeyen kayıt, veri sızıntısını önlemek için kullanılmaz.
         if row_dt is not None and row_dt < target_dt:
             out.append(row)
 
     out.sort(key=lambda r: _rating_row_date(r) or date.min, reverse=True)
-    return out
+    # En yeni 10 uygun geçmiş koşu; hedef gün ve sonrası yukarıda elendi.
+    return out[:10]
 
 def _rating_surface(value: Any) -> str:
     try:
