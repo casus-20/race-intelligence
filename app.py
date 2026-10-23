@@ -2822,7 +2822,22 @@ def _calculate_rating_for_race(
     target_distance = _number(race.get("distance"))
     target_surface = display_value(race.get("surface"), "")
     results = []
-    for idx, horse in enumerate(horses):
+
+    # REYTİNG için her atın hedef yarıştan önceki en güncel en fazla 10
+    # koşusunu kullan. Atın geçmişi 1-9 koşuysa mevcut koşuların tamamı kalır.
+    # Kopya sözlük kullanılır; asıl at verisi ve BİZİM SKOR geçmişi değişmez.
+    rating_horses = []
+    for source_horse in horses:
+        if not isinstance(source_horse, dict):
+            rating_horses.append(source_horse)
+            continue
+        rating_horse = dict(source_horse)
+        rating_horse["_history"] = _rating_history_before_target(
+            source_horse, target_date
+        )[:10]
+        rating_horses.append(rating_horse)
+
+    for idx, horse in enumerate(rating_horses):
         if not isinstance(horse, dict):
             continue
 
@@ -2833,7 +2848,7 @@ def _calculate_rating_for_race(
             continue
 
         components = {
-            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, horses, target_date),
+            "Ortak Rakip + Kilo": _rating_common_opponent_score(horse, rating_horses, target_date),
             "Kilo Uyumu": _rating_weight_score(horse, horses, target_date),
             "Güncel Form": _rating_all_history_form(horse, target_date),
             "Pist / Mesafe": _rating_distance_component(
@@ -2848,7 +2863,7 @@ def _calculate_rating_for_race(
         own_history = _rating_history_before_target(horse, target_date)
         if not any(
             _rating_shared_race_keys(horse, other, target_date)
-            for other in horses if isinstance(other, dict) and other is not horse
+            for other in rating_horses if isinstance(other, dict) and other is not horse
         ):
             components["Ortak Rakip + Kilo"] = None
         if _rating_target_weight(horse) is None or not any(
@@ -5480,7 +5495,7 @@ else:
     )
     gb.configure_column("Gny", width=60, minWidth=60, maxWidth=60, resizable=False, cellStyle=JsCode("function(params){return {color:'#00a6b2',fontWeight:'900'};}"), cellClass="ri-left-centered-cell")
     gb.configure_column("AGF", width=70, minWidth=70, maxWidth=70, resizable=False, cellRenderer=agf_renderer, cellClass="ri-left-centered-cell")
-    # BİZİM SKOR / REYTİNG: aynı renk sıralamasıyla hücre dolgulu çerçeve; GÜNCEL SINIF dairesel.
+    # BİZİM SKOR / REYTİNG / GÜNCEL SINIF: sayı hücresinin içinde dairesel gösterim.
     # Her sütunda ilk 5 değer koyu yeşilden açık yeşile renklendirilir.
     # GÜNCEL SINIF farkında negatif değer kırmızı, pozitif değer mavi yazılır.
     _score_circle_renderer = JsCode(r"""
@@ -5609,68 +5624,50 @@ else:
                 }
             }
 
-            // REYTİNG, BİZİM SKOR ile aynı renk sıralamasını kullanır:
-            // en yüksek 4 mavi, en düşük 3 kırmızı, kalanlar sarı.
+            // REYTİNG: mevcut yeşil ilk 5 görünümü korunur.
             else if (field === 'REYTİNG') {
                 const sorted = values.slice().sort(function(a,b){ return b-a; });
-                const rankHigh = sorted.indexOf(value) + 1;
-                const sortedAsc = values.slice().sort(function(a,b){ return a-b; });
-                const rankLow = sortedAsc.indexOf(value) + 1;
-                if (rankHigh <= Math.min(4, sorted.length)) {
-                    const blues = ['#063b73','#0a4f96','#1769aa','#4b8fc9'];
-                    bg = blues[rankHigh - 1] || blues[3];
-                    border = '#052f5f';
-                    fg = '#ffffff';
-                } else if (rankLow <= Math.min(3, sorted.length)) {
-                    const reds = ['#8b0000','#b22222','#dc4b4b'];
-                    bg = reds[rankLow - 1] || reds[2];
-                    border = '#6f0000';
+                const rank = sorted.indexOf(value) + 1;
+                if (rank <= 5) {
+                    const greens = ['#0b5d2a','#167a3d','#299653','#4caf6b','#79c98b'];
+                    bg = greens[rank - 1] || greens[4];
+                    border = '#0a4d24';
                     fg = '#ffffff';
                 } else {
-                    const ratio = sorted.length > 1 ? (rankHigh - 1) / (sorted.length - 1) : 0.5;
-                    bg = ratio < 0.5 ? '#f7d774' : '#f1bd3a';
-                    border = '#c99618';
+                    bg = '#f3c84b';
+                    border = '#d6a900';
                     fg = '#111111';
                 }
             }
 
+            const circle = document.createElement('span');
+            circle.textContent = String(params.value);
+            circle.style.display = 'inline-flex';
+            circle.style.alignItems = 'center';
+            circle.style.justifyContent = 'center';
+            // Uzun puanlar daire dışına taşmasın: genişlik ve yazı boyutu
+            // değer uzunluğuna göre ayarlanır; sütun genişliği de buna uyar.
             const scoreText = String(params.value == null ? '' : params.value);
             const digits = scoreText.replace(/[^0-9]/g, '').length;
-            const fontSize = digits >= 6 ? 13 : (digits >= 5 ? 14 : 15);
-            const isScoreCell = field === 'BİZİM SKOR' || field === 'REYTİNG';
-            const badge = document.createElement('span');
-            badge.textContent = scoreText;
-            badge.style.display = 'flex';
-            badge.style.alignItems = 'center';
-            badge.style.justifyContent = 'center';
-            badge.style.boxSizing = 'border-box';
-            badge.style.background = bg;
-            badge.style.border = '3px solid ' + border;
-            badge.style.color = fg;
-            badge.style.fontWeight = '900';
-            badge.style.fontSize = fontSize + 'px';
-            badge.style.lineHeight = '1';
-            badge.style.textAlign = 'center';
-            badge.style.whiteSpace = 'nowrap';
-            badge.style.overflow = 'hidden';
-            badge.style.textOverflow = 'clip';
-            badge.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
-            if (isScoreCell) {
-                // Puan renkleri dikdörtgen hücre alanını doldurur; GÜNCEL SINIF dairesi korunur.
-                badge.style.width = '100%';
-                badge.style.height = '100%';
-                badge.style.minHeight = '30px';
-                badge.style.borderRadius = '4px';
-                root.style.padding = '1px 2px';
-            } else {
-                const diameter = digits >= 6 ? 64 : (digits >= 5 ? 58 : (digits >= 4 ? 52 : 46));
-                badge.style.width = diameter + 'px';
-                badge.style.height = diameter + 'px';
-                badge.style.minWidth = diameter + 'px';
-                badge.style.maxWidth = diameter + 'px';
-                badge.style.borderRadius = '50%';
-            }
-            root.appendChild(badge);
+            const diameter = digits >= 6 ? 64 : (digits >= 5 ? 58 : (digits >= 4 ? 52 : 46));
+            const fontSize = digits >= 6 ? 10 : (digits >= 5 ? 11 : (digits >= 4 ? 12 : 13));
+            circle.style.width = diameter + 'px';
+            circle.style.height = diameter + 'px';
+            circle.style.minWidth = diameter + 'px';
+            circle.style.maxWidth = diameter + 'px';
+            circle.style.borderRadius = '50%';
+            circle.style.boxSizing = 'border-box';
+            circle.style.background = bg;
+            circle.style.border = '2px solid ' + border;
+            circle.style.color = fg;
+            circle.style.fontWeight = '900';
+            circle.style.fontSize = fontSize + 'px';
+            circle.style.lineHeight = '1';
+            circle.style.textAlign = 'center';
+            circle.style.whiteSpace = 'nowrap';
+            circle.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.18)';
+
+            root.appendChild(circle);
             this.eGui = root;
         }
         refresh(params) { return false; }
